@@ -1,0 +1,5 @@
+{
+	"//": "Upstream's tsconfig includes only src/, so test files are never type-checked. The SYNAPSE gate checks its own tests under exactly the project's compiler settings; running tsc with ad-hoc flags instead resolves declarations differently and reports errors the project build does not have.",
+	"extends": "./tsconfig.json",
+	"include": ["src/**/*.ts", "src/**/*.d.ts", "test/unit/synapse-*.test.ts", "test/integration/synapse-*.test.ts"]
+}
