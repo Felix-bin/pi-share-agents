@@ -682,7 +682,11 @@ Do work
 		assert.match(oracle?.systemPrompt ?? "", /asking or consulting the oracle/);
 		assert.match(oracle?.systemPrompt ?? "", /When runtime bridge instructions provide `contact_supervisor`/);
 		assert.match(oracle?.systemPrompt ?? "", /If no supervisor channel is available/);
-		assert.equal(agents.some((candidate) => candidate.name === "planner"), false);
+		// This fork ships the four collaboration roles as builtins, so `planner`
+		// exists here on purpose; the two names below stay absent.
+		for (const name of ["planner", "retriever", "executor", "summarizer"]) {
+			assert.equal(agents.some((candidate) => candidate.name === name), true, `${name} should be a builtin role in this fork`);
+		}
 		assert.equal(agents.some((candidate) => candidate.name === "context-builder"), false);
 		assert.equal(agents.some((candidate) => candidate.name === "gpt-pro"), false);
 	});

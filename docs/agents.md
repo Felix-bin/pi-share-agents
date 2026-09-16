@@ -45,8 +45,14 @@ Builtins load at the lowest priority, so a user or project agent with the same n
 | `reviewer` | Code review and small fixes. It checks the implementation against the task/plan, tests, edge cases, and simplicity. |
 | `oracle` | A second opinion before acting. It challenges assumptions, catches drift, and recommends the safest next move without editing. |
 | `delegate` | A lightweight general delegate when you want a child agent that behaves close to the parent session. |
+| `planner` | Decompose a request into ordered, checkable steps and name the role that runs each one. |
+| `retriever` | Gather evidence from the worktree and shared memory, separating observation from inference. |
+| `executor` | Run the commands a step needs and report the observed result. |
+| `summarizer` | Turn gathered evidence and executed results into a conclusion that keeps its uncertainty. |
 
 Rule of thumb: `scout` before you understand the code, `researcher` before you trust external facts, `evidence-auditor` before you rely on important research, `worker` to implement, `reviewer` to check, and `oracle` when the decision itself feels risky.
+
+`planner`, `retriever`, `executor` and `summarizer` are the four collaboration roles this fork adds; `/role-pipeline` runs them in order. They also declare capabilities to the SYNAPSE layer (`src/synapse/roles.ts`), which is what a delegation negotiates against before the child is launched. Every other agent, builtin or your own, is treated as a plain text delegate rather than given a guessed capability.
 
 `oracle` is an advisory reviewer that critiques direction and proposes an execution prompt without editing files. `advisor` is the same bundled role under the Claude Code-compatible name.
 

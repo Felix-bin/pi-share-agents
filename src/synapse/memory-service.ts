@@ -67,6 +67,8 @@ export type SearchInput = {
 
 export type SearchHit = {
 	assurance: MemoryAssurance;
+	/** The bytes this memory is about, so a handoff can name what it carries. */
+	contentId: string;
 	createdAt: string;
 	historical: boolean;
 	memoryId: string;
@@ -224,6 +226,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 			return {
 				results: ranked.map((entry) => ({
 					assurance: entry.record.assurance,
+					contentId: entry.record.contentId,
 					createdAt: entry.record.createdAt,
 					historical: entry.historical,
 					memoryId: entry.record.memoryId,

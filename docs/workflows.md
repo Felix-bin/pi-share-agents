@@ -38,6 +38,7 @@ The package includes reusable prompt templates for common workflows. You do not 
 | `/parallel-research` | Combine `researcher` and `scout` for external evidence, local code context, and practical tradeoffs. |
 | `/gather-context-and-clarify` | Scout/research first, then ask the user the clarification questions that matter. |
 | `/parallel-cleanup` | Run review-only cleanup passes after implementation. |
+| `/role-pipeline` | Run the four collaboration roles in order: `planner` → `retriever` → `executor` → `summarizer`, each in a fresh child session, handing over artefacts rather than conversation. |
 
 Add `autofix` to `/parallel-review` or `/parallel-cleanup` to apply only the synthesized fixes worth doing now after reviewers return.
 

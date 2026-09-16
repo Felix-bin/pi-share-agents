@@ -7,7 +7,8 @@ describe("subagent guide", () => {
 	it("reads the packaged overview by default", () => {
 		const guide = readSubagentGuide();
 
-		assert.match(guide, /# pi-subagents/);
+		// The packaged overview is this fork's README, which carries the fork name.
+		assert.match(guide, /# pi-share-agents/);
 	});
 
 	it("lists valid topics for an unknown topic without changing files", () => {

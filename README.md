@@ -23,11 +23,13 @@
 
 | 路径 | 内容 |
 |------|------|
-| `src/synapse/**`（20 个模块，约 3.4k 行） | pi-agent-share 的全部实现，逐模块职责见[模块地图](#模块地图)。 |
-| `test/unit/synapse-*.test.ts`（19 个文件） | 锚定规范验收标准（AC）的行为测试。 |
+| `src/synapse/**`（22 个模块，约 3.9k 行） | pi-agent-share 的全部实现，逐模块职责见[模块地图](#模块地图)。 |
+| `src/runs/shared/synapse-delegation.ts` | 前台与后台共用的委派接缝调用点。 |
+| `agents/{planner,retriever,executor,summarizer}.md`、`prompts/role-pipeline.md` | 四个协作角色与流水线快捷命令。 |
+| `test/unit/synapse-*.test.ts`（21 个文件） | 锚定规范验收标准（AC）的行为测试。 |
 | `test/integration/synapse-shared-memory.test.ts` | 跨 Agent 复用、来源失效、授权、存储完整性。 |
 | `tsconfig.synapse-tests.json` | 对新增测试做类型检查——上游 `tsconfig.json` 的 `include` 只覆盖 `src/`。 |
-| 5 个上游文件 | [接入点](#与上游的接入点)。除此之外未改动任何上游代码。 |
+| 7 个上游文件 | [接入点](#与上游的接入点)。除此之外未改动任何上游代码。 |
 
 ## 实现状态
 
@@ -39,7 +41,9 @@
 | 来源有效性（按工作树字节计算指纹） | **已接入。** |
 | 授权投影（项目授权 ∩ 子 Agent 授权） | 通过子 Agent 契约**已接入**。 |
 | 启动契约、重建校验、前台/后台一致性 | **已接入。** 两条路径的输入由同一个函数导出。 |
-| 能力协商、信封与冻结快照、交接与回执、计量 | **已实现并测试，但尚未接入真实消息流。** 委派目前仍走上游原有的文本任务通道；把信封与计量接到该通道上是下一批次的工作。 |
+| 四个协作角色与能力声明 | **已接入。** `planner` / `retriever` / `executor` / `summarizer` 各自声明动作与编码，能力 ID 进入启动契约与信封。 |
+| 能力协商、信封与冻结快照、自动交接、计量、回执 | **已接入真实委派消息流。** 每次子 Agent 委派都先协商能力、召回记忆、冻结快照、生成信封，并把投递、模型用量、记忆复用与终态写入只追加计量日志。 |
+| 非文本状态传递（向量/残差载荷） | **未实现。** 本版本没有任何工具能消费解码后的状态，因此协商结果诚实地落在文本路径，并记录落回原因，而不是把文本回退计为向量成功。 |
 | 语义检索 / 嵌入 | **未实现。** 检索为确定性关键词 + 标签加权，语义分量显式报 `unavailable`；请求向量状态会以 `capability-unavailable` 失败，而不会悄悄退化为关键词检索。 |
 | 残差（`delta`）编码 | **协议已预留，算法未实现。** `stateRef` 已携带 `encoding` 与 `baseMemoryId`，补上算法无需改协议版本。 |
 
@@ -72,6 +76,47 @@ pi -e /path/to/pi-share-agents
 ```text
 Use scout to map the auth flow, then have worker implement the fix.
 ```
+
+## 四个协作角色
+
+赛题要求至少 3 个 Agent 覆盖规划 / 检索 / 执行 / 总结。本 fork 按 Python 版
+SYNAPSE 的角色划分补齐了四个内置 Agent，与上游原有的 7 个内置 Agent **并存**：
+
+| 角色 | 职责 | 声明的动作 | 工具 |
+|------|------|-----------|------|
+| `planner` | 把一个请求拆成 3–6 个可验收的步骤，并指名由哪个角色执行 | `delegate` | read, grep, find, ls, write |
+| `retriever` | 从工作树与共享记忆中取证，区分"观察到的"与"推断的" | `delegate`、`retrieve` | read, grep, find, ls, write |
+| `executor` | 运行步骤所需的命令并如实回报结果 | `delegate` | read, grep, find, ls, bash |
+| `summarizer` | 把证据与结果综合为保留不确定性的结论 | `delegate` | read, grep, find, ls, write |
+
+`/role-pipeline` 按 `planner → retriever → executor → summarizer` 顺序跑完整条流水线，
+每个阶段是独立子会话，交接的是产物而不是对话。
+
+角色不只是提示词：`src/synapse/roles.ts` 为每个角色声明能力（动作、编码、是否具备
+消费状态的工具），委派前由 `capability.ts` 做交集协商，能力 ID 进入启动契约与信封。
+本版本没有任何工具能消费解码后的状态，因此 `consumesState` 一律为 `false`，协商结果
+是**带原因的文本路径**而不是伪造的向量路径；不被本模块认识的 Agent（含上游 7 个）
+按纯文本 delegate 声明处理，而不是猜一个能力出来。
+
+## 委派消息流
+
+每次委派子 Agent（前台与后台同一条代码路径）都会经过 `src/synapse/delegation.ts` 的接缝：
+
+1. **协商**：接收方角色声明 ∩ 主会话声明；接收方无可读范围时直接拒绝，此时这次委派
+   与未安装本扩展完全一致。
+2. **召回**：按子 Agent **自己的**授权范围检索共享记忆，`text` 模式携带正文、`synapse`
+   模式只携带引用与摘要——同一批记忆、同一条链路，字节数可直接对比。
+3. **冻结与信封**：把召回到的记忆 ID 冻结进快照，生成绑定请求 / 运行 / 双方会话身份的信封。
+4. **计量**：`task-span` / `memory-query` / `memory-reuse` / `message-delivered`（文本字节 +
+   信封字节）写入只追加日志 `<storageRoot>/metering/<runId>.jsonl`。
+5. **回执**：子 Agent 结束后记录 `message-received`、必要时 `message-failed`（按固定错误类别
+   分类，取消与超时各有其类）、`model-usage`（未上报即 `unavailable`，绝不记 0）与
+   `task-span end`，并把回执写入 `<storageRoot>/receipts/<requestId>.json`。回执沿用运行自身
+   的终态，不会把失败提升为完成。
+
+预算只作用于注入的记忆段：预算再紧也只会整条丢弃记忆，绝不缩短用户的任务文本。
+共享记忆是委派的**增量而非前提**——存储打不开时会打印一条警告并退回上游原有行为，
+计量失败不会让用户损失这次运行。
 
 ## 两个工具
 
@@ -164,6 +209,8 @@ Use scout to map the auth flow, then have worker implement the fix.
 | `handoff.ts` | 预算内的上下文准备与紧凑回执。 |
 | `lifecycle.ts` | 单一启动契约、重建校验、运行对账、重试上限。 |
 | `child-contract.ts` | 被委派子 Agent 的存储、身份与授权。 |
+| `roles.ts` | 四个协作角色及其能力声明；未知 Agent 按纯文本 delegate 处理。 |
+| `delegation.ts` | 委派接缝：协商 → 召回 → 冻结 → 信封 → 计量 → 回执。 |
 
 ## 与上游的接入点
 
@@ -174,6 +221,8 @@ Use scout to map the auth flow, then have worker implement the fix.
 | `src/runs/shared/child-launch.ts` | 在唯一的子会话构造点解析子 Agent 契约。 |
 | `src/runs/shared/child-runtime-config.ts` | 把 `synapse` 传递给子进程。 |
 | `src/runs/shared/subagent-prompt-runtime.ts` | 在子进程内注册工具。 |
+| `src/runs/foreground/execution.ts` | 前台委派在发送任务前后打开 / 关闭委派接缝。 |
+| `src/runs/background/run-child-session.ts` | 后台委派在同一位置调用同一对函数。 |
 
 前台与后台都经过 `buildInProcessChildLaunch` 这一个位置，因此两条路径的存储、命名空间与授权
 **在结构上同源**——不依赖两份代码被人工保持一致。
@@ -194,18 +243,20 @@ npx tsc --noEmit -p tsconfig.synapse-tests.json
 npm run test:all && npm run typecheck
 ```
 
-最近一次实测：2026-09-16，Node 24.11.1，Windows——**单元测试 311 通过 / 集成测试 15 通过 / 0 失败**，
-类型检查通过；`oxlint` 携仓库的 `anti-slop` 插件对 `src/synapse/**` 与 `test/**/synapse-*` 报告
-**0 违规**（`npx oxlint src/synapse test/unit/synapse-*.test.ts test/integration/synapse-*.test.ts`）。
-上游完整单元测试套件存在少量与本次新增无关的、依赖环境的既有失败，按批次逐次记录，不作静默吸收。
+最近一次实测：2026-09-17，Node 24.11.1，Windows——**单元测试 336 通过 / 集成测试 15 通过 / 0 失败**，
+类型检查通过；`oxlint` 携仓库的 `anti-slop` 插件对 `src/synapse/**`、`src/runs/shared/synapse-delegation.ts`
+与 `test/**/synapse-*` 报告 **0 违规**。上游完整单元测试套件 3671 项中有约 20 项依赖环境的既有失败
+（Windows 符号链接权限、外部进程超时等），在改动前后同样复现，逐批记录而不作静默吸收。
 
 ## 已知缺口
 
-1. **信封、能力协商、交接与计量尚未接入真实委派消息流。** 它们已按各自契约实现并测试，但委派本身
-   仍使用上游原有的文本任务通道。
+1. **没有非文本状态载荷。** 委派消息流已接入信封与计量，但本版本没有任何工具能消费解码后的
+   状态，协商因此始终落在文本路径（并记录落回原因）。向量/残差载荷要等嵌入通道落地。
 2. **无嵌入通道。** `synapse.embedding` 可配置，但尚未真正调用。
-3. **没有多进程并发写压测。** 目前的并发覆盖来自同 ID 发布冲突检测与发布顺序不变量。
-4. **openEuler 24.03-LTS-SP3 未验证**（AC-15），记为明确的已知欠债。代码按严格 POSIX 路径纪律实现，
+3. **委派的 `attempt` 恒为 1。** 一次通过接缝即一次投递；上游重试会新建子会话，日志中体现为
+   第二次投递而不是同一次的重复。
+4. **没有多进程并发写压测。** 目前的并发覆盖来自同 ID 发布冲突检测与发布顺序不变量。
+5. **openEuler 24.03-LTS-SP3 未验证**（AC-15），记为明确的已知欠债。代码按严格 POSIX 路径纪律实现，
    但该平台本身未经实测。
 
 ---
