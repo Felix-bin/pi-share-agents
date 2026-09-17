@@ -37,7 +37,12 @@ export type CheckedSource =
  */
 function resolveWithinRoot(root: string, relPath: string) {
 	const rootAbsolute = path.resolve(root);
-	const absolute = path.resolve(rootAbsolute, relPath);
+	// A path recorded on Windows carries Windows separators. Resolving it
+	// unchanged on Linux would look for a single file whose name contains a
+	// backslash, so the same memory would report `source-missing` purely because
+	// the worktree changed platform. Backslash is a separator on both here, which
+	// is also how the scope check in access.ts compares prefixes.
+	const absolute = path.resolve(rootAbsolute, relPath.split("\\").join("/"));
 	const relative = path.relative(rootAbsolute, absolute);
 	if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
 		throw new Error(`outside-root: ${JSON.stringify(relPath)}`);
