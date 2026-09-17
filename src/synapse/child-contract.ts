@@ -1,10 +1,11 @@
 import * as os from "node:os";
 import { getAgentDir } from "../shared/utils.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resolveSynapseConfig, type UnvalidatedJson } from "./config.ts";
+import { representationIdOf, resolveSynapseConfig, type UnvalidatedJson } from "./config.ts";
 import { resolveLaunchContract, type LaunchContract } from "./lifecycle.ts";
 import { deriveNamespaceId, resolveStorageRoot } from "./namespace.ts";
 import { registerSynapseTools, type SynapseToolHost, type SynapseToolsRegistration } from "./register-tools.ts";
+import { capabilityForAgent } from "./roles.ts";
 
 /**
  * The SYNAPSE contract a delegated child receives.
@@ -23,6 +24,8 @@ const MUTATING_TOOLS = new Set(["bash", "edit", "powershell", "write"]);
 
 export type SynapseChildContract = {
 	agent: string;
+	/** Budget for the recalled memory section the child is handed at launch. */
+	contextBudgetBytes: number;
 	contract: LaunchContract;
 	runId: string;
 	sessionId: string;
@@ -72,18 +75,22 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 	// back, turning a stored observation into an integrity error later.
 	const runId = input.runId.trim().length > 0 ? input.runId : "unattributed-run";
 	const sessionId = input.sessionId.trim().length > 0 ? input.sessionId : "unattributed-session";
+	const agent = input.agentName.trim().length > 0 ? input.agentName : "unattributed-agent";
+	const representationId = representationIdOf(config);
 	return {
-		agent: input.agentName.trim().length > 0 ? input.agentName : "unattributed-agent",
+		agent,
+		contextBudgetBytes: config.contextBudgetBytes,
 		contract: resolveLaunchContract({
-			// Capability and corpus identity become meaningful with the state plane;
-			// until then they are stable placeholders that still take part in the
-			// contract id, so a later change to either is visible as a new contract.
-			capabilityId: "0".repeat(64),
+			// The capability is the receiving role's own declaration, so the contract
+			// id changes when what the child can do changes. Corpus identity becomes
+			// meaningful with the state plane; until then it is a stable placeholder
+			// that still takes part in the contract id.
+			capabilityId: capabilityForAgent({ agent, childTools: input.childTools, representationId }).capabilityId,
 			contextRefs: [],
 			corpusSnapshotId: "unset",
 			mode: config.mode,
 			namespaceId: deriveNamespaceId(input.cwd),
-			representationId: config.embedding === null ? "unavailable" : `${config.embedding.provider}/${config.embedding.model}/${config.embedding.dim}`,
+			representationId,
 			scope: { pathPrefixes: [""], write: childMayWrite(input.childTools) },
 			storageRoot: resolved.root,
 		}),
@@ -100,7 +107,7 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 	let operations = 0;
 	return registerSynapseTools(pi, {
 		config: {
-			contextBudgetBytes: 8192,
+			contextBudgetBytes: contract.contextBudgetBytes,
 			embedding: null,
 			maxObjectBytes: 1024 * 1024,
 			memory: "project",

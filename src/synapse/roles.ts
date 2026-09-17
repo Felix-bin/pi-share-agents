@@ -1,0 +1,102 @@
+import { describeCapability, type CapabilityDeclaration, type CapabilityRecord, type SynapseAction, type SynapseEncoding } from "./capability.ts";
+
+/**
+ * The collaboration roles and the capability each one declares.
+ *
+ * The four roles are the ones the task statement names — planning, retrieval,
+ * execution and summarisation — and they exist here rather than only as prompt
+ * files because negotiation needs to know what a peer can do before the peer is
+ * launched. An agent file describes behaviour to a model; this describes the
+ * same agent to the protocol.
+ *
+ * Two properties are deliberately not read from the agent file. `consumesState`
+ * is derived from the tools the child was actually granted, because a role that
+ * merely claims to understand vectors would make negotiation report a state path
+ * that cannot exist. And an agent this module does not know is given the plain
+ * text delegate declaration rather than a guessed one: an unknown peer is a peer
+ * whose capabilities we have not established.
+ */
+
+export const SYNAPSE_ROLES = ["planner", "retriever", "executor", "summarizer"] as const;
+
+export type SynapseRole = (typeof SYNAPSE_ROLES)[number];
+
+/**
+ * Bumped when the meaning of a declaration changes rather than its contents.
+ * It enters the capability id, so two peers running different versions never
+ * share one record.
+ */
+export const SYNAPSE_CONSUMER_VERSION = 1;
+
+/**
+ * Tools whose presence means the child can consume a decoded state. Empty in
+ * this build: no tool decodes a vector yet, so every declaration reports
+ * `consumesState: false` and negotiation falls back to text for a stated
+ * reason instead of claiming a vector path.
+ */
+export const SYNAPSE_STATE_CONSUMING_TOOLS: readonly string[] = [];
+
+type RoleSpec = {
+	actions: readonly SynapseAction[];
+	/** Encodings the role would accept if a channel for them existed. */
+	encodings: readonly SynapseEncoding[];
+};
+
+/**
+ * `delegate` is "can be given a task"; `retrieve` is "can serve a request for
+ * evidence", which is the only action a state payload can ride on. Planner and
+ * executor are therefore delegate-only: neither answers retrieval requests.
+ */
+const ROLE_SPECS = {
+	executor: { actions: ["delegate"], encodings: ["text", "float32-vector"] },
+	planner: { actions: ["delegate"], encodings: ["text"] },
+	retriever: { actions: ["delegate", "retrieve"], encodings: ["text", "float32-vector"] },
+	summarizer: { actions: ["delegate"], encodings: ["text", "float32-vector"] },
+} satisfies Record<SynapseRole, RoleSpec>;
+
+/** The declaration used for any agent outside the four roles, including upstream's. */
+const GENERIC_SPEC: RoleSpec = { actions: ["delegate"], encodings: ["text"] };
+
+export function isSynapseRole(agent: string): agent is SynapseRole {
+	return SYNAPSE_ROLES.some((role) => role === agent);
+}
+
+/** True when the granted tools include one that decodes a state payload. */
+export function consumesState(childTools: readonly string[]): boolean {
+	return childTools.some((tool) => SYNAPSE_STATE_CONSUMING_TOOLS.includes(tool));
+}
+
+export type CapabilityForAgentInput = {
+	agent: string;
+	childTools: readonly string[];
+	representationId: string;
+};
+
+export function capabilityForAgent(input: CapabilityForAgentInput): CapabilityRecord {
+	const spec = isSynapseRole(input.agent) ? ROLE_SPECS[input.agent] : GENERIC_SPEC;
+	const declaration: CapabilityDeclaration = {
+		actions: spec.actions,
+		agent: input.agent,
+		consumesState: consumesState(input.childTools),
+		consumerVersion: SYNAPSE_CONSUMER_VERSION,
+		encodings: spec.encodings,
+		representationId: input.representationId,
+	};
+	return describeCapability(declaration);
+}
+
+/**
+ * The parent session's own declaration. It delegates and it can answer a
+ * retrieval request out of shared memory, but it holds no state-decoding tool
+ * either, so it cannot be the peer that makes a vector path appear.
+ */
+export function hostCapability(representationId: string): CapabilityRecord {
+	return describeCapability({
+		actions: ["delegate", "retrieve"],
+		agent: "parent",
+		consumesState: false,
+		consumerVersion: SYNAPSE_CONSUMER_VERSION,
+		encodings: ["text"],
+		representationId,
+	});
+}

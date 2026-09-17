@@ -112,6 +112,8 @@ import {
 	type ChildWatchdogStatusEvent,
 } from "../../watchdog/child-status.ts";
 import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../shared/child-launch.ts";
+import { closeChildDelegation, openChildDelegation } from "../shared/synapse-delegation.ts";
+import type { OpenDelegation } from "../../synapse/delegation.ts";
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 
 const artifactOutputByResult = new WeakMap<SingleResult, string>();
@@ -1385,6 +1387,9 @@ async function runSingleAttempt(
 			appendRecentOutput(progress, [`Foreground detach callback failed: ${error instanceof Error ? error.message : String(error)}`]);
 		}
 
+		// Declared outside the attempt so the failure path closes the same
+		// delegation the success path would have closed.
+		let delegation: OpenDelegation | null = null;
 		void (async () => {
 			try {
 				const input = createReportedChildSessionInput(launch, shared.transcriptWriter);
@@ -1416,9 +1421,30 @@ async function runSingleAttempt(
 				if (shared.readonlyExpected && (!actualReadonlyModel || actualReadonlyModel.fullId !== shared.readonlyModel
 					|| actualReadonlyModel.api !== shared.readonlyExpected.api || created.modelId !== shared.readonlyModel || abortedBySignal || interruptedByControl || result.timedOut
 					|| !shared.readonlyHandoffAllowed?.())) throw new Error("Read-only continuation handoff vetoed.");
-				await created.prompt(`Task: ${task}`);
+				const message = `Task: ${task}`;
+				delegation = openChildDelegation({
+					childTools: toolPlan.declaredBuiltinTools,
+					cwd: options.cwd ?? runtimeCwd,
+					message,
+					receiverSessionId: created.sessionId,
+					runtime: input.runtime,
+				});
+				await created.prompt(delegation?.prompt ?? message);
+				closeChildDelegation(delegation, {
+					cancelled: abortedBySignal || interruptedByControl,
+					finalOutput: result.finalOutput ?? "",
+					timedOut: result.timedOut === true,
+					usage: result.usage,
+				});
 				settle(undefined);
 			} catch (error) {
+				closeChildDelegation(delegation, {
+					cancelled: abortedBySignal || interruptedByControl,
+					cause: error,
+					finalOutput: result.finalOutput ?? "",
+					timedOut: result.timedOut === true,
+					usage: result.usage,
+				});
 				settle(error ?? new Error("Child session failed."));
 			}
 		})();

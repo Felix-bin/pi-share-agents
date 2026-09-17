@@ -3,6 +3,10 @@
 .pi-subagents/
 .DS_Store
 node_modules/
+# The pi-coding-agent test shim carries hand-written peer-package stubs under its
+# own node_modules. They are fixtures, not installed packages: without them a
+# clean checkout cannot resolve the host peer aliases the detached runner needs.
+!test/fixtures/pi-coding-agent-shim/node_modules/
 .fallow/
 tmp/
 

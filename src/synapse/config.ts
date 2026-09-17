@@ -144,6 +144,17 @@ function resolveEmbedding(embedding: SynapseEmbeddingConfig): SynapseEmbeddingCo
 	return { ...embedding };
 }
 
+/**
+ * The representation two peers must agree on before a state payload can mean
+ * the same thing to both. Derived from configuration alone so the same settings
+ * always produce the same identity, and reported as `unavailable` rather than
+ * as an empty string when no embedding is configured: peers must fail to agree
+ * on a representation that does not exist.
+ */
+export function representationIdOf(config: SynapseConfig): string {
+	return config.embedding === null ? "unavailable" : `${config.embedding.provider}/${config.embedding.model}/${config.embedding.dim}`;
+}
+
 export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = os.homedir()): SynapseConfig {
 	const raw = value ?? {};
 	if (!rawConfigValidator.Check(raw)) reportInvalid(raw);

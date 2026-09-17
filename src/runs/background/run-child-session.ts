@@ -23,6 +23,8 @@ import { formatSubagentModelVerificationError } from "../shared/model-fallback.t
 import { isMutatingTool, resolveCurrentPath } from "../shared/long-running-guard.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, toolTimeoutCallKey } from "../shared/tool-timeout.ts";
 import { createReportedChildSessionInput, type InProcessChildLaunch } from "../shared/child-launch.ts";
+import { closeChildDelegation, openChildDelegation } from "../shared/synapse-delegation.ts";
+import type { OpenDelegation } from "../../synapse/delegation.ts";
 import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
 import { getReadonlySessionEvidence, requestReadonlySessionEvidence, type SettledReadonlyEvidence } from "../shared/readonly-session-evidence.ts";
@@ -634,6 +636,9 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 			abortChild();
 		});
 
+		// Declared outside the attempt so the failure path closes the same
+		// delegation the success path would have closed.
+		let delegation: OpenDelegation | null = null;
 		void (async () => {
 			try {
 				const continuation = input.readonlyContinuation;
@@ -689,11 +694,31 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				});
 				if (interrupted || timedOut || stopped) abortChild();
 				checkContinuation();
-				await created.prompt(input.prompt);
+				delegation = openChildDelegation({
+					childTools: input.launch.toolPlan.declaredBuiltinTools,
+					cwd: createInput.cwd,
+					message: input.prompt,
+					receiverSessionId: created.sessionId,
+					runtime: createInput.runtime,
+				});
+				await created.prompt(delegation?.prompt ?? input.prompt);
 				promptSettled = true;
+				closeChildDelegation(delegation, {
+					cancelled: interrupted || stopped,
+					finalOutput: getFinalOutput(messages),
+					timedOut,
+					usage,
+				});
 				settle(undefined);
 			} catch (promptError) {
 				promptSettled = true;
+				closeChildDelegation(delegation, {
+					cancelled: interrupted || stopped,
+					cause: promptError,
+					finalOutput: getFinalOutput(messages),
+					timedOut,
+					usage,
+				});
 				settle(promptError ?? new Error("Child session failed."));
 			}
 		})();
