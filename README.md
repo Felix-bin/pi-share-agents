@@ -1,39 +1,109 @@
 # pi-share-agents
 
-> **本仓库是一个 fork。** `pi-share-agents` 派生自
-> [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) 的 `47bae7f7`
-> （v0.67.0），上游为 MIT 许可，见 [LICENSE](./LICENSE)。
-> 上游历史未一并保留：本仓库只有一个 `init` commit，其中同时包含上游代码树与本项目的新增内容，
-> 新增范围见[本 fork 新增了什么](#本-fork-新增了什么)。
+**让一个 Pi 会话委派多个子 Agent，并在任务之间复用可追溯、可校验的发现。**
 
-上游 `pi-subagents` 让 Pi 把工作委派给专注的子 Agent。本 fork 在此之上加入
-**pi-agent-share**（代码与配置中称 `SYNAPSE`）：让这些 Agent 之间能够共享已经查明的事实，
-而不是各自重新发现一遍。
+`pi-share-agents` 基于 `pi-subagents`，新增共享记忆层 **pi-agent-share**（代码与配置中称为
+`SYNAPSE`）。父会话负责协调和决策，子 Agent 负责有明确边界的工作；共享记忆保留结论的来源，
+来源文件发生变化时，相关记忆会被标记失效，包括尚未提交的修改。
 
-具体而言，它提供一套**可核验的共享记忆**——内容寻址的正文、不可变记录、基于来源指纹的有效性、
-授权投影——以及围绕它的若干契约：由宿主签发、携带冻结快照的信封，面向非文本状态交换的能力协商，
-前台与后台共用的单一启动契约，以及只追加的逐项计量日志。
+- **复用证据**：子 Agent 可检索和记录发现，宿主在委派时自动召回授权范围内的记忆。
+- **控制上下文**：支持传递正文，或只传递引用与摘要；记忆预算不截断用户任务。
+- **保留运行证据**：前台和后台共用启动契约，记录投递、用量与终态，失败不会记为成功。
 
-`synapse.mode` 默认为 `off`。关闭时不注册任何工具、不创建任何目录，因此**未经修改的上游行为**
-既是产品默认值，也是受控对比实验可以直接对照的控制条件。
+共享记忆默认关闭，`/synapse-setup` 始终可用。当前检索采用关键词与标签，**尚不支持语义检索、
+向量或残差状态传递**；使用现有共享记忆功能无需嵌入 API 密钥。
 
----
+> 本仓库派生自 [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) 的
+> `47bae7f7`（v0.67.0），未导入完整上游提交历史。项目边界见 [VISION.md](./VISION.md)，
+> 上游与本 fork 均采用 [MIT 许可证](./LICENSE)。
+
+[快速开始](#快速开始) · [运行模式](#运行模式) · [协作角色](#四个协作角色) ·
+[实现状态](#实现状态) · [工具](#两个工具) · [配置](#配置) ·
+[测试](#测试与门禁) · [已知缺口](#已知缺口) · [上游文档](#上游能力子-agent-委派)
+
+## 快速开始
+
+### 1. 准备环境并加载扩展
+
+准备 Node.js 24（与主测试流程一致）、npm，以及已配置模型、可正常启动的 Pi。
+在本仓库根目录安装依赖，再临时加载扩展和提示模板：
+
+```bash
+npm ci --ignore-scripts
+pi -e ./index.ts --prompt-template ./prompts
+```
+
+此加载方式不做全局安装，也不把扩展加入 Pi 的 `settings.json`。在其他项目使用时，
+先进入目标项目目录，再将两处相对路径改为本仓库的绝对路径。内置角色由扩展发现；
+`--prompt-template` 用于加载 `/role-pipeline` 等快捷命令。
+
+仓库内的 `install.mjs` 仍指向上游仓库；体验本 fork 请使用上面的本地加载方式。
+
+### 2. 开启共享记忆
+
+在 Pi 会话中执行：
+
+```text
+/synapse-setup synapse
+```
+
+随后**退出 Pi，再用相同加载命令启动新会话**。工具在扩展激活时注册，修改模式不会改变当前会话的工具列表。
+开启操作会更新 `<agent dir>/extensions/subagent/config.json`；`<agent dir>` 默认是 `~/.pi/agent`。
+
+在新会话中查看状态：
+
+```text
+/synapse-setup
+```
+
+默认配置下应显示 `mode: synapse`、`memory: project` 和当前项目的存储位置。
+`semantic: unavailable` 是当前版本的正常状态；若曾显式设置 `memory: off`，需按[配置](#配置)调整为 `project`。
+
+### 3. 运行一次协作任务
+
+```text
+/role-pipeline 梳理本项目的测试入口，运行一个相关测试，并总结验证结果与尚未验证的部分。
+```
+
+也可以直接用自然语言委派：
+
+```text
+让 retriever 查找测试入口，将可复用的发现写入共享记忆并注明 sourcePath；
+然后让 summarizer 先检索这些记忆，再总结测试覆盖范围与不确定之处。
+```
+
+工具调用中可检查 `synapse_write` 返回的 `memoryId`，以及后续 `synapse_read` 的检索结果。
+带 `sourcePath` 的记忆会随来源字节变化失效；没有可用记忆时，子 Agent 仍可正常执行任务。
+
+关闭共享记忆可执行 `/synapse-setup off`，同样需重启 Pi 生效；已有记忆保留在磁盘上。
+
+## 运行模式
+
+| `mode` | 默认 `memory` | 共享记忆行为 | 用途 |
+|--------|---------------|--------------|------|
+| `off` | `off` | 不注册共享记忆工具，不创建共享记忆存储。 | 使用原有委派能力。 |
+| `text` | `off` | 默认不启用记忆；显式设置 `memory: "project"` 后，委派时携带召回记忆的正文。 | 文本基线与正文传递对比。 |
+| `synapse` | `project` | 启用记忆，委派时携带引用与摘要，子 Agent 可按需读取正文。 | 跨 Agent、跨任务复用发现。 |
+
+如需对比正文与引用两种传递方式，分别使用 `text` / `synapse`，并将两组的 `memory` 都设为
+`project`，保持授权范围、任务与记忆数据一致。`synapse` 模式仍通过文本传递引用与摘要，
+不代表启用了向量传输，也不预设 Token 节省比例。
 
 ## 本 fork 新增了什么
 
 | 路径 | 内容 |
 |------|------|
-| `src/synapse/**`（22 个模块，约 3.9k 行） | pi-agent-share 的全部实现，逐模块职责见[模块地图](#模块地图)。 |
+| [`src/synapse/`](./src/synapse) | pi-agent-share 的实现，逐模块职责见[模块地图](#模块地图)。 |
 | `src/runs/shared/synapse-delegation.ts` | 前台与后台共用的委派接缝调用点。 |
 | `agents/{planner,retriever,executor,summarizer}.md`、`prompts/role-pipeline.md` | 四个协作角色与流水线快捷命令。 |
-| `test/unit/synapse-*.test.ts`（21 个文件） | 锚定规范验收标准（AC）的行为测试。 |
+| `test/unit/synapse-*.test.ts` | 锚定规范验收标准（AC）的行为测试。 |
 | `test/integration/synapse-shared-memory.test.ts` | 跨 Agent 复用、来源失效、授权、存储完整性。 |
 | `tsconfig.synapse-tests.json` | 对新增测试做类型检查——上游 `tsconfig.json` 的 `include` 只覆盖 `src/`。 |
-| 7 个上游文件 | [接入点](#与上游的接入点)。除此之外未改动任何上游代码。 |
+| 委派与扩展生命周期文件 | 主要运行时改动见[接入点](#与上游的接入点)。 |
 
 ## 实现状态
 
-按子系统如实列出，因为"已实现"与"已接入真实链路"不是一回事。
+以下区分已接入委派链路的能力与尚未实现的协议能力。共享记忆相关行为以 `mode` 和 `memory` 均开启为前提。
 
 | 子系统 | 状态 |
 |--------|------|
@@ -49,40 +119,11 @@
 
 完整的已知缺口见[下文](#已知缺口)。
 
-## 快速开始
-
-从一个 checkout 临时加载扩展（不做全局安装，也不写入 `~/.pi/agent/settings.json`）：
-
-```bash
-pi -e /path/to/pi-share-agents
-```
-
-共享记忆默认 `off`。开启后需要**新开一个会话**——工具是在扩展激活时注册的，因此模式变更永远不会
-影响做出该变更的那个会话：
-
-```text
-/synapse-setup synapse
-```
-
-不带参数执行 `/synapse-setup` 会报告当前模式、存储位置、已有记忆条数，以及是否能看到嵌入密钥。
-等价的手工修改位于 `<agent dir>/extensions/subagent/config.json`：
-
-```json
-{ "synapse": { "mode": "synapse" } }
-```
-
-之后照常用自然语言委派即可。子 Agent 发现值得保留的结论时写入记忆，后续的子 Agent 在重做之前先检索：
-
-```text
-Use scout to map the auth flow, then have worker implement the fix.
-```
-
 ## 四个协作角色
 
-赛题要求至少 3 个 Agent 覆盖规划 / 检索 / 执行 / 总结。本 fork 按 Python 版
-SYNAPSE 的角色划分补齐了四个内置 Agent，与上游原有的 7 个内置 Agent **并存**：
+本 fork 新增四个内置角色，覆盖规划、取证、执行与总结，与上游角色并存：
 
-| 角色 | 职责 | 声明的动作 | 工具 |
+| 角色 | 职责 | 声明的动作 | 主要工具 |
 |------|------|-----------|------|
 | `planner` | 把一个请求拆成 3–6 个可验收的步骤，并指名由哪个角色执行 | `delegate` | read, grep, find, ls, write |
 | `retriever` | 从工作树与共享记忆中取证，区分"观察到的"与"推断的" | `delegate`、`retrieve` | read, grep, find, ls, write |
@@ -92,6 +133,9 @@ SYNAPSE 的角色划分补齐了四个内置 Agent，与上游原有的 7 个内
 `/role-pipeline` 按 `planner → retriever → executor → summarizer` 顺序跑完整条流水线，
 每个阶段是独立子会话，交接的是产物而不是对话。
 
+四个角色均可通过 `contact_supervisor` 上报需要决策的问题。`executor` 按角色约定负责运行命令、
+报告结果，不编辑源码；实现类任务可交给上游 `worker`。
+
 角色不只是提示词：`src/synapse/roles.ts` 为每个角色声明能力（动作、编码、是否具备
 消费状态的工具），委派前由 `capability.ts` 做交集协商，能力 ID 进入启动契约与信封。
 本版本没有任何工具能消费解码后的状态，因此 `consumesState` 一律为 `false`，协商结果
@@ -100,12 +144,12 @@ SYNAPSE 的角色划分补齐了四个内置 Agent，与上游原有的 7 个内
 
 ## 委派消息流
 
-每次委派子 Agent（前台与后台同一条代码路径）都会经过 `src/synapse/delegation.ts` 的接缝：
+启用共享记忆后，委派子 Agent 的前台与后台路径都会调用 `src/synapse/delegation.ts`：
 
-1. **协商**：接收方角色声明 ∩ 主会话声明；接收方无可读范围时直接拒绝，此时这次委派
-   与未安装本扩展完全一致。
+1. **协商**：接收方角色声明 ∩ 主会话声明；接收方无可读范围时拒绝共享记忆交接，
+   子 Agent 的原有委派流程继续执行。
 2. **召回**：按子 Agent **自己的**授权范围检索共享记忆，`text` 模式携带正文、`synapse`
-   模式只携带引用与摘要——同一批记忆、同一条链路，字节数可直接对比。
+   模式只携带引用与摘要。控制记忆数据与授权范围一致后，可以比较两种传递方式的字节数。
 3. **冻结与信封**：把召回到的记忆 ID 冻结进快照，生成绑定请求 / 运行 / 双方会话身份的信封。
 4. **计量**：`task-span` / `memory-query` / `memory-reuse` / `message-delivered`（文本字节 +
    信封字节）写入只追加日志 `<storageRoot>/metering/<runId>.jsonl`。
@@ -142,22 +186,36 @@ SYNAPSE 的角色划分补齐了四个内置 Agent，与上游原有的 7 个内
 
 ## 配置
 
+配置文件位于 `<agent dir>/extensions/subagent/config.json`。手工启用共享记忆时，将以下
+`synapse` 块合并到现有配置，保留其他配置项，然后重启 Pi：
+
+```json
+{
+  "synapse": {
+    "mode": "synapse",
+    "memory": "project",
+    "contextBudgetBytes": 8192
+  }
+}
+```
+
 所有配置项都在扩展配置的 `synapse` 块下。未知键会被**拒绝**而不是忽略——被静默丢掉的键会让一次
 运行的实际条件与它的清单对不上。
 
 | 键 | 默认值 | 含义 |
 |----|--------|------|
-| `mode` | `off` | `off`（上游行为，不注册任何东西）/ `text`（基线：正文以文本携带）/ `synapse`（只带引用与摘要）。 |
-| `memory` | 跟随 `mode` | `off` / `project`。`mode` 为 `off` 时必须为 `off`。 |
+| `mode` | `off` | `off` / `text` / `synapse`，具体行为见[运行模式](#运行模式)。关闭时仍保留 `/synapse-setup` 命令。 |
+| `memory` | `synapse` 下为 `project`，其他为 `off` | `off` / `project`。`mode` 为 `off` 时必须为 `off`；`text` 下启用记忆需显式设为 `project`。 |
 | `storageRoot` | `<agent dir>/synapse/<namespaceId>` | 绝对路径或 `~/...`。覆盖它是把一条实验序列的记忆与另一条隔开的方式。 |
 | `contextBudgetBytes` | `8192` | 预算**只**作用于注入的记忆段。它可以裁掉召回的材料，但永远不会缩短用户任务及其关键约束。 |
 | `maxObjectBytes` | `1048576` | 内容存储接受的单个正文上限。 |
 | `stateRecovery` | `resend-then-text` | `resend` / `resend-then-text`。 |
-| `embedding` | 未设置 | `{ provider, model, dim, endpoint, keyEnv }`。只接受 `siliconflow`；测试专用的 provider 名会被拒绝，以免一次运行声称做了语义检索、实际测的是哈希。 |
+| `embedding` | 未设置 | `{ provider, model, dim, endpoint, keyEnv }`。只接受 `siliconflow`；当前仅解析配置，尚不调用嵌入服务。 |
 
 嵌入密钥**永远不属于**这份配置。它来自 `SILICONFLOW_API_KEY`（始终优先），或来自
-`/synapse-setup key`——后者在对话框中询问，并以仅属主可读的方式存放在配置之外。把密钥作为命令参数
-粘贴会被拒绝且不回显，因为会话转录恰恰是它最不该出现的地方。
+`/synapse-setup key`——后者在对话框中询问，并存放在配置之外；支持权限控制的文件系统会设置为仅属主可读，
+无法强制执行时会明确提示。不要把密钥粘贴到命令参数中：即使命令拒绝处理且不回显，输入仍可能进入会话记录。
+当前版本无需配置嵌入密钥。
 
 **存储布局。** `namespaceId` 为 `sha256(规范化工作树路径)[:16]`；存储目录下保留 `namespace.json`
 标记，使一个哈希目录可以被人追溯回它的工作树；属于其他工作树的存储会报 `namespace-mismatch`，
@@ -239,14 +297,14 @@ node --experimental-strip-types --import ./test/support/register-loader.mjs --te
 # 对 src 与新增测试做类型检查
 npx tsc --noEmit -p tsconfig.synapse-tests.json
 
-# 上游测试套件
-npm run test:all && npm run typecheck
+# 完整测试套件（含本 fork 测试）与源码类型检查
+npm run test:all
+npm run typecheck
 ```
 
-最近一次实测：2026-09-17，Node 24.11.1，Windows——**单元测试 336 通过 / 集成测试 15 通过 / 0 失败**，
-类型检查通过；`oxlint` 携仓库的 `anti-slop` 插件对 `src/synapse/**`、`src/runs/shared/synapse-delegation.ts`
-与 `test/**/synapse-*` 报告 **0 违规**。上游完整单元测试套件 3671 项中有约 20 项依赖环境的既有失败
-（Windows 符号链接权限、外部进程超时等），在改动前后同样复现，逐批记录而不作静默吸收。
+测试结果以当前提交的实际运行输出为准。[主测试流程](./.github/workflows/test.yml) 使用 Node.js 24，
+覆盖 Ubuntu 与 Windows；Windows 的单元和集成测试使用 `--test-concurrency=2`。
+复现失败时应保留平台、Node 版本、失败用例与日志，不能仅以“环境问题”认定通过。
 
 ## 已知缺口
 
@@ -263,7 +321,7 @@ npm run test:all && npm run typecheck
 
 ## 上游能力：子 Agent 委派
 
-以下全部来自上游 `pi-subagents`，未作改动且依然可用。Pi 是父会话，子 Agent 是一个有明确职责的
+本 fork 保留上游 `pi-subagents` 的委派能力。Pi 是父会话，子 Agent 是一个有明确职责的
 子 Pi 会话。前台子 Agent 在对话中流式呈现；后台子 Agent 运行在分离的 runner 进程中，可稍后查看。
 安装扩展本身不会自动启动任何东西——它只是给 Pi 一个委派工具。
 
