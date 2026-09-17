@@ -23,21 +23,42 @@
 
 ## 快速开始
 
-### 1. 准备环境并加载扩展
+### 1. 安装扩展
 
-准备 Node.js 24（与主测试流程一致）、npm，以及已配置模型、可正常启动的 Pi。
-在本仓库根目录安装依赖，再临时加载扩展和提示模板：
+前置条件：已配置模型、可正常启动的 Pi（安装流程在 0.85.1 上验证过），以及 `PATH` 中可用的
+`npm`——Pi 安装 git 包时会自己执行 `npm install --omit=dev` 拉取运行时依赖。
+
+```bash
+pi install git:github.com/Felix-bin/pi-share-agents
+```
+
+Pi 会把仓库克隆到 `~/.pi/agent/git/github.com/Felix-bin/pi-share-agents`，安装运行时依赖，
+并把这个源写入 `~/.pi/agent/settings.json`。`package.json` 中的 `pi` 清单声明了扩展、skills
+与提示模板，因此 `/role-pipeline` 等快捷命令随安装一并注册，不需要再传 `--prompt-template`；
+内置角色由扩展自行发现。安装完成后新开的 Pi 会话即可使用委派工具（`subagent`、`bg_wait`、
+`subagent_supervisor`）；共享记忆工具需要先完成下一步。
+
+| 场景 | 命令 |
+|------|------|
+| 只对当前项目安装（写入 `.pi/settings.json`） | `pi install -l git:github.com/Felix-bin/pi-share-agents` |
+| 钉住某个 tag 或 commit | `pi install git:github.com/Felix-bin/pi-share-agents@<tag\|commit>` |
+| 不落盘试用一次（临时目录，不改 settings） | `pi -e git:github.com/Felix-bin/pi-share-agents` |
+| 卸载 | `pi remove git:github.com/Felix-bin/pi-share-agents` |
+
+git 源的 ref 是钉住的：`pi update --extensions` 只把克隆对齐到已配置的 ref，不会自行升到更新的提交；
+换版本用 `pi install ...@<新 ref>`。
+
+**从源码开发时**，改用临时加载，不写入 `settings.json`：
 
 ```bash
 npm ci --ignore-scripts
 pi -e ./index.ts --prompt-template ./prompts
 ```
 
-此加载方式不做全局安装，也不把扩展加入 Pi 的 `settings.json`。在其他项目使用时，
-先进入目标项目目录，再将两处相对路径改为本仓库的绝对路径。内置角色由扩展发现；
-`--prompt-template` 用于加载 `/role-pipeline` 等快捷命令。
-
-仓库内的 `install.mjs` 仍指向上游仓库；体验本 fork 请使用上面的本地加载方式。
+在其他项目目录里这样加载时，把两处相对路径换成本仓库的绝对路径。仓库自带的 `install.mjs`
+（`npx pi-subagents`）是上游遗留的安装脚本，把仓库克隆到 `~/.pi/agent/extensions/subagent`；
+它已指向本 fork，但推荐的安装方式仍是上面的 `pi install`——该目录一旦存在且不是本仓库的克隆
+（例如只放了 `config.json`），脚本会拒绝写入并要求先手工清理。
 
 ### 2. 开启共享记忆
 
@@ -47,7 +68,8 @@ pi -e ./index.ts --prompt-template ./prompts
 /synapse-setup synapse
 ```
 
-随后**退出 Pi，再用相同加载命令启动新会话**。工具在扩展激活时注册，修改模式不会改变当前会话的工具列表。
+随后**退出 Pi，重新启动一个新会话**（源码开发方式则重复上面的 `pi -e` 命令）。
+工具在扩展激活时注册，修改模式不会改变当前会话的工具列表。
 开启操作会更新 `<agent dir>/extensions/subagent/config.json`；`<agent dir>` 默认是 `~/.pi/agent`。
 
 在新会话中查看状态：
