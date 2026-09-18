@@ -4,7 +4,19 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { SynapseMode } from "../../src/synapse/config.ts";
-import { meteringLogPath, modelUsageFrom, openDelegation, receiptPath, type DelegationIdentity, type OpenDelegation } from "../../src/synapse/delegation.ts";
+import {
+	meteringLogPath,
+	modelUsageFrom,
+	openDelegation,
+	openRetrieveDelegation,
+	receiptPath,
+	type DelegationIdentity,
+	type OpenDelegation,
+} from "../../src/synapse/delegation.ts";
+import { openChildRetrieveDelegation } from "../../src/runs/shared/synapse-delegation.ts";
+import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
+import { createSiliconFlowEmbedder } from "../../src/synapse/embedding.ts";
+import { createMeteringLog } from "../../src/synapse/metering.ts";
 import { resolveLaunchContract, type LaunchContract } from "../../src/synapse/lifecycle.ts";
 import { createMemoryService } from "../../src/synapse/memory-service.ts";
 import { aggregateMetering, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
@@ -239,5 +251,35 @@ describe("synapse delegation", () => {
 		assert.equal(receipt.accepted, false);
 		assert.equal(receipt.outcome, "cancelled");
 		assert.equal(aggregateMetering(events()).errors.cancelled, 1);
+	});
+});
+
+describe("synapse retrieve seam", () => {
+	const embeddingConfig = { dim: 8, endpoint: "http://127.0.0.1:9/v1/embeddings", keyEnv: "SYNAPSE_TEST_KEY", model: "BAAI/bge-m3", provider: "siliconflow" };
+
+	it("keeps the state plane off when the contract has no pinned corpus", async () => {
+		// The representation matches the embedder so the corpus guard is the only one left to fire.
+		const embedder = createSiliconFlowEmbedder(embeddingConfig, { key: "stub" });
+		const unset = { ...contractFor("synapse"), corpusSnapshotId: "unset", representationId: embedder.representationId };
+		await assert.rejects(
+			openRetrieveDelegation({
+				contract: unset,
+				deps: { log: createMeteringLog(meteringLogPath(contractFor("synapse"), RUN_ID)) },
+				embedder,
+				identity: identity({ childTools: ["read", "synapse_read"] }),
+				k: 3,
+				query: "any query",
+				worktreeRoot: worktree,
+			}),
+			/synapse\.corpusSnapshotId/,
+		);
+	});
+
+	it("bridges through openChildRetrieveDelegation or degrades to null, never loses the run", async () => {
+		// A runtime without the synapse contract returns null: upstream keeps its
+		// text behaviour, the same totality the delegate seam guarantees.
+		const embedder = createSiliconFlowEmbedder(embeddingConfig, { key: "stub" });
+		const runtime: ChildRuntimeConfig = { childIndex: 0, depth: 1, fanoutChild: false, fast: false, waitTool: { enabled: false } };
+		assert.equal(await openChildRetrieveDelegation({ childTools: ["read"], cwd: worktree, embedder, k: 3, query: "q", receiverSessionId: "sess", runtime }), null);
 	});
 });

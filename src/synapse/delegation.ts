@@ -1,13 +1,16 @@
 import * as path from "node:path";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
-import { negotiate, type NegotiationResult } from "./capability.ts";
-import { buildEnvelope, freezeSnapshot, type Envelope } from "./envelope.ts";
-import { classifySynapseError } from "./errors.ts";
+import { negotiate, type CapabilityDeclaration, type NegotiationResult, type TextFallbackReason } from "./capability.ts";
+import { createContentStore } from "./content-store.ts";
+import { type Embedder, SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
+import { buildEnvelope, freezeSnapshot, type Envelope, type StateRef } from "./envelope.ts";
+import { classifySynapseError, type SynapseErrorClassification } from "./errors.ts";
 import { buildReceipt, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
 import type { LaunchContract } from "./lifecycle.ts";
-import { createMemoryService, type MemoryService } from "./memory-service.ts";
+import { createMemoryService, type MemoryService, type SearchResult } from "./memory-service.ts";
 import { createMeteringLog, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
-import { capabilityForAgent, hostCapability } from "./roles.ts";
+import { capabilityForAgent, hostCapability, SYNAPSE_CONSUMER_VERSION } from "./roles.ts";
+import type { StateRetrievalResult } from "./state-retrieval.ts";
 
 /**
  * The delegation seam: where a task actually leaves the parent for a child.
@@ -99,6 +102,10 @@ export function createDelegationDeps(input: OpenDelegationInput): DelegationDeps
 	return {
 		log: createMeteringLog(meteringLogPath(input.contract, input.identity.runId)),
 		service: createMemoryService({
+			// The pinned corpus travels with the contract, so the delegated child's
+			// service can consume a state the envelope carries ("unset" keeps the
+			// state plane off, matching what the child was launched with).
+			corpusSnapshotId: input.contract.corpusSnapshotId === "unset" ? null : input.contract.corpusSnapshotId,
 			provenance: {
 				agent: input.identity.agent,
 				attempt: input.identity.attempt,
@@ -143,6 +150,8 @@ function candidatesFor(service: MemoryService, message: string): HandoffCandidat
 }
 
 const MEMORY_SECTION_HEADER = "Shared memory recalled for this task (read-only unless you record a new finding):";
+
+const CONTENT_ID_PATTERN = /^[0-9a-f]{64}$/;
 
 function promptWith(message: string, handoff: HandoffContext): string {
 	if (handoff.text.length === 0) return message;
@@ -270,4 +279,371 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 		prompt,
 		receiptPath: target,
 	};
+}
+
+/**
+ * ---- P3-5: the retrieve action over the state plane ----
+ *
+ * A retrieve delegation is the one place a non-text payload may cross: the
+ * sender embeds the query, publishes the vector bytes to the CAS and names
+ * them in the envelope's stateRef; the receiver decodes exactly those bytes
+ * and ranks the pinned corpus with them (P3-4). Every step is metered
+ * separately, because only a consume proves the state was used.
+ */
+
+/** Who is sending the retrieve request; the child tools decide the negotiation. */
+export type SendIdentity = DelegationIdentity;
+
+/** Who is consuming on the receiving side; bound to the envelope's own names. */
+export type ConsumeIdentity = {
+	agent: string;
+	attempt: number;
+	nodeId: string;
+	runId: string;
+	sessionId: string;
+};
+
+export type SendDeps = { log: MeteringLog };
+
+export type OpenRetrieveInput = {
+	contract: LaunchContract;
+	deps?: SendDeps;
+	/** The sender's embedding provider; must share the contract's representation. */
+	embedder: Embedder;
+	identity: SendIdentity;
+	k: number;
+	/** The query text to embed — it also travels in the envelope for text fallback. */
+	query: string;
+	worktreeRoot: string;
+};
+
+export type RetrieveSendResult =
+	| { envelope: Envelope; kind: "state"; stateRef: StateRef }
+	| { envelope: Envelope; kind: "text"; reason: TextFallbackReason };
+
+export type ConsumeDeps = {
+	/**
+	 * Present only when a text fallback may re-embed the original query here.
+	 * When `service` is injected instead of built, the caller guarantees that
+	 * service's own embedder matches this one — the fallback gate checks this
+	 * field, the fallback itself runs inside the service.
+	 */
+	embedder?: Embedder;
+	log: MeteringLog;
+	/** The sender's one permitted re-send of the original object bytes; null = cannot. */
+	resend?: () => Uint8Array | null;
+	service?: MemoryService;
+};
+
+export type ConsumeInput = {
+	contract: LaunchContract;
+	deps: ConsumeDeps;
+	envelope: Envelope;
+	/** The original query, held by the host as controlled recovery material (spec §8.2). */
+	fallbackQuery?: string;
+	identity: ConsumeIdentity;
+	k: number;
+	stateRecovery?: "resend" | "resend-then-text";
+	worktreeRoot: string;
+};
+
+export type ConsumeOutcome =
+	| { kind: "consumed"; result: StateRetrievalResult }
+	| { kind: "text-fallback"; result: SearchResult }
+	| { category: SynapseErrorClassification; kind: "failed"; reason: string }
+	| { category: SynapseErrorClassification; kind: "refused"; reason: string };
+
+/**
+ * A unit vector of the input. A zero vector cannot carry a direction at all,
+ * and neither can a non-finite one; hypot is used for the same reason the
+ * embedder itself uses it — a naive sum of squares can overflow to infinity
+ * before the sqrt.
+ */
+function unitVectorOf(vector: Float32Array, label: string): Float32Array {
+	for (const value of vector) {
+		if (!Number.isFinite(value)) {
+			throw new Error(`integrity: ${label} embedded to a non-finite value; refusing to publish it`);
+		}
+	}
+	const norm = Math.hypot(...vector);
+	if (norm === 0) throw new Error(`integrity: ${label} embedded to a zero vector; cosine is undefined`);
+	const unit = new Float32Array(vector.length);
+	for (let index = 0; index < vector.length; index += 1) unit[index] = vector[index]! / norm;
+	return unit;
+}
+
+function littleEndianBytes(vector: Float32Array): Uint8Array {
+	const buffer = Buffer.alloc(vector.length * 4);
+	for (const [index, value] of vector.entries()) buffer.writeFloatLE(value, index * 4);
+	return new Uint8Array(buffer);
+}
+
+/**
+ * Embeds the query, publishes the vector bytes to the CAS and returns the
+ * retrieve envelope carrying the stateRef. A negotiation that cannot take the
+ * vector path returns the text envelope with its reason instead — and never a
+ * state event, so a text handoff cannot be misread as a degraded state
+ * attempt.
+ */
+export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<RetrieveSendResult | null> {
+	const { contract, identity } = input;
+	// The host both asks and answers retrieval, but only the receiver needs the
+	// consuming tool; declaring float32 on the sender side is what lets the pair
+	// leave text at all.
+	const sender: CapabilityDeclaration = {
+		actions: ["delegate", "retrieve"],
+		agent: "parent",
+		consumesState: false,
+		consumerVersion: SYNAPSE_CONSUMER_VERSION,
+		encodings: ["text", "float32-vector"],
+		representationId: contract.representationId,
+	};
+	const receiver = capabilityForAgent({ agent: identity.agent, childTools: identity.childTools, representationId: contract.representationId });
+	const negotiation = negotiate({
+		action: "retrieve",
+		allowTextFallback: true,
+		mode: contract.mode,
+		receiver: receiver.declaration,
+		receiverMayRead: contract.scope.pathPrefixes.length > 0,
+		sender,
+	});
+	if (negotiation.outcome === "refused") return null;
+	const deps = input.deps ?? { log: createMeteringLog(meteringLogPath(contract, identity.runId)) };
+	const meterIdentity: MeteringIdentity = {
+		agent: identity.agent,
+		attempt: identity.attempt,
+		mode: contract.mode,
+		nodeId: identity.nodeId,
+		runId: identity.runId,
+		sessionId: identity.senderSessionId,
+		snapshotId: null,
+	};
+	const snapshot = freezeSnapshot({
+		capabilityId: negotiation.capabilityId,
+		contextRefs: [],
+		corpusSnapshotId: contract.corpusSnapshotId,
+		namespaceId: contract.namespaceId,
+		permissionProjection: { pathPrefixes: contract.scope.pathPrefixes, write: contract.scope.write },
+		representationId: contract.representationId,
+	});
+	const envelopeOf = (stateRef?: StateRef) =>
+		buildEnvelope({
+			action: "retrieve",
+			attempt: identity.attempt,
+			inputParams: { k: input.k, query: input.query },
+			nodeId: identity.nodeId,
+			ownerRunId: identity.runId,
+			receiverSessionId: identity.receiverSessionId,
+			requestId: identity.requestId,
+			runId: identity.runId,
+			senderSessionId: identity.senderSessionId,
+			snapshot,
+			stateRef,
+		});
+	if (negotiation.outcome === "text") return { envelope: envelopeOf(), kind: "text", reason: negotiation.reason };
+
+	if (input.embedder.representationId !== contract.representationId) {
+		throw new Error(
+			`representation-mismatch: the sender's embedder is ${input.embedder.representationId}, the contract pins ${contract.representationId}; refusing to publish a state no corpus can rank`,
+		);
+	}
+	// A contract without a pinned corpus cannot have a consumer that ranks
+	// anything; refusing here, before the embedding call is spent, is the same
+	// guard the receiving service applies (createDelegationDeps maps "unset" to
+	// null for exactly this reason).
+	if (contract.corpusSnapshotId === "unset") {
+		throw new Error("synapse.corpusSnapshotId is not configured; a retrieve delegation cannot publish a state no corpus can rank");
+	}
+	if (!Number.isInteger(input.k) || input.k < 1) {
+		throw new Error(`k-out-of-range: ${input.k} is not an integer >= 1`);
+	}
+	// The provider normalises on its side; normalising again is idempotent and
+	// keeps the invariant true for any embedder, per spec §8.1.
+	const embedded = await input.embedder.embedQuery(input.query);
+	const vector = unitVectorOf(embedded.vector, "the retrieve query");
+	const payload = littleEndianBytes(vector);
+	// The store is content-addressed, so the object id is the sha-256 of exactly
+	// the bytes that were sent — the digest the envelope then claims (spec §8.1).
+	const store = createContentStore(contract.storageRoot);
+	const payloadId = store.put(payload, SYNAPSE_VECTOR_MEDIA_TYPE);
+	const stateRef: StateRef = {
+		baseMemoryId: null,
+		byteLength: payload.byteLength,
+		dim: vector.length,
+		encoding: "float32-vector",
+		payloadId,
+		representationId: input.embedder.representationId,
+		sha256: payloadId,
+	};
+	deps.log.record(meterIdentity, { kind: "state-prepare", ok: true, payloadBytes: payload.byteLength, representationId: stateRef.representationId, stateId: payloadId });
+	const envelope = envelopeOf(stateRef);
+	deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, {
+		kind: "state-send",
+		ok: true,
+		payloadBytes: payload.byteLength,
+		representationId: stateRef.representationId,
+		stateId: payloadId,
+	});
+	// The envelope is control traffic like any other: its bytes count even when
+	// the payload carries no text at all (spec §10.1 control/metadata row).
+	deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, {
+		envelopeBytes: envelope.envelopeBytes,
+		kind: "message-delivered",
+		messageId: identity.requestId,
+		textBytes: 0,
+	});
+	return { envelope, kind: "state", stateRef };
+}
+
+/**
+ * Consumes a received retrieve envelope on the state plane: identity-bound to
+ * the envelope's own run and session, verified against the pinned corpus, and
+ * recovered per spec §8.2 — object problems are re-sent at most once, a failed
+ * recovery may fall back to text at most once when configured, and
+ * representation or permission failures never recover at all.
+ */
+export async function consumeRetrieveState(input: ConsumeInput): Promise<ConsumeOutcome> {
+	const wire = input.envelope.wire;
+	// The metering identity exists before any check so a refusal can still leave
+	// its trace: an append-only log is the only audit surface a rejected envelope
+	// will ever have, and a permission or configuration refusal is exactly the
+	// event an auditor must be able to see.
+	const meterIdentity: MeteringIdentity = {
+		agent: input.identity.agent,
+		attempt: input.identity.attempt,
+		mode: input.contract.mode,
+		nodeId: input.identity.nodeId,
+		runId: input.identity.runId,
+		sessionId: input.identity.sessionId,
+		snapshotId: wire.snapshotId,
+	};
+	const refuse = (category: SynapseErrorClassification, reason: string): ConsumeOutcome => {
+		input.deps.log.record(meterIdentity, { category, detail: reason, kind: "error" });
+		return { category, kind: "refused", reason };
+	};
+	if (wire.runId !== input.identity.runId || wire.receiverSessionId !== input.identity.sessionId) {
+		return refuse(
+			"permission",
+			`not-authorised: envelope names run ${wire.runId} for session ${wire.receiverSessionId}, the consumer is ${input.identity.runId}/${input.identity.sessionId}`,
+		);
+	}
+	const stateRef = wire.stateRef;
+	if (stateRef === null) {
+		return refuse("configuration", "envelope carries no stateRef: a text handoff is not consumed on the state plane");
+	}
+	if (wire.corpusSnapshotId !== input.contract.corpusSnapshotId) {
+		return refuse(
+			"configuration",
+			`namespace-mismatch: envelope corpus ${wire.corpusSnapshotId} is not the pinned ${input.contract.corpusSnapshotId}`,
+		);
+	}
+	// A malformed id would throw out of the store's own guard below the contract
+	// level; checking the shape here keeps every failure inside the outcome type.
+	if (!CONTENT_ID_PATTERN.test(stateRef.payloadId) || !CONTENT_ID_PATTERN.test(stateRef.sha256)) {
+		return refuse("integrity", `integrity: stateRef names ids that are not content ids (payload ${JSON.stringify(stateRef.payloadId.slice(0, 8))}…)`);
+	}
+	// The contract is what this session was launched with; a stateRef claiming a
+	// representation the contract does not pin is a forged or stale envelope.
+	if (stateRef.representationId !== input.contract.representationId) {
+		return refuse(
+			"representation",
+			`representation-mismatch: stateRef claims ${stateRef.representationId}, the contract pins ${input.contract.representationId}`,
+		);
+	}
+	const service =
+		input.deps.service ??
+		createMemoryService({
+			corpusSnapshotId: input.contract.corpusSnapshotId === "unset" ? null : input.contract.corpusSnapshotId,
+			// The fallback embedder is the receiver's own provider (spec §8.2: the
+			// receiver re-embeds); the metering pair keeps state-consume and
+			// object-io on the same log as the receive and send events above.
+			embedder: input.deps.embedder,
+			metering: { identity: meterIdentity, log: input.deps.log },
+			provenance: { agent: input.identity.agent, attempt: input.identity.attempt, runId: input.identity.runId, sessionId: input.identity.sessionId },
+			scope: {
+				agent: input.identity.agent,
+				namespaceId: input.contract.namespaceId,
+				pathPrefixes: [...input.contract.scope.pathPrefixes],
+				write: input.contract.scope.write,
+			},
+			storeRoot: input.contract.storageRoot,
+			worktreeRoot: input.worktreeRoot,
+		});
+	const store = createContentStore(input.contract.storageRoot);
+	// The envelope arrived for this consumer; like the delegate seam, receipt is
+	// recorded before any payload verdict so the delivery itself is countable.
+	input.deps.log.record(meterIdentity, { kind: "message-received", messageId: wire.requestId });
+	// Receipt on the state plane is the payload being addressable; a missing
+	// object is a recovery input, not a delivery failure.
+	input.deps.log.record(meterIdentity, {
+		kind: "state-receive",
+		ok: store.has(stateRef.payloadId),
+		payloadBytes: stateRef.byteLength,
+		representationId: stateRef.representationId,
+		stateId: stateRef.payloadId,
+	});
+
+	type ConsumeAttempt = { kind: "ok"; result: StateRetrievalResult } | { category: SynapseErrorClassification; kind: "error"; reason: string };
+	const attemptConsume = (): ConsumeAttempt => {
+		try {
+			return { kind: "ok", result: service.search({ k: input.k, stateId: stateRef.payloadId, stateRef }) };
+		} catch (error) {
+			return { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
+		}
+	};
+	const first = attemptConsume();
+	if (first.kind === "ok") return { kind: "consumed", result: first.result };
+
+	// Only object-class problems recover: the bytes may have been lost in
+	// transit while the sender still holds the verified original. A
+	// representation or permission failure says the peers disagree on meaning,
+	// and re-sending cannot change that.
+	if (first.category === "object-unavailable" || first.category === "integrity") {
+		let afterResend: ConsumeAttempt = first;
+		if (input.deps.resend !== undefined) {
+			const bytes = input.deps.resend();
+			if (bytes !== null) {
+				// The re-sent bytes are caller-supplied; a store that rejects them
+				// (oversized, or colliding with an object stored under another media
+				// type) is a failed recovery, not an exception through the seam.
+				let resendFailed: ConsumeAttempt | null = null;
+				try {
+					// A re-send is a delivery in its own right and is metered as one;
+					// the content-addressed store makes re-publishing the same bytes a no-op.
+					const resentId = store.put(bytes, SYNAPSE_VECTOR_MEDIA_TYPE);
+					input.deps.log.record({ ...meterIdentity, attempt: meterIdentity.attempt + 1 }, {
+						kind: "state-send",
+						ok: true,
+						payloadBytes: bytes.byteLength,
+						representationId: stateRef.representationId,
+						stateId: resentId,
+					});
+				} catch (error) {
+					resendFailed = { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
+				}
+				afterResend = resendFailed ?? attemptConsume();
+				if (afterResend.kind === "ok") return { kind: "consumed", result: afterResend.result };
+			}
+		}
+		if ((input.stateRecovery ?? "resend") === "resend-then-text" && input.deps.embedder !== undefined && input.fallbackQuery !== undefined && input.fallbackQuery !== "") {
+			// Text fallback is an ordinary text retrieval done over again here,
+			// metered as such — never recorded as an integrity failure (spec §8.2).
+			// A fallback that itself fails is a terminal failure of the recovery,
+			// never an exception through the seam.
+			try {
+				const result = await service.searchSemantic({ k: input.k, query: input.fallbackQuery });
+				return { kind: "text-fallback", result };
+			} catch (error) {
+				const fallbackFailure = { category: classifySynapseError(error), kind: "error" as const, reason: error instanceof Error ? error.message : String(error) };
+				input.deps.log.record(meterIdentity, { category: fallbackFailure.category, detail: fallbackFailure.reason, kind: "error" });
+				return { category: fallbackFailure.category, kind: "failed", reason: fallbackFailure.reason };
+			}
+		}
+		// A terminal failure is an auditable event in its own right, recorded as
+		// an error with its category rather than only as a missing consume.
+		input.deps.log.record(meterIdentity, { category: afterResend.category, detail: afterResend.reason, kind: "error" });
+		return { category: afterResend.category, kind: "failed", reason: afterResend.reason };
+	}
+	input.deps.log.record(meterIdentity, { category: first.category, detail: first.reason, kind: "error" });
+	return { category: first.category, kind: "failed", reason: first.reason };
 }
