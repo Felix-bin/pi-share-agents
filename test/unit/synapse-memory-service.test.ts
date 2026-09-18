@@ -5,8 +5,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { AccessScope } from "../../src/synapse/access.ts";
 import { createContentStore } from "../../src/synapse/content-store.ts";
-import { createSiliconFlowEmbedder, SYNAPSE_VECTOR_MEDIA_TYPE } from "../../src/synapse/embedding.ts";
-import { createMeteringLog, readMeteringLog, type MeteringEvent, type MeteringIdentity } from "../../src/synapse/metering.ts";
+import { createSiliconFlowEmbedder, SYNAPSE_VECTOR_MEDIA_TYPE, type Embedder } from "../../src/synapse/embedding.ts";
+import { createMeteringLog, readMeteringLog, type MeteringEvent, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
 import { startEmbeddingStub } from "../support/embedding-stub-server.ts";
 import {
 	createMemoryService,
@@ -541,5 +541,487 @@ describe("synapse_write.remember embedding", () => {
 		fs.writeFileSync(recordFile, JSON.stringify(legacy), "utf-8");
 		const reloaded = createMemoryStore(storeRoot, { contentStore: createContentStore(storeRoot) }).get(written.record.memoryId);
 		assert.equal(reloaded.embedding, null);
+	});
+});
+
+describe("synapse_read.search semantic integration", () => {
+	function stubEmbedder(port: number, dim = 2, metering?: { identity: MeteringIdentity; log: MeteringLog }): Embedder {
+		return createSiliconFlowEmbedder(
+			{ dim, endpoint: `http://127.0.0.1:${port}/v1/embeddings`, keyEnv: "SILICONFLOW_API_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
+			metering === undefined ? { key: "test-key-0123456789abcdef" } : { identity: metering.identity, key: "test-key-0123456789abcdef", metering: metering.log },
+		);
+	}
+
+	function semanticService(embedder: Embedder, overrides: { metering?: { identity: MeteringIdentity; log: MeteringLog }; scope?: AccessScope } = {}): MemoryService {
+		return createMemoryService({
+			embedder,
+			metering: overrides.metering,
+			now: () => new Date(clock),
+			provenance: { agent: "retriever", attempt: 1, runId: "run-1", sessionId: "sess-1" },
+			scope: overrides.scope ?? scope(),
+			storeRoot,
+			worktreeRoot: worktree,
+		});
+	}
+
+	function rewriteEmbeddingRef(memoryId: string, mutate: (ref: { dim: number; objectId: string; representationId: string }) => void): void {
+		const recordFile = path.join(storeRoot, "memory", `${memoryId}.json`);
+		// SAFETY: the file was written by the service under test, whose record schema guarantees the embedding reference shape.
+		const parsed = JSON.parse(fs.readFileSync(recordFile, "utf-8")) as { embedding: { dim: number; objectId: string; representationId: string } | null };
+		assert.ok(parsed.embedding !== null, "record must carry an embedding reference to rewrite");
+		mutate(parsed.embedding);
+		fs.writeFileSync(recordFile, JSON.stringify(parsed), "utf-8");
+	}
+
+	it("recalls records by vector proximity end to end (remember then searchSemantic)", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVectorForInput((input) => (input.includes("主题乙") ? [0, 1] : [1, 0]));
+			const embedder = createSiliconFlowEmbedder(
+				{ dim: 2, endpoint: `http://127.0.0.1:${server.port}/v1/embeddings`, keyEnv: "SILICONFLOW_API_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
+				{ key: "test-key-0123456789abcdef" },
+			);
+			const svc = createMemoryService({
+				embedder,
+				now: () => new Date(clock),
+				provenance: { agent: "retriever", attempt: 1, runId: "run-1", sessionId: "sess-1" },
+				scope: scope(),
+				storeRoot,
+				worktreeRoot: worktree,
+			});
+			const near = await svc.remember({
+				content: "甲正文",
+				kind: "evidence",
+				operationId: "op-sem-a",
+				summary: "甲摘要",
+				tags: [],
+				topic: "主题甲",
+			});
+			await svc.remember({
+				content: "乙正文",
+				kind: "evidence",
+				operationId: "op-sem-b",
+				summary: "乙摘要",
+				tags: [],
+				topic: "主题乙",
+			});
+			const result = await svc.searchSemantic({ k: 2, query: "语义查询" });
+			assert.equal(result.semantic, "ok");
+			assert.equal(result.results[0]?.memoryId, near.record.memoryId);
+			const topComponent = result.results[0]?.components.semantic;
+			assert.notEqual(topComponent, "unavailable");
+			// SAFETY: the component union is number | "unavailable" and the marker is excluded above.
+			assert.ok((topComponent as number) > 0.99);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("falls back to keyword ranking and the unavailable marker when no embedder is configured", async () => {
+		writeSource("src/a.ts", "export const a = 1;\n");
+		const instance = service();
+		await instance.remember({
+			content: "正文",
+			kind: "evidence",
+			operationId: "op-sem-fallback",
+			sourcePath: "src/a.ts",
+			summary: "residual encoder 观察",
+			tags: [],
+			topic: "residual",
+		});
+		const semantic = await instance.searchSemantic({ query: "residual encoder" });
+		const keyword = instance.search({ query: "residual encoder" });
+		assert.equal(semantic.semantic, "unavailable");
+		assert.equal(semantic.results.length, keyword.results.length);
+		assert.deepEqual(
+			semantic.results.map((hit) => hit.memoryId),
+			keyword.results.map((hit) => hit.memoryId),
+		);
+		assert.equal(semantic.results[0]?.components.semantic, "unavailable");
+	});
+
+	it("falls back to the unavailable marker when no record carries a usable vector", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([1, 0]);
+			writeSource("src/a.ts", "export const a = 1;\n");
+			// Written without an embedder, so no record in the store has a vector.
+			await service().remember({
+				content: "正文",
+				kind: "evidence",
+				operationId: "op-novec",
+				sourcePath: "src/a.ts",
+				summary: "residual encoder 观察",
+				tags: [],
+				topic: "residual",
+			});
+			const svc = semanticService(stubEmbedder(server.port));
+			const result = await svc.searchSemantic({ query: "residual encoder" });
+			assert.equal(result.semantic, "unavailable");
+			assert.equal(result.results.length, 1);
+			assert.equal(result.results[0]?.components.semantic, "unavailable");
+			// An empty vector library must not cost an embedding call.
+			assert.equal(server.requests.length, 0);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("scores a zero semantic component for a record embedded under another representation", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVectorForInput((input) => (input.includes("主题乙") ? [0, 1] : [1, 0]));
+			const svc = semanticService(stubEmbedder(server.port));
+			const foreign = await svc.remember({
+				content: "甲正文",
+				kind: "evidence",
+				operationId: "op-foreign",
+				summary: "甲摘要",
+				tags: [],
+				topic: "主题甲",
+			});
+			await svc.remember({
+				content: "乙正文",
+				kind: "evidence",
+				operationId: "op-domestic",
+				summary: "乙摘要",
+				tags: [],
+				topic: "主题乙",
+			});
+			// Pointing the reference at a nonexistent object proves the loader
+			// never touches it: a read would fail the search instead of scoring zero.
+			rewriteEmbeddingRef(foreign.record.memoryId, (ref) => {
+				ref.objectId = "0".repeat(64);
+				ref.representationId = "siliconflow/other-model/2";
+			});
+			const result = await svc.searchSemantic({ k: 5, query: "语义查询甲" });
+			assert.equal(result.semantic, "ok");
+			const foreignHit = result.results.find((hit) => hit.memoryId === foreign.record.memoryId);
+			assert.ok(foreignHit, "the keyword-matching record must still rank");
+			assert.equal(foreignHit.components.semantic, 0);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("reports a vector object that is not a whole number of float32 values, naming the memory", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([1, 0]);
+			const svc = semanticService(stubEmbedder(server.port));
+			const written = await svc.remember({
+				content: "正文",
+				kind: "evidence",
+				operationId: "op-bad-bytes",
+				summary: "摘要",
+				tags: [],
+				topic: "主题",
+			});
+			// A digest-valid object whose length is not a multiple of four bytes.
+			const badId = createContentStore(storeRoot).put(new Uint8Array([1, 2, 3]), SYNAPSE_VECTOR_MEDIA_TYPE);
+			rewriteEmbeddingRef(written.record.memoryId, (ref) => {
+				ref.objectId = badId;
+			});
+			let caught: unknown;
+			try {
+				await svc.searchSemantic({ query: "查询" });
+			} catch (error) {
+				caught = error;
+			}
+			assert.ok(caught instanceof Error);
+			assert.match(caught.message, /integrity/);
+			assert.ok(caught.message.includes(written.record.memoryId), "error must name the memory holding the corrupt reference");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("reports a vector object whose float count contradicts the record, naming the memory", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([1, 0]);
+			const svc = semanticService(stubEmbedder(server.port));
+			const written = await svc.remember({
+				content: "正文",
+				kind: "evidence",
+				operationId: "op-bad-dim",
+				summary: "摘要",
+				tags: [],
+				topic: "主题",
+			});
+			rewriteEmbeddingRef(written.record.memoryId, (ref) => {
+				ref.dim = 3;
+			});
+			let caught: unknown;
+			try {
+				await svc.searchSemantic({ query: "查询" });
+			} catch (error) {
+				caught = error;
+			}
+			assert.ok(caught instanceof Error);
+			assert.match(caught.message, /integrity/);
+			assert.ok(caught.message.includes(written.record.memoryId), "error must name the memory holding the corrupt reference");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("returns an empty result for an empty query without spending an embedding call", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([1, 0]);
+			const svc = semanticService(stubEmbedder(server.port));
+			await svc.remember({
+				content: "正文",
+				kind: "evidence",
+				operationId: "op-empty-q",
+				summary: "摘要",
+				tags: ["seed"],
+				topic: "主题",
+			});
+			const baseline = server.requests.length;
+			const empty = await svc.searchSemantic({ query: "" });
+			assert.deepEqual(empty.results, []);
+			assert.equal(empty.semantic, "unavailable");
+			// A tag-only query still ranks on tags without embedding the empty text.
+			const tagged = await svc.searchSemantic({ query: "   ", tags: ["seed"] });
+			assert.equal(tagged.semantic, "unavailable");
+			assert.equal(tagged.results.length, 1);
+			assert.equal(server.requests.length, baseline);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("loads vectors only after authorisation, so a denied record's corrupt object cannot fail the search", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([1, 0]);
+			writeSource("secrets/keys.env", "TOKEN=1");
+			writeSource("src/a.ts", "export const a = 1;\n");
+			const embedder = stubEmbedder(server.port);
+			const privileged = semanticService(embedder);
+			const secret = await privileged.remember({
+				content: "TOKEN=1",
+				kind: "evidence",
+				operationId: "op-secret",
+				sourcePath: "secrets/keys.env",
+				summary: "机密观察",
+				tags: [],
+				topic: "机密主题",
+			});
+			await privileged.remember({
+				content: "公开正文",
+				kind: "evidence",
+				operationId: "op-public",
+				sourcePath: "src/a.ts",
+				summary: "公开观察",
+				tags: [],
+				topic: "公开主题",
+			});
+			// Corrupt the secret record's vector reference.
+			const badId = createContentStore(storeRoot).put(new Uint8Array([1, 2, 3]), SYNAPSE_VECTOR_MEDIA_TYPE);
+			rewriteEmbeddingRef(secret.record.memoryId, (ref) => {
+				ref.objectId = badId;
+			});
+			// The privileged caller loads the vector and sees the corruption...
+			await assert.rejects(privileged.searchSemantic({ query: "观察" }), /integrity/);
+			// ...while the caller without the grant never loads it and ranks fine.
+			const restricted = semanticService(embedder, { scope: scope({ pathPrefixes: ["src"] }) });
+			const result = await restricted.searchSemantic({ query: "观察" });
+			assert.equal(result.semantic, "ok");
+			assert.equal(result.results.length, 1);
+			assert.notEqual(result.results[0]?.memoryId, secret.record.memoryId);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("meters vector object reads as object-io read events", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([3, 4, 0, 0]);
+			const meteringPath = path.join(storeRoot, "metering-read.jsonl");
+			const metering = createMeteringLog(meteringPath);
+			const svc = semanticService(stubEmbedder(server.port, 4, { identity: meteringIdentity, log: metering }), {
+				metering: { identity: meteringIdentity, log: metering },
+			});
+			await svc.remember({
+				content: "正文",
+				kind: "evidence",
+				operationId: "op-meter-read",
+				summary: "摘要",
+				tags: [],
+				topic: "主题",
+			});
+			const result = await svc.searchSemantic({ query: "查询" });
+			assert.equal(result.semantic, "ok");
+			const events = readMeteringLog(meteringPath);
+			const reads = events.filter(
+				(event): event is Extract<MeteringEvent, { kind: "object-io" }> => event.kind === "object-io" && event.direction === "read",
+			);
+			assert.equal(reads.length, 1);
+			assert.equal(reads[0]!.bytes, 16);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("degrades a vector that contradicts the query dimension despite a matching representation", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVectorForInput((input) => (input.includes("主题乙") ? [0, 1, 0, 0] : [1, 0, 0, 0]));
+			const svc = semanticService(stubEmbedder(server.port, 4));
+			const tampered = await svc.remember({
+				content: "甲正文",
+				kind: "evidence",
+				operationId: "op-tampered",
+				summary: "甲摘要",
+				tags: [],
+				topic: "主题甲",
+			});
+			await svc.remember({
+				content: "乙正文",
+				kind: "evidence",
+				operationId: "op-normal",
+				summary: "乙摘要",
+				tags: [],
+				topic: "主题乙",
+			});
+			// A record claiming 2 floats backed by a digest-valid 2-float object,
+			// while its representation id still declares the configured dimension 4.
+			const smallId = createContentStore(storeRoot).put(new Uint8Array(new Float32Array([1, 0]).buffer), SYNAPSE_VECTOR_MEDIA_TYPE);
+			rewriteEmbeddingRef(tampered.record.memoryId, (ref) => {
+				ref.dim = 2;
+				ref.objectId = smallId;
+			});
+			const result = await svc.searchSemantic({ k: 5, query: "语义查询甲" });
+			assert.equal(result.semantic, "ok");
+			const tamperedHit = result.results.find((hit) => hit.memoryId === tampered.record.memoryId);
+			assert.ok(tamperedHit, "the keyword-matching record must still rank");
+			assert.equal(tamperedHit.components.semantic, 0);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("does not fail a restricted caller when a denied record's vector object is missing", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			// Distinct vectors per input: identical vectors would make both records
+			// reference the same CAS object, and deleting it would break both.
+			server.respondWithVectorForInput((input) => (input.includes("机密") ? [1, 0] : [0, 1]));
+			writeSource("secrets/keys.env", "TOKEN=1");
+			writeSource("src/a.ts", "export const a = 1;\n");
+			const embedder = stubEmbedder(server.port);
+			const privileged = semanticService(embedder);
+			const secret = await privileged.remember({
+				content: "TOKEN=1",
+				kind: "evidence",
+				operationId: "op-secret-missing",
+				sourcePath: "secrets/keys.env",
+				summary: "机密观察",
+				tags: [],
+				topic: "机密主题",
+			});
+			const openRecord = await privileged.remember({
+				content: "公开正文",
+				kind: "evidence",
+				operationId: "op-public-missing",
+				sourcePath: "src/a.ts",
+				summary: "公开观察",
+				tags: [],
+				topic: "公开主题",
+			});
+			// Delete the secret record's vector object outright — the most common
+			// corruption shape (partial restore, manual cleanup).
+			const cas = createContentStore(storeRoot);
+			const secretRef = secret.record.embedding;
+			assert.ok(secretRef !== null, "secret record must carry a vector reference");
+			const objectPath = cas.objectPath(secretRef.objectId);
+			fs.rmSync(objectPath);
+			fs.rmSync(objectPath.replace(/\.bin$/, ".meta.json"));
+			// The restricted caller never loads the denied record's vector...
+			const restricted = semanticService(embedder, { scope: scope({ pathPrefixes: ["src"] }) });
+			const result = await restricted.searchSemantic({ query: "观察" });
+			assert.equal(result.semantic, "ok");
+			assert.deepEqual(result.results.map((hit) => hit.memoryId), [openRecord.record.memoryId]);
+			// ...while the privileged caller gets the corruption report naming the memory.
+			let caught: unknown;
+			try {
+				await privileged.searchSemantic({ query: "观察" });
+			} catch (error) {
+				caught = error;
+			}
+			assert.ok(caught instanceof Error);
+			assert.match(caught.message, /integrity/);
+			assert.ok(caught.message.includes(secret.record.memoryId), "error must name the memory whose vector object is missing");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("falls back to keyword ranking with the unavailable marker when the embedding call fails at search time", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([1, 0]);
+			const svc = semanticService(stubEmbedder(server.port));
+			writeSource("src/a.ts", "export const a = 1;\n");
+			await svc.remember({
+				content: "正文",
+				kind: "evidence",
+				operationId: "op-search-outage",
+				sourcePath: "src/a.ts",
+				summary: "residual encoder 观察",
+				tags: [],
+				topic: "residual",
+			});
+			server.setHandler((_request, response) => {
+				response.statusCode = 500;
+				response.end("provider outage");
+			});
+			const result = await svc.searchSemantic({ query: "residual encoder" });
+			assert.equal(result.semantic, "unavailable");
+			const keyword = svc.search({ query: "residual encoder" });
+			assert.deepEqual(
+				result.results.map((hit) => hit.memoryId),
+				keyword.results.map((hit) => hit.memoryId),
+			);
+			assert.equal(result.results[0]?.components.semantic, "unavailable");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("reports a vector holding a non-finite value, naming the memory", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([1, 0]);
+			const svc = semanticService(stubEmbedder(server.port));
+			const written = await svc.remember({
+				content: "正文",
+				kind: "evidence",
+				operationId: "op-nan-vector",
+				summary: "摘要",
+				tags: [],
+				topic: "主题",
+			});
+			const nanId = createContentStore(storeRoot).put(new Uint8Array(new Float32Array([Number.NaN, 0]).buffer), SYNAPSE_VECTOR_MEDIA_TYPE);
+			rewriteEmbeddingRef(written.record.memoryId, (ref) => {
+				ref.objectId = nanId;
+			});
+			let caught: unknown;
+			try {
+				await svc.searchSemantic({ query: "查询" });
+			} catch (error) {
+				caught = error;
+			}
+			assert.ok(caught instanceof Error);
+			assert.match(caught.message, /integrity/);
+			assert.match(caught.message, /non-finite/);
+			assert.ok(caught.message.includes(written.record.memoryId), "error must name the memory holding the non-finite vector");
+		} finally {
+			await server.close();
+		}
 	});
 });

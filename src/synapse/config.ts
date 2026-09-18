@@ -27,6 +27,16 @@ export const SYNAPSE_EMBEDDING_PROVIDERS = ["siliconflow"] as const;
  */
 const TEST_ONLY_PROVIDERS = new Set(["deterministic-test", "fake", "hash"]);
 
+/**
+ * Semantic retrieval weights, frozen at the preliminary-round HybridRetriever
+ * calibration (keyword 0.3 / tag 0.2 / semantic cosine 0.5). The P4-2 delta
+ * calibration does not reopen them; any change requires a new frozen decision
+ * recorded as such.
+ */
+export const SYNAPSE_SEMANTIC_KEYWORD_WEIGHT = 0.3;
+export const SYNAPSE_SEMANTIC_TAG_WEIGHT = 0.2;
+export const SYNAPSE_SEMANTIC_COSINE_WEIGHT = 0.5;
+
 export const SYNAPSE_DEFAULT_CONTEXT_BUDGET_BYTES = 8192;
 export const SYNAPSE_DEFAULT_MAX_OBJECT_BYTES = 1024 * 1024;
 export const SYNAPSE_MAX_EMBEDDING_DIM = 8192;

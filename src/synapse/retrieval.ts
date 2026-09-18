@@ -1,4 +1,9 @@
 import { isReadable, type AccessScope } from "./access.ts";
+import {
+	SYNAPSE_SEMANTIC_COSINE_WEIGHT,
+	SYNAPSE_SEMANTIC_KEYWORD_WEIGHT,
+	SYNAPSE_SEMANTIC_TAG_WEIGHT,
+} from "./config.ts";
 import type { MemoryRecord } from "./memory-store.ts";
 
 /**
@@ -9,9 +14,12 @@ import type { MemoryRecord } from "./memory-store.ts";
  * grows and a past run's ranking stays recomputable from its log — the property
  * the controlled comparison depends on.
  *
- * The semantic component is reported as `unavailable` rather than approximated.
- * A hash-based stand-in would look like a semantic score while measuring
- * nothing, which is exactly the substitution the design forbids.
+ * The semantic component is reported as `unavailable` rather than approximated
+ * when no vectors take part. A hash-based stand-in would look like a semantic
+ * score while measuring nothing, which is exactly the substitution the design
+ * forbids. When callers supply a query vector and per-record vectors — both
+ * from persisted, digest-verified bytes — the frozen 0.3/0.2/0.5 split applies
+ * and each hit carries its measured cosine.
  */
 
 export const KEYWORD_WEIGHT = 0.6;
@@ -31,6 +39,12 @@ export type MemorySearchResult = {
 	score: number;
 };
 
+export type SemanticScoring = {
+	queryVector: Float32Array;
+	/** Per-record vectors by memory id; a record absent here scores semantic 0. */
+	recordVectors: ReadonlyMap<string, Float32Array>;
+};
+
 export type MemorySearchInput = {
 	includeSuperseded?: boolean;
 	limit?: number;
@@ -38,6 +52,8 @@ export type MemorySearchInput = {
 	records: readonly MemoryRecord[];
 	/** Required: scoring an unauthorised record would leak its summary. */
 	scope: AccessScope;
+	/** When present, semantic cosine scoring is enabled with the frozen weights. */
+	semantic?: SemanticScoring;
 };
 
 // Latin/digit runs, or a single CJK ideograph. Word segmentation for Chinese
@@ -61,6 +77,24 @@ function jaccard(left: readonly string[], right: readonly string[]): number {
 	return union === 0 ? 0 : shared / union;
 }
 
+function cosine(left: Float32Array, right: Float32Array): number {
+	if (left.length !== right.length) {
+		throw new Error(`cosine: dimension mismatch ${left.length} vs ${right.length}`);
+	}
+	let dot = 0;
+	let leftNorm = 0;
+	let rightNorm = 0;
+	for (let index = 0; index < left.length; index += 1) {
+		const l = left[index]!;
+		const r = right[index]!;
+		dot += l * r;
+		leftNorm += l * l;
+		rightNorm += r * r;
+	}
+	const denominator = Math.sqrt(leftNorm) * Math.sqrt(rightNorm);
+	return denominator === 0 ? 0 : dot / denominator;
+}
+
 function normalizeTags(tags: readonly string[]): string[] {
 	return [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter((tag) => tag.length > 0))].sort();
 }
@@ -68,7 +102,9 @@ function normalizeTags(tags: readonly string[]): string[] {
 export function searchMemories(input: MemorySearchInput): MemorySearchResult[] {
 	const queryTokens = tokenize(input.query.text);
 	const queryTags = normalizeTags(input.query.tags ?? []);
-	if (queryTokens.length === 0 && queryTags.length === 0) return [];
+	// Without vectors a query that shares no token and no tag has nothing to
+	// score; with vectors the cosine itself is a score, so ranking proceeds.
+	if (input.semantic === undefined && queryTokens.length === 0 && queryTags.length === 0) return [];
 
 	const scored: MemorySearchResult[] = [];
 	for (const record of input.records) {
@@ -81,9 +117,20 @@ export function searchMemories(input: MemorySearchInput): MemorySearchResult[] {
 		// them would let a long unrelated topic dilute an exact summary match.
 		const keyword = Math.max(jaccard(queryTokens, tokenize(record.summary)), jaccard(queryTokens, tokenize(record.taskTopic)));
 		const tag = jaccard(queryTags, normalizeTags(record.tags));
-		const score = KEYWORD_WEIGHT * keyword + TAG_WEIGHT * tag;
+		if (input.semantic === undefined) {
+			const score = KEYWORD_WEIGHT * keyword + TAG_WEIGHT * tag;
+			if (score <= 0) continue;
+			scored.push({ components: { keyword, semantic: "unavailable", tag }, historical, record, score });
+			continue;
+		}
+		const recordVector = input.semantic.recordVectors.get(record.memoryId);
+		// A record without a vector keeps ranking on keyword and tag with a zero
+		// semantic component; it is never dropped for lacking one.
+		const semantic = recordVector === undefined ? 0 : cosine(input.semantic.queryVector, recordVector);
+		const score =
+			SYNAPSE_SEMANTIC_KEYWORD_WEIGHT * keyword + SYNAPSE_SEMANTIC_TAG_WEIGHT * tag + SYNAPSE_SEMANTIC_COSINE_WEIGHT * semantic;
 		if (score <= 0) continue;
-		scored.push({ components: { keyword, semantic: "unavailable", tag }, historical, record, score });
+		scored.push({ components: { keyword, semantic, tag }, historical, record, score });
 	}
 
 	scored.sort((left, right) => {

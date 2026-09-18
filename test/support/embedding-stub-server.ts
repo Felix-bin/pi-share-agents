@@ -28,6 +28,8 @@ export type StubEmbeddingServer = {
 	setHandler: (handler: StubEmbeddingHandler) => void;
 	requests: CapturedRequest[];
 	respondWithVector: (values: readonly number[], options?: StubResponseOptions) => void;
+	/** Like respondWithVector, but each input text gets its own vector. */
+	respondWithVectorForInput: (resolve: (input: string) => readonly number[], options?: StubResponseOptions) => void;
 	port: number;
 	server: http.Server;
 };
@@ -84,6 +86,23 @@ export async function startEmbeddingStub(): Promise<StubEmbeddingServer> {
 				response.end(
 					JSON.stringify({
 						data: inputs.map((_text, index) => ({ embedding, index })),
+						model: "BAAI/bge-m3",
+						object: "list",
+						usage: options.promptTokens === undefined ? undefined : { prompt_tokens: options.promptTokens, total_tokens: options.promptTokens },
+					}),
+				);
+			};
+		},
+		respondWithVectorForInput(resolve: (input: string) => readonly number[], options: StubResponseOptions = {}) {
+			state.handler = (request, response) => {
+				// SAFETY: the request body is JSON this stub's counterpart (the embedder under test) serialized.
+				const parsed = JSON.parse(request.body) as { input: string | readonly string[] };
+				const inputs = Array.isArray(parsed.input) ? parsed.input : [parsed.input];
+				response.statusCode = 200;
+				response.setHeader("content-type", "application/json");
+				response.end(
+					JSON.stringify({
+						data: inputs.map((text, index) => ({ embedding: encodeFloat32LEBase64(resolve(text)), index })),
 						model: "BAAI/bge-m3",
 						object: "list",
 						usage: options.promptTokens === undefined ? undefined : { prompt_tokens: options.promptTokens, total_tokens: options.promptTokens },

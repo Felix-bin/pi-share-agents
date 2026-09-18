@@ -12,9 +12,11 @@ import type { SourceFingerprint } from "./source-fingerprint.ts";
  *
  * Records, supersession events and objects are separate immutable files. A
  * record is published only after its body is proven present, so a reader never
- * follows a reference into nothing; an orphan discovered later is reported
+ * follows a reference into nothing; a body orphan discovered later is reported
  * rather than skipped, because silently dropping it would understate what the
- * run actually depended on.
+ * run actually depended on. Vector objects follow the same rule at the point
+ * they are loaded (searchSemantic), after authorisation — not at list time,
+ * which runs before any grant is checked.
  *
  * Status is not stored in the record. It is derived by replaying supersession
  * events at load time, which is what keeps records immutable while still
@@ -299,9 +301,11 @@ export function createMemoryStore(rootDir: string, options: MemoryStoreOptions):
 				if (!options.contentStore.has(record.contentId)) {
 					throw new Error(`orphan: memory ${record.memoryId} references missing object ${record.contentId}`);
 				}
-				if (record.embedding !== null && !options.contentStore.has(record.embedding.objectId)) {
-					throw new Error(`orphan: memory ${record.memoryId} references missing vector object ${record.embedding.objectId}`);
-				}
+				// A missing vector object is not reported here: list() runs before any
+				// authorisation filter, and a denied record's broken vector must not
+				// fail a caller that would never have seen the record. The semantic
+				// load point (memory-service searchSemantic) reports it instead,
+				// naming the memory, after the grant has been checked.
 				if (record.recordStatus !== "active" && listOptions.includeSuperseded !== true) continue;
 				loaded.push(record);
 			}

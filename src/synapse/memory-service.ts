@@ -15,7 +15,7 @@ import {
 	type SupersessionReason,
 } from "./memory-store.ts";
 import type { MeteringIdentity, MeteringLog } from "./metering.ts";
-import { searchMemories, type SemanticComponent } from "./retrieval.ts";
+import { searchMemories, type SemanticComponent, type SemanticScoring } from "./retrieval.ts";
 import { captureSource, checkSource } from "./source-fingerprint.ts";
 
 /**
@@ -76,6 +76,7 @@ export type SearchInput = {
 
 export type SearchHit = {
 	assurance: MemoryAssurance;
+	components: { keyword: number; semantic: SemanticComponent; tag: number };
 	/** The bytes this memory is about, so a handoff can name what it carries. */
 	contentId: string;
 	createdAt: string;
@@ -92,7 +93,8 @@ export type SearchHit = {
 
 export type SearchResult = {
 	results: SearchHit[];
-	semantic: SemanticComponent;
+	/** "ok" when the ranking carried measured cosine values, else "unavailable". */
+	semantic: "ok" | "unavailable";
 };
 
 export type GetInput = {
@@ -121,6 +123,14 @@ export type MemoryService = {
 	get: (input: GetInput) => GetResult;
 	remember: (input: RememberInput) => Promise<RememberResult>;
 	search: (input: SearchInput) => SearchResult;
+	/**
+	 * Semantic ranking for the read tool: embeds the query (two-level cache),
+	 * loads each record's digest-verified vector from the CAS, and applies the
+	 * frozen 0.3/0.2/0.5 split. Falls back to keyword ranking with the
+	 * `unavailable` marker when no embedder is configured. The sync `search`
+	 * stays for the delegation recall path until P3-5 wires it.
+	 */
+	searchSemantic: (input: SearchInput) => Promise<SearchResult>;
 	supersede: (input: ServiceSupersedeInput) => SupersessionEvent;
 };
 
@@ -150,6 +160,52 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 		if (record.source === null) return "current";
 		const checked = checkSource(options.worktreeRoot, record.source);
 		return checked.status === "current" ? "current" : checked.status === "stale" ? "stale" : "unavailable";
+	}
+
+	function rankMemories(input: SearchInput, k: number, semantic: SemanticScoring | undefined, records?: readonly MemoryRecord[]): SearchResult {
+		const ranked = searchMemories({
+			includeSuperseded: input.includeHistorical === true,
+			limit: k,
+			query: { tags: input.tags, text: input.query ?? "" },
+			// A caller that already listed the records (the semantic path) passes them
+			// in, so a search never scans the store twice.
+			records: records ?? memoryStore.list({ includeSuperseded: input.includeHistorical === true }),
+			scope: options.scope,
+			semantic,
+		});
+		return {
+			results: ranked.map((entry) => ({
+				assurance: entry.record.assurance,
+				components: entry.components,
+				contentId: entry.record.contentId,
+				createdAt: entry.record.createdAt,
+				historical: entry.historical,
+				memoryId: entry.record.memoryId,
+				score: entry.score,
+				sourceAgent: entry.record.provenance.agent,
+				sourcePath: entry.record.source?.path ?? null,
+				summary: entry.record.summary,
+				tags: entry.record.tags,
+				taskTopic: entry.record.taskTopic,
+				validity: validityOf(entry.record),
+			})),
+			semantic: semantic === undefined ? "unavailable" : "ok",
+		};
+	}
+
+	/** Shared front-door validation for both search entry points; returns the effective k. */
+	function validateSearchInput(input: SearchInput): number {
+		if (input.stateId !== undefined) {
+			throw new Error("capability-unavailable: state-retrieval is not wired in this build");
+		}
+		if (input.query === undefined) {
+			throw new Error("query-required: supply query (stateId is not available in this build)");
+		}
+		const k = input.k ?? SYNAPSE_DEFAULT_SEARCH_K;
+		if (!Number.isInteger(k) || k < 1 || k > SYNAPSE_MAX_SEARCH_K) {
+			throw new Error(`k-out-of-range: ${k} is not an integer in 1..${SYNAPSE_MAX_SEARCH_K}`);
+		}
+		return k;
 	}
 
 	function authorisedRecord(memoryId: string): MemoryRecord {
@@ -234,40 +290,81 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 		},
 
 		search(input: SearchInput): SearchResult {
-			if (input.stateId !== undefined) {
-				throw new Error("capability-unavailable: state-retrieval is not wired in this build");
+			return rankMemories(input, validateSearchInput(input), undefined);
+		},
+
+		async searchSemantic(input: SearchInput): Promise<SearchResult> {
+			const k = validateSearchInput(input);
+			if (options.embedder === undefined) return rankMemories(input, k, undefined);
+			const embedder = options.embedder;
+			// validateSearchInput has already rejected an undefined query.
+			const query = input.query ?? "";
+			// An empty query has no text to embed: ranking stays on keyword and tag
+			// rather than spending an embedding call on an empty string.
+			if (query.trim() === "") return rankMemories(input, k, undefined);
+			const records = memoryStore.list({ includeSuperseded: input.includeHistorical === true });
+			const recordVectors = new Map<string, Float32Array>();
+			for (const record of records) {
+				if (record.embedding === null) continue;
+				// Authorisation before any vector is loaded: a denied record's corrupt
+				// object must not fail a search that would never have shown it.
+				if (!isReadable(record, options.scope)) continue;
+				// A vector embedded under another representation lives in an
+				// incomparable space; the record ranks on keyword and tag with a zero
+				// semantic component rather than borrowing a foreign cosine.
+				if (record.embedding.representationId !== embedder.representationId) continue;
+				// The store re-verifies the digest on every read. An unreadable object
+				// (missing, digest mismatch), bytes that are not a whole number of
+				// float32 values, or a float count that contradicts the record are
+				// corruption and are reported together with the record that points at
+				// them.
+				let bytes: Uint8Array;
+				try {
+					bytes = contentStore.read(record.embedding.objectId);
+				} catch (error) {
+					const detail = error instanceof Error ? error.message : String(error);
+					throw new Error(`integrity: vector object ${record.embedding.objectId} for memory ${record.memoryId} cannot be read: ${detail}`);
+				}
+				if (bytes.byteLength === 0 || bytes.byteLength % 4 !== 0) {
+					throw new Error(
+						`integrity: vector object ${record.embedding.objectId} for memory ${record.memoryId} holds ${bytes.byteLength} bytes, not a whole number of float32 values`,
+					);
+				}
+				const vector = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+				if (vector.length !== record.embedding.dim) {
+					throw new Error(
+						`integrity: vector object ${record.embedding.objectId} for memory ${record.memoryId} holds ${vector.length} floats, record claims ${record.embedding.dim}`,
+					);
+				}
+				for (let index = 0; index < vector.length; index += 1) {
+					if (!Number.isFinite(vector[index]!)) {
+						throw new Error(
+							`integrity: vector object ${record.embedding.objectId} for memory ${record.memoryId} holds a non-finite value at index ${index}`,
+						);
+					}
+				}
+				options.metering?.log.record(options.metering.identity, { bytes: bytes.byteLength, direction: "read", kind: "object-io" });
+				recordVectors.set(record.memoryId, vector);
 			}
-			if (input.query === undefined) {
-				throw new Error("query-required: supply query (stateId is not available in this build)");
+			// No usable vectors at all means the semantic component never took part:
+			// report it unavailable instead of stamping "ok" on a keyword ranking.
+			if (recordVectors.size === 0) return rankMemories(input, k, undefined, records);
+			// A provider outage must not take keyword retrieval down with it: the
+			// search falls back with the unavailable marker. When a metering log is
+			// attached, the failed embedding-call event stays in it as the record of
+			// what happened. The write path deliberately does not degrade — a memory
+			// stored without its vector would be a permanent semantic blind spot,
+			// so remember propagates the failure instead.
+			const embedded = await embedder.embedQuery(query).catch(() => null);
+			if (embedded === null) return rankMemories(input, k, undefined, records);
+			// A stored vector that disagrees with the query dimension despite a
+			// matching representation is corrupt; the record degrades to a zero
+			// component rather than aborting the whole search.
+			for (const [memoryId, vector] of recordVectors) {
+				if (vector.length !== embedded.vector.length) recordVectors.delete(memoryId);
 			}
-			const k = input.k ?? SYNAPSE_DEFAULT_SEARCH_K;
-			if (!Number.isInteger(k) || k < 1 || k > SYNAPSE_MAX_SEARCH_K) {
-				throw new Error(`k-out-of-range: ${k} is not an integer in 1..${SYNAPSE_MAX_SEARCH_K}`);
-			}
-			const ranked = searchMemories({
-				includeSuperseded: input.includeHistorical === true,
-				limit: k,
-				query: { tags: input.tags, text: input.query },
-				records: memoryStore.list({ includeSuperseded: input.includeHistorical === true }),
-				scope: options.scope,
-			});
-			return {
-				results: ranked.map((entry) => ({
-					assurance: entry.record.assurance,
-					contentId: entry.record.contentId,
-					createdAt: entry.record.createdAt,
-					historical: entry.historical,
-					memoryId: entry.record.memoryId,
-					score: entry.score,
-					sourceAgent: entry.record.provenance.agent,
-					sourcePath: entry.record.source?.path ?? null,
-					summary: entry.record.summary,
-					tags: entry.record.tags,
-					taskTopic: entry.record.taskTopic,
-					validity: validityOf(entry.record),
-				})),
-				semantic: "unavailable",
-			};
+			if (recordVectors.size === 0) return rankMemories(input, k, undefined, records);
+			return rankMemories(input, k, { queryVector: embedded.vector, recordVectors }, records);
 		},
 
 		supersede(input: ServiceSupersedeInput): SupersessionEvent {
