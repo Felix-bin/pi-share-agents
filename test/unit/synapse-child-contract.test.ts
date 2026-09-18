@@ -113,7 +113,7 @@ describe("child contract resolution", () => {
 		const rehydrated = rehydrateLaunchContract(serialiseLaunchContract(contract.contract), {
 			currentNamespaceId: contract.contract.namespaceId,
 			currentScope: contract.contract.scope,
-			objectExists: () => true,
+			memoryExists: () => true,
 		});
 		assert.equal(rehydrated.status, "ready");
 	});

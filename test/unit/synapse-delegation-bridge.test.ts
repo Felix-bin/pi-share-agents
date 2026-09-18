@@ -31,7 +31,7 @@ function childContract(): SynapseChildContract {
 		contextBudgetBytes: 8192,
 		contract: resolveLaunchContract({
 			capabilityId: capabilityForAgent({ agent: "retriever", childTools: ["read"], representationId: "unavailable" }).capabilityId,
-			contextRefs: [],
+			memoryRefs: [],
 			corpusSnapshotId: "unset",
 			mode: "synapse",
 			namespaceId: deriveNamespaceId(worktree),

@@ -29,8 +29,8 @@ export type ContractScope = {
 
 export type LaunchContractInput = {
 	capabilityId: string;
-	contextRefs: readonly string[];
 	corpusSnapshotId: string;
+	memoryRefs: readonly string[];
 	mode: SynapseMode;
 	namespaceId: string;
 	representationId: string;
@@ -40,9 +40,9 @@ export type LaunchContractInput = {
 
 export type LaunchContract = {
 	capabilityId: string;
-	contextRefs: string[];
 	contractId: string;
 	corpusSnapshotId: string;
+	memoryRefs: string[];
 	mode: SynapseMode;
 	namespaceId: string;
 	representationId: string;
@@ -53,7 +53,8 @@ export type LaunchContract = {
 export type RehydrationChecks = {
 	currentNamespaceId: string;
 	currentScope: ContractScope;
-	objectExists: (contentId: string) => boolean;
+	/** Whether the memory record still exists; the refs name records, not their bodies. */
+	memoryExists: (memoryId: string) => boolean;
 };
 
 export type RehydrationResult =
@@ -91,8 +92,8 @@ function contractBody(input: LaunchContractInput): CanonicalValue {
 	const scope = normaliseScope(input.scope);
 	return {
 		capabilityId: input.capabilityId,
-		contextRefs: [...new Set(input.contextRefs)].sort(),
 		corpusSnapshotId: input.corpusSnapshotId,
+		memoryRefs: [...new Set(input.memoryRefs)].sort(),
 		mode: input.mode,
 		namespaceId: input.namespaceId,
 		representationId: input.representationId,
@@ -105,9 +106,9 @@ export function resolveLaunchContract(input: LaunchContractInput): LaunchContrac
 	const scope = normaliseScope(input.scope);
 	return {
 		capabilityId: input.capabilityId,
-		contextRefs: [...new Set(input.contextRefs)].sort(),
 		contractId: canonicalDigest(contractBody(input)),
 		corpusSnapshotId: input.corpusSnapshotId,
+		memoryRefs: [...new Set(input.memoryRefs)].sort(),
 		mode: input.mode,
 		namespaceId: input.namespaceId,
 		representationId: input.representationId,
@@ -148,9 +149,9 @@ export function rehydrateLaunchContract(serialised: string, checks: RehydrationC
 	if (!stillGrants(parsed.scope, checks.currentScope)) {
 		return { category: "permission", reason: "authorisation narrowed since the snapshot was frozen", status: "refused" };
 	}
-	for (const contentId of parsed.contextRefs) {
-		if (!checks.objectExists(contentId)) {
-			return { category: "object-unavailable", reason: `referenced object ${contentId} is gone`, status: "refused" };
+	for (const memoryId of parsed.memoryRefs) {
+		if (!checks.memoryExists(memoryId)) {
+			return { category: "object-unavailable", reason: `referenced memory ${memoryId} is gone`, status: "refused" };
 		}
 	}
 	// The frozen scope is returned even when the current grant is wider: resuming

@@ -15,7 +15,7 @@ import {
 function contractInput(overrides: Partial<LaunchContractInput> = {}): LaunchContractInput {
 	return {
 		capabilityId: overrides.capabilityId ?? "c".repeat(64),
-		contextRefs: overrides.contextRefs ?? ["a".repeat(64)],
+		memoryRefs: overrides.memoryRefs ?? ["a".repeat(64)],
 		corpusSnapshotId: overrides.corpusSnapshotId ?? "corpus-1",
 		mode: overrides.mode ?? "synapse",
 		namespaceId: overrides.namespaceId ?? "0123456789abcdef",
@@ -29,7 +29,7 @@ function checks(overrides: Partial<RehydrationChecks> = {}): RehydrationChecks {
 	return {
 		currentNamespaceId: overrides.currentNamespaceId ?? "0123456789abcdef",
 		currentScope: overrides.currentScope ?? { pathPrefixes: ["src"], write: false },
-		objectExists: overrides.objectExists ?? (() => true),
+		memoryExists: overrides.memoryExists ?? (() => true),
 	};
 }
 
@@ -44,13 +44,13 @@ describe("launch contract parity (AC-10)", () => {
 	it("changes identity when permission, snapshot or mode changes", () => {
 		const base = resolveLaunchContract(contractInput()).contractId;
 		assert.notEqual(resolveLaunchContract(contractInput({ scope: { pathPrefixes: [""], write: false } })).contractId, base);
-		assert.notEqual(resolveLaunchContract(contractInput({ contextRefs: ["b".repeat(64)] })).contractId, base);
+		assert.notEqual(resolveLaunchContract(contractInput({ memoryRefs: ["b".repeat(64)] })).contractId, base);
 		assert.notEqual(resolveLaunchContract(contractInput({ mode: "text" })).contractId, base);
 	});
 
 	it("does not depend on the order permissions or references were collected in", () => {
-		const forward = resolveLaunchContract(contractInput({ contextRefs: ["a".repeat(64), "b".repeat(64)], scope: { pathPrefixes: ["src", "docs"], write: false } }));
-		const reversed = resolveLaunchContract(contractInput({ contextRefs: ["b".repeat(64), "a".repeat(64)], scope: { pathPrefixes: ["docs", "src"], write: false } }));
+		const forward = resolveLaunchContract(contractInput({ memoryRefs: ["a".repeat(64), "b".repeat(64)], scope: { pathPrefixes: ["src", "docs"], write: false } }));
+		const reversed = resolveLaunchContract(contractInput({ memoryRefs: ["b".repeat(64), "a".repeat(64)], scope: { pathPrefixes: ["docs", "src"], write: false } }));
 		assert.equal(forward.contractId, reversed.contractId);
 	});
 
@@ -74,7 +74,7 @@ describe("rehydration after reload or resume (AC-14)", () => {
 
 	it("refuses when a referenced object is gone rather than continuing without it", () => {
 		const contract = resolveLaunchContract(contractInput());
-		const result = rehydrateLaunchContract(serialiseLaunchContract(contract), checks({ objectExists: () => false }));
+		const result = rehydrateLaunchContract(serialiseLaunchContract(contract), checks({ memoryExists: () => false }));
 		assert.equal(result.status, "refused");
 		if (result.status !== "refused") return;
 		assert.equal(result.category, "object-unavailable");
