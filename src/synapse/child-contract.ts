@@ -82,12 +82,13 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 		contextBudgetBytes: config.contextBudgetBytes,
 		contract: resolveLaunchContract({
 			// The capability is the receiving role's own declaration, so the contract
-			// id changes when what the child can do changes. Corpus identity becomes
-			// meaningful with the state plane; until then it is a stable placeholder
-			// that still takes part in the contract id.
+			// id changes when what the child can do changes. Corpus identity comes
+			// from configuration: an experiment pins the snapshot id a build-corpus
+			// run produced, and without one the stable "unset" placeholder keeps the
+			// vector path disabled.
 			capabilityId: capabilityForAgent({ agent, childTools: input.childTools, representationId }).capabilityId,
 			contextRefs: [],
-			corpusSnapshotId: "unset",
+			corpusSnapshotId: config.corpusSnapshotId ?? "unset",
 			mode: config.mode,
 			namespaceId: deriveNamespaceId(input.cwd),
 			representationId,
@@ -108,6 +109,7 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 	return registerSynapseTools(pi, {
 		config: {
 			contextBudgetBytes: contract.contextBudgetBytes,
+			corpusSnapshotId: contract.contract.corpusSnapshotId === "unset" ? null : contract.contract.corpusSnapshotId,
 			embedding: null,
 			maxObjectBytes: 1024 * 1024,
 			memory: "project",

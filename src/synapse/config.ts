@@ -61,6 +61,8 @@ export type SynapseEmbeddingConfig = {
 
 export type SynapseConfig = {
 	contextBudgetBytes: number;
+	/** Set by experiments to the id a `build-corpus` run produced; null keeps the "unset" placeholder. */
+	corpusSnapshotId: string | null;
 	embedding: SynapseEmbeddingConfig | null;
 	maxObjectBytes: number;
 	memory: SynapseMemoryMode;
@@ -83,6 +85,9 @@ const EmbeddingSchema = Type.Object(
 const RawConfigSchema = Type.Object(
 	{
 		contextBudgetBytes: Type.Optional(Type.Integer({ minimum: 1 })),
+		corpusSnapshotId: Type.Optional(
+			Type.String({ minLength: 1, pattern: "^[0-9a-f]{64}$", description: "64-hex id from a build-corpus run" }),
+		),
 		embedding: Type.Optional(EmbeddingSchema),
 		maxObjectBytes: Type.Optional(Type.Integer({ minimum: 1 })),
 		memory: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("project")])),
@@ -177,6 +182,7 @@ export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = o
 	}
 	return {
 		contextBudgetBytes: raw.contextBudgetBytes ?? SYNAPSE_DEFAULT_CONTEXT_BUDGET_BYTES,
+		corpusSnapshotId: raw.corpusSnapshotId ?? null,
 		embedding: raw.embedding === undefined ? null : resolveEmbedding(raw.embedding),
 		maxObjectBytes: raw.maxObjectBytes ?? SYNAPSE_DEFAULT_MAX_OBJECT_BYTES,
 		memory,

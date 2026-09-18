@@ -55,6 +55,20 @@ describe("child contract resolution", () => {
 		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { mode: "text" } })), null);
 	});
 
+	it("carries the pinned corpus snapshot id, or the unset placeholder without one", () => {
+		assert.equal(resolveSynapseChildContract(input())?.contract.corpusSnapshotId, "unset");
+		const pinned = "a".repeat(64);
+		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { corpusSnapshotId: pinned, mode: "synapse" } }))?.contract.corpusSnapshotId, pinned);
+	});
+
+	it("round-trips a pinned corpus snapshot through child tool registration", () => {
+		const pinned = "c".repeat(64);
+		const contract = resolveSynapseChildContract(input({ extensionConfig: { corpusSnapshotId: pinned, mode: "synapse" } }));
+		assert.ok(contract);
+		const registered = registerSynapseChildTools({ registerTool: () => undefined }, contract, worktree);
+		assert.equal(registered.registered, true);
+	});
+
 	it("names the child's own agent, run and session for provenance", () => {
 		const contract = resolveSynapseChildContract(input({ agentName: "executor" }));
 		assert.equal(contract?.agent, "executor");

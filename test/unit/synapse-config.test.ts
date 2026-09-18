@@ -26,6 +26,15 @@ describe("synapse config defaults", () => {
 		assert.equal(config.storageRoot, null);
 	});
 
+	it("pins a corpus snapshot id only when an experiment names one", () => {
+		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).corpusSnapshotId, null);
+		const pinned = "b".repeat(64);
+		assert.equal(resolveSynapseConfig({ corpusSnapshotId: pinned, mode: "synapse" }, HOME).corpusSnapshotId, pinned);
+		assert.throws(() => resolveSynapseConfig({ corpusSnapshotId: "", mode: "synapse" }, HOME), /synapse\.corpusSnapshotId/);
+		// The placeholder word and typos must fail loudly, not silently disable the vector path.
+		assert.throws(() => resolveSynapseConfig({ corpusSnapshotId: "unset", mode: "synapse" }, HOME), /synapse\.corpusSnapshotId/);
+	});
+
 	it("turns memory on with synapse mode and leaves the text baseline without it", () => {
 		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).memory, "project");
 		assert.equal(resolveSynapseConfig({ mode: "text" }, HOME).memory, "off");
