@@ -128,6 +128,9 @@ function requireField<T>(action: string, field: string, value: T | undefined): T
 
 async function readAction(service: MemoryService, params: SynapseReadInput): Promise<AgentToolResult<CanonicalValue>> {
 	if (params.action === "search") {
+		// The tool schema has no stateId parameter, so this call types — and
+		// stays — on the memory-ranking shape; the state plane is consumed by
+		// the host, not by the model through this tool.
 		const result = await service.searchSemantic({
 			includeHistorical: params.includeHistorical,
 			k: params.k,
@@ -199,6 +202,7 @@ export function createSynapseService(config: SynapseConfig, agentDir: string, co
 	ensureNamespace(resolved);
 	return {
 		service: createMemoryService({
+			corpusSnapshotId: config.corpusSnapshotId,
 			embedder: resolveEmbedder(config, resolved.root),
 			maxObjectBytes: config.maxObjectBytes,
 			provenance: context.provenance,

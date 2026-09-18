@@ -15,9 +15,11 @@ import { capabilityForAgent, hostCapability } from "./roles.ts";
  * Everything the protocol modules describe converges here. Capabilities are
  * negotiated before the task is sent, the snapshot is frozen around whatever
  * memory the child is allowed to see, the envelope binds that decision to this
- * request, and the meter records what crossed. The child still receives text,
- * because no peer in this build holds a tool that decodes a state payload — and
- * the negotiation result says so explicitly instead of leaving a reader to
+ * request, and the meter records what crossed. The child in this seam still
+ * receives text: a vector handoff needs the retrieve action wired end to end
+ * (the sender embedding, the envelope carrying a stateRef, the receiver
+ * consuming it against the pinned corpus), which is the P3-5 card — and the
+ * negotiation result already names the reason rather than leaving a reader to
  * assume a vector path was taken.
  *
  * The seam is one function pair used by both execution paths. Foreground and
@@ -126,6 +128,8 @@ export function modelUsageFrom(usage: { cacheRead: number; cacheWrite: number; c
 }
 
 function candidatesFor(service: MemoryService, message: string): HandoffCandidate[] {
+	// A query search types as the memory ranking, so the state shape cannot
+	// appear on this path; the input decides the output shape.
 	const found = service.search({ query: message });
 	return found.results.map((hit) => ({
 		contentId: hit.contentId,

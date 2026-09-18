@@ -223,8 +223,8 @@ describe("synapse_read.search", () => {
 		assert.throws(() => instance.search({ k: SYNAPSE_MAX_SEARCH_K + 1, query: "residual" }), /k-out-of-range/);
 	});
 
-	it("reports state retrieval as unavailable instead of quietly searching by keyword", async () => {
-		assert.throws(() => service().search({ stateId: "a".repeat(64) }), /capability-unavailable/);
+	it("requires the envelope's stateRef material before state retrieval is attempted", async () => {
+		assert.throws(() => service().search({ stateId: "a".repeat(64) }), /stateRef-required/);
 	});
 
 	it("requires exactly one of query or stateId", async () => {
