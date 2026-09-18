@@ -46,7 +46,7 @@ function seedMemory(summary: string, content: string, sourcePath: string): strin
 function contractFor(mode: SynapseMode, pathPrefixes: string[] = [""]): LaunchContract {
 	return resolveLaunchContract({
 		capabilityId: capabilityForAgent({ agent: "retriever", childTools: ["read"], representationId: "unavailable" }).capabilityId,
-		contextRefs: [],
+		memoryRefs: [],
 		corpusSnapshotId: "unset",
 		mode,
 		namespaceId: deriveNamespaceId(worktree),
@@ -60,8 +60,8 @@ function identity(overrides: Partial<DelegationIdentity> = {}): DelegationIdenti
 	return {
 		agent: overrides.agent ?? "retriever",
 		attempt: overrides.attempt ?? 1,
+		childIndex: overrides.childIndex ?? 0,
 		childTools: overrides.childTools ?? ["read", "grep"],
-		nodeId: overrides.nodeId ?? "run-1/0",
 		receiverSessionId: overrides.receiverSessionId ?? "sess-child",
 		requestId: overrides.requestId ?? REQUEST_ID,
 		runId: overrides.runId ?? RUN_ID,
@@ -111,7 +111,7 @@ describe("synapse delegation", () => {
 		assert.match(delegation.prompt, /login is verified in src\/auth\.ts/);
 		assert.deepEqual(delegation.handoff.refs, [memoryId]);
 		assert.equal(delegation.handoff.carriedBodies, false, "synapse mode hands over references, not bodies");
-		assert.deepEqual(delegation.envelope.contextRefs, [memoryId]);
+		assert.deepEqual(delegation.envelope.memoryRefs, [memoryId]);
 		assert.equal(delegation.envelope.action, "delegate");
 		assert.equal(delegation.envelope.snapshotId.length, 64);
 

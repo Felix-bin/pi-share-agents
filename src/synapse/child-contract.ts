@@ -86,8 +86,8 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			// meaningful with the state plane; until then it is a stable placeholder
 			// that still takes part in the contract id.
 			capabilityId: capabilityForAgent({ agent, childTools: input.childTools, representationId }).capabilityId,
-			contextRefs: [],
 			corpusSnapshotId: "unset",
+			memoryRefs: [],
 			mode: config.mode,
 			namespaceId: deriveNamespaceId(input.cwd),
 			representationId,
