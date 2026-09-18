@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
 import { negotiate, type CapabilityDeclaration, type NegotiationResult, type TextFallbackReason } from "./capability.ts";
@@ -440,7 +441,19 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 			snapshot,
 			stateRef,
 		});
-	if (negotiation.outcome === "text") return { envelope: envelopeOf(), kind: "text", reason: negotiation.reason };
+	if (negotiation.outcome === "text") {
+		const envelope = envelopeOf();
+		// A text fallback is a delivery like any other: its envelope bytes and
+		// its query text count, so a calibration comparing text and vector paths
+		// is not skewed by an unmetered baseline (P4 group review X-2).
+		deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, {
+			envelopeBytes: envelope.envelopeBytes,
+			kind: "message-delivered",
+			messageId: identity.requestId,
+			textBytes: Buffer.byteLength(input.query, "utf-8"),
+		});
+		return { envelope, kind: "text", reason: negotiation.reason };
+	}
 
 	if (input.embedder.representationId !== contract.representationId) {
 		throw new Error(
@@ -466,6 +479,10 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	// the bytes that were sent — the digest the envelope then claims (spec §8.1).
 	const store = createContentStore(contract.storageRoot);
 	const payloadId = store.put(payload, SYNAPSE_VECTOR_MEDIA_TYPE);
+	// The state payload is storage traffic like any other object: its bytes
+	// belong in storage.writeBytes so a calibration's storage-cost column is
+	// not quietly missing the vector payloads (P4 group review X-5).
+	deps.log.record(meterIdentity, { bytes: payload.byteLength, direction: "write", kind: "object-io" });
 	const stateRef: StateRef = {
 		baseMemoryId: null,
 		byteLength: payload.byteLength,
@@ -608,9 +625,22 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 				// type) is a failed recovery, not an exception through the seam.
 				let resendFailed: ConsumeAttempt | null = null;
 				try {
+					// A corrupted object that still matches its file name would make
+					// the store's put a no-op and the retry fail again: a body that
+					// no longer hashes to its id is removed first (its metadata is
+					// rewritten by the put below), so the re-sent verified copy
+					// actually lands (P4 group review X-1).
+					if (store.has(stateRef.payloadId)) {
+						try {
+							store.read(stateRef.payloadId);
+						} catch {
+							fs.rmSync(store.objectPath(stateRef.payloadId), { force: true });
+						}
+					}
 					// A re-send is a delivery in its own right and is metered as one;
 					// the content-addressed store makes re-publishing the same bytes a no-op.
 					const resentId = store.put(bytes, SYNAPSE_VECTOR_MEDIA_TYPE);
+					input.deps.log.record(meterIdentity, { bytes: bytes.byteLength, direction: "write", kind: "object-io" });
 					input.deps.log.record({ ...meterIdentity, attempt: meterIdentity.attempt + 1 }, {
 						kind: "state-send",
 						ok: true,

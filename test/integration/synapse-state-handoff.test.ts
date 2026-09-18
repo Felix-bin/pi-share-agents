@@ -491,6 +491,12 @@ describe("AC-11: injected corruption is never consumed and the recovery chain st
 		assert.equal(outcome.result.hits[0]?.path, "src/b.md");
 		assert.equal(resends, 1);
 		assert.equal(eventsOf("state-consume").length, 1);
+		// The received set is false at first receipt (the object was gone) and the
+		// recovery consumes anyway: the aggregate must stay recomputable from the
+		// log with received=0 and consumed=1 (group review X-9).
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.state.consumed, 1);
+		assert.equal(totals.state.received, 0);
 	});
 
 	it("keeps a rejected resend inside the outcome instead of throwing through the seam", async () => {
@@ -512,6 +518,30 @@ describe("AC-11: injected corruption is never consumed and the recovery chain st
 		assert.equal(outcome.category, "persistence");
 		assert.equal(resends, 1);
 		assert.equal(eventsOf("state-consume").length, 0);
+	});
+
+	it("heals a corrupted object through the resend, not only a deleted one (group review X-1)", async () => {
+		const sent = await sendOnce();
+		const store = createContentStore(storageRoot);
+		const objectPath = store.objectPath(sent.stateRef.payloadId);
+		const original = fs.readFileSync(objectPath);
+		// Same file name, different bytes: the read no longer hashes to the id.
+		const corrupted = Buffer.from(original);
+		corrupted[0] = corrupted[0]! ^ 0xff;
+		fs.writeFileSync(objectPath, corrupted);
+		let resends = 0;
+		const outcome = await consumeRetrieveState({
+			contract: contracts.child,
+			deps: consumeDeps({ resend: () => { resends += 1; return original; } }),
+			envelope: sent.envelope,
+			identity: consumeIdentity(),
+			worktreeRoot: worktree,
+			k: K,
+		});
+		assert.equal(outcome.kind, "consumed", "a corrupted body must be replaced by the re-sent verified copy, not stuck behind a no-op put");
+		assert.equal(outcome.result.hits[0]?.path, "src/b.md");
+		assert.equal(resends, 1);
+		assert.equal(eventsOf("state-consume").length, 1);
 	});
 
 	it("falls back to text once when the resend fails and recovery allows it", async () => {
