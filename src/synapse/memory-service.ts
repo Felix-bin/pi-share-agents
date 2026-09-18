@@ -1,15 +1,20 @@
+import { createHash } from "node:crypto";
 import { isPathInScope, isReadable, requireWritable, type AccessScope } from "./access.ts";
+import type { Embedder } from "./embedding.ts";
+import { SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
 import { createContentStore, type ContentStore } from "./content-store.ts";
 import {
 	createMemoryStore,
 	type MemoryAssurance,
 	type MemoryKind,
 	type MemoryProvenance,
+	type MemoryEmbeddingRef,
 	type MemoryRecord,
 	type MemoryStore,
 	type SupersessionEvent,
 	type SupersessionReason,
 } from "./memory-store.ts";
+import type { MeteringIdentity, MeteringLog } from "./metering.ts";
 import { searchMemories, type SemanticComponent } from "./retrieval.ts";
 import { captureSource, checkSource } from "./source-fingerprint.ts";
 
@@ -32,7 +37,11 @@ export const SYNAPSE_MAX_SUMMARY_BYTES = 2048;
 export type MemoryValidity = "current" | "stale" | "unavailable";
 
 export type MemoryServiceOptions = {
+	/** When present, remember embeds each record and stores the vector in the CAS. */
+	embedder?: Embedder;
 	maxLoadedRecords?: number;
+	/** Paired log and identity for the service's own metering (vector object writes). */
+	metering?: { identity: MeteringIdentity; log: MeteringLog };
 	maxObjectBytes?: number;
 	now?: () => Date;
 	provenance: MemoryProvenance;
@@ -110,7 +119,7 @@ export type ServiceSupersedeInput = {
 
 export type MemoryService = {
 	get: (input: GetInput) => GetResult;
-	remember: (input: RememberInput) => RememberResult;
+	remember: (input: RememberInput) => Promise<RememberResult>;
 	search: (input: SearchInput) => SearchResult;
 	supersede: (input: ServiceSupersedeInput) => SupersessionEvent;
 };
@@ -172,7 +181,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 			};
 		},
 
-		remember(input: RememberInput): RememberResult {
+		async remember(input: RememberInput): Promise<RememberResult> {
 			requireWritable(options.scope);
 			if (utf8Length(input.summary) > SYNAPSE_MAX_SUMMARY_BYTES) {
 				throw new Error(`summary-too-large: ${utf8Length(input.summary)} > ${SYNAPSE_MAX_SUMMARY_BYTES}`);
@@ -191,9 +200,28 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 				}
 			}
 			const contentId = contentStore.put(new TextEncoder().encode(input.content), "text/plain");
+			// The embedded text is the deterministic concatenation taskTopic + "\n" +
+			// summary: the same record inputs always produce the same embedding input.
+			let embedding: MemoryEmbeddingRef | undefined;
+			if (options.embedder !== undefined) {
+				const embedded = await options.embedder.embedQuery(`${input.topic}\n${input.summary}`);
+				const vectorBytes = new Uint8Array(embedded.vector.buffer, embedded.vector.byteOffset, embedded.vector.byteLength);
+				// Bytes are attributed only where they were spent: a put that would land
+				// on an already-stored object (retry, warm L2) writes nothing and must
+				// not inflate storage.writeBytes. The content id is the sha-256 of the
+				// bytes, the same digest the store addresses objects by.
+				const vectorId = createHash("sha256").update(vectorBytes).digest("hex");
+				const isNewVector = !contentStore.has(vectorId);
+				const objectId = contentStore.put(vectorBytes, SYNAPSE_VECTOR_MEDIA_TYPE);
+				embedding = { dim: embedded.vector.length, objectId, representationId: options.embedder.representationId };
+				if (isNewVector) {
+					options.metering?.log.record(options.metering.identity, { bytes: vectorBytes.byteLength, direction: "write", kind: "object-io" });
+				}
+			}
 			const record = memoryStore.publish({
 				assurance: assuranceOf(input.kind, source !== null),
 				contentId,
+				embedding,
 				kind: input.kind,
 				operationId: input.operationId,
 				provenance: options.provenance,

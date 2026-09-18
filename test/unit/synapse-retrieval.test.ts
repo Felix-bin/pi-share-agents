@@ -20,6 +20,7 @@ function record(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
 	const id = counter.toString(16).padStart(64, "0");
 	return {
 		assurance: "observation",
+		embedding: null,
 		contentId: "a".repeat(64),
 		createdAt: overrides.createdAt ?? "2026-09-16T00:00:00.000Z",
 		kind: "evidence",

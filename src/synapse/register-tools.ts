@@ -143,9 +143,9 @@ function readAction(service: MemoryService, params: SynapseReadInput): AgentTool
 	return toolOutput({ ...page });
 }
 
-function writeAction(service: MemoryService, params: SynapseWriteInput, operationId: string): AgentToolResult<CanonicalValue> {
+async function writeAction(service: MemoryService, params: SynapseWriteInput, operationId: string): Promise<AgentToolResult<CanonicalValue>> {
 	if (params.action === "remember") {
-		const written = service.remember({
+		const written = await service.remember({
 			content: requireField("remember", "content", params.content),
 			kind: params.kind ?? "evidence",
 			operationId,

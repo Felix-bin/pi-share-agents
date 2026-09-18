@@ -24,14 +24,14 @@ let worktree = "";
 const RUN_ID = "run-1";
 const REQUEST_ID = "run-1-0-abcd";
 
-function seedMemory(summary: string, content: string, sourcePath: string): string {
+async function seedMemory(summary: string, content: string, sourcePath: string): Promise<string> {
 	const service = createMemoryService({
 		provenance: { agent: "retriever", attempt: 1, runId: "run-0", sessionId: "sess-seed" },
 		scope: { agent: "retriever", namespaceId: deriveNamespaceId(worktree), pathPrefixes: [""], write: true },
 		storeRoot: store,
 		worktreeRoot: worktree,
 	});
-	const written = service.remember({
+	const written = await service.remember({
 		content,
 		kind: "evidence",
 		operationId: `seed/${summary}`,
@@ -102,8 +102,8 @@ afterEach(() => {
 });
 
 describe("synapse delegation", () => {
-	it("hands the child what it may read and meters exactly what was sent", () => {
-		const memoryId = seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
+	it("hands the child what it may read and meters exactly what was sent", async () => {
+		const memoryId = await seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
 		const delegation = open("synapse", "Task: explain the auth flow");
 		assert.ok(delegation, "an authorised delegation must open");
 
@@ -123,7 +123,7 @@ describe("synapse delegation", () => {
 		assert.deepEqual(kinds(), ["task-span", "memory-query", "memory-reuse", "message-delivered"]);
 	});
 
-	it("records the negotiated path as text, never as a vector success", () => {
+	it("records the negotiated path as text, never as a vector success", async () => {
 		const delegation = open("synapse", "Task: explain the auth flow");
 		assert.ok(delegation);
 		assert.equal(delegation.negotiation.outcome, "text");
@@ -133,8 +133,8 @@ describe("synapse delegation", () => {
 		assert.equal(totals.state.sentBytes, 0);
 	});
 
-	it("carries bodies in text mode and references in synapse mode, from the same memory", () => {
-		seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
+	it("carries bodies in text mode and references in synapse mode, from the same memory", async () => {
+		await seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
 		const asText = open("text", "Task: explain the auth flow");
 		fs.rmSync(path.join(store, "metering"), { force: true, recursive: true });
 		const asSynapse = open("synapse", "Task: explain the auth flow");
@@ -148,8 +148,8 @@ describe("synapse delegation", () => {
 		assert.ok(Buffer.byteLength(asText.prompt, "utf-8") > Buffer.byteLength(asSynapse.prompt, "utf-8"));
 	});
 
-	it("never recalls a memory the child is not authorised to read", () => {
-		seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
+	it("never recalls a memory the child is not authorised to read", async () => {
+		await seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
 		const delegation = open("synapse", "Task: explain the auth flow", { pathPrefixes: ["docs"] });
 		assert.ok(delegation);
 		assert.deepEqual(delegation.handoff.refs, []);
@@ -159,13 +159,13 @@ describe("synapse delegation", () => {
 		assert.equal(query?.kind === "memory-query" && query.authorisedValidHits, 0);
 	});
 
-	it("refuses rather than delegating unmetered when the receiver may read nothing", () => {
+	it("refuses rather than delegating unmetered when the receiver may read nothing", async () => {
 		assert.equal(open("synapse", "Task: anything", { pathPrefixes: [] }), null);
 		assert.equal(fs.existsSync(meteringLogPath(contractFor("synapse"), RUN_ID)), false, "a refusal writes nothing");
 	});
 
-	it("drops whole entries under a tight budget and still sends the task in full", () => {
-		seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
+	it("drops whole entries under a tight budget and still sends the task in full", async () => {
+		await seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
 		const delegation = open("synapse", "Task: explain the auth flow", { budgetBytes: 8 });
 		assert.ok(delegation);
 		assert.deepEqual(delegation.handoff.refs, []);
@@ -173,8 +173,8 @@ describe("synapse delegation", () => {
 		assert.equal(delegation.prompt, "Task: explain the auth flow");
 	});
 
-	it("closes a completed run with a receipt that follows the run's own outcome", () => {
-		const memoryId = seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
+	it("closes a completed run with a receipt that follows the run's own outcome", async () => {
+		const memoryId = await seedMemory("login is verified in src/auth.ts", "the login path checks the session cookie first", "src/auth.ts");
 		const delegation = open("synapse", "Task: explain the auth flow");
 		assert.ok(delegation);
 		const receipt = delegation.close({
@@ -201,7 +201,7 @@ describe("synapse delegation", () => {
 		assert.notEqual(totals.duration.byTask[REQUEST_ID], "unavailable");
 	});
 
-	it("classifies a failure and refuses to call it accepted", () => {
+	it("classifies a failure and refuses to call it accepted", async () => {
 		const delegation = open("synapse", "Task: explain the auth flow");
 		assert.ok(delegation);
 		const receipt = delegation.close({
@@ -221,7 +221,7 @@ describe("synapse delegation", () => {
 		assert.equal(totals.model.complete, false);
 	});
 
-	it("keeps an unreported usage distinct from a reported zero", () => {
+	it("keeps an unreported usage distinct from a reported zero", async () => {
 		assert.equal(modelUsageFrom({ cacheRead: 0, cacheWrite: 0, cost: 0, input: 0, output: 0, turns: 0 }), null);
 		assert.deepEqual(modelUsageFrom({ cacheRead: 0, cacheWrite: 0, cost: 0, input: 0, output: 0, turns: 1 }), {
 			cacheRead: 0,
@@ -232,7 +232,7 @@ describe("synapse delegation", () => {
 		});
 	});
 
-	it("meters a cancelled run as cancelled rather than as a failure it never was", () => {
+	it("meters a cancelled run as cancelled rather than as a failure it never was", async () => {
 		const delegation = open("synapse", "Task: explain the auth flow");
 		assert.ok(delegation);
 		const receipt = delegation.close({ cause: new Error("cancelled: the user stopped the run"), outcome: "cancelled", summary: "stopped", usage: null });
