@@ -81,6 +81,17 @@ createDelegationDeps              createDelegationDeps                  │
 输出：逐行 JSON 到 `<storageRoot>/trace/<runId>.ndjson`，每条形如
 `{pid, tid, startTicks, nsecs, syscall, fd, path?, bytes, ret}`。
 
+**采集器必须遵守的两条契约要求**（实现 §3.1 时必读，二者都已被下游代码依赖）：
+
+1. **`path` 必须是已解析的绝对路径。** 下游按存储根做前缀判定，相对路径会被判为"存储根之外"
+   而整条不计入——安全但静默少计。`path` 在 `openat` / `renameat2` 上是必填，在 `read` / `write`
+   上必须不存在（下游按此做判别联合校验）。
+2. **`syscall` 只有四个：`write` / `read` / `openat` / `renameat2`。没有 `close`，没有 `dup`。**
+   这是刻意的：fd 复用无需 `close` 事件即可正确处理（内核只在 close 后复用 fd 号，而复用后的
+   首次使用必为 `openat`，因此"后一次 openat 覆盖同一 fd"语义天然正确）。代价是 `dup` / `dup2`
+   与 fork 继承的 fd 不可观测，其上的读写会落进显式的 **unknown-fd** 桶并被计数——可见，
+   不静默归零。若 §7.3 的自洽性验收显示大量字节落进该桶，再扩展契约补 `close` / `dup` 事件。
+
 字节口径：只记**实际返回**的正数字节（`ret > 0`）。短写只记它真正搬了多少。`ret < 0` 计入失败
 计数，不贡献字节。
 
