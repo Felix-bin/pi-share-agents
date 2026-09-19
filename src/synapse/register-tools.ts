@@ -1,11 +1,10 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import * as path from "node:path";
 import { Type, type Static, type TSchema } from "typebox";
 import { canonicalJson, type CanonicalValue } from "./canonical-json.ts";
 import type { AccessScope } from "./access.ts";
 import type { SynapseConfig } from "./config.ts";
-import { createSiliconFlowEmbedder, type Embedder } from "./embedding.ts";
+import { resolveConfiguredEmbedder, type Embedder } from "./embedding.ts";
 import { createMemoryService, SYNAPSE_DEFAULT_SEARCH_K, SYNAPSE_MAX_SEARCH_K, type MemoryService } from "./memory-service.ts";
 import type { MemoryProvenance } from "./memory-store.ts";
 import { ensureNamespace, resolveStorageRoot } from "./namespace.ts";
@@ -181,16 +180,7 @@ async function writeAction(service: MemoryService, params: SynapseWriteInput, op
  * than failing the tool.
  */
 function resolveEmbedder(config: SynapseConfig, storageRoot: string): Embedder | undefined {
-	if (config.embedding === null) return undefined;
-	const key = process.env[config.embedding.keyEnv];
-	if (key === undefined || key.length === 0) return undefined;
-	try {
-		// The persistent cache lives in its own subtree, so embedding-cache object
-		// writes never mix into the memory store's object-io accounting.
-		return createSiliconFlowEmbedder(config.embedding, { key, storageRoot: path.join(storageRoot, "embedding-store") });
-	} catch {
-		return undefined;
-	}
+	return resolveConfiguredEmbedder(config.embedding, storageRoot);
 }
 
 export function createSynapseService(config: SynapseConfig, agentDir: string, context: SynapseToolContext): SynapseService {

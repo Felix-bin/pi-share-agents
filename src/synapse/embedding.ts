@@ -208,6 +208,32 @@ function createPersistentCache(storageRoot: string, representationId: string, di
 	};
 }
 
+/**
+ * Builds the configured embedder, or none when semantic retrieval is not
+ * configured or cannot start.
+ *
+ * Takes the embedding config rather than the whole synapse config so the two
+ * senders that need it — the host before a delegation and the receiver's own
+ * text fallback — can both call it from what they hold. Both resolve their
+ * storage root through the same `resolveStorageRoot`, so the cache subtree is
+ * shared and a vector embedded once is not paid for twice.
+ *
+ * The key comes from the environment only, never from a key file, and a missing
+ * key degrades to keyword ranking rather than failing the caller.
+ */
+export function resolveConfiguredEmbedder(embedding: SynapseEmbeddingConfig | null, storageRoot: string): Embedder | undefined {
+	if (embedding === null) return undefined;
+	const key = process.env[embedding.keyEnv];
+	if (key === undefined || key.length === 0) return undefined;
+	try {
+		// The persistent cache lives in its own subtree, so embedding-cache object
+		// writes never mix into the memory store's object-io accounting.
+		return createSiliconFlowEmbedder(embedding, { key, storageRoot: path.join(storageRoot, "embedding-store") });
+	} catch {
+		return undefined;
+	}
+}
+
 export function createSiliconFlowEmbedder(cfg: SynapseEmbeddingConfig, deps: EmbedderDeps): Embedder {
 	const representationId = representationIdOfConfig(cfg);
 	const fetchFn = deps.fetchFn ?? fetch;

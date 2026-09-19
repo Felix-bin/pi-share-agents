@@ -4,8 +4,8 @@ import { writeAtomicJson } from "../shared/atomic-json.ts";
 import { negotiate, type CapabilityDeclaration, type NegotiationResult, type TextFallbackReason } from "./capability.ts";
 import { createContentStore } from "./content-store.ts";
 import { type Embedder, SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
-import { buildEnvelope, freezeSnapshot, type Envelope, type StateRef } from "./envelope.ts";
-import { nodeIdFor, publishEnvelope, safeComponent } from "./envelope-inbox.ts";
+import { buildEnvelope, freezeSnapshot, type Envelope, type EnvelopeWire, type StateRef } from "./envelope.ts";
+import { clearStateEnvelope, nodeIdFor, publishEnvelope, publishStateEnvelope, safeComponent } from "./envelope-inbox.ts";
 import { classifySynapseError, type SynapseErrorClassification } from "./errors.ts";
 import { buildReceipt, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
 import type { LaunchContract } from "./lifecycle.ts";
@@ -318,6 +318,18 @@ export type ConsumeIdentity = {
 	 */
 	childIndex: number | undefined;
 	runId: string;
+	/**
+	 * Metering and provenance only — never an admission input. This side
+	 * resolves its own session identity from the session file path when one
+	 * exists, while the sender records the id of the host's child session
+	 * object, so the two strings are not reliably equal and comparing them
+	 * would refuse correct runs (P4-4b，两路 K3 独立裁决一致：convergent on C).
+	 *
+	 * Admission binds only facts both sides derive for themselves: the run id,
+	 * the node id recomputed from the run and child index, and — when the
+	 * consumer knows it — the sender session id it was launched under. See
+	 * {@link ConsumeInput.expectedSenderSessionId}.
+	 */
 	sessionId: string;
 };
 
@@ -390,7 +402,22 @@ export type ConsumeDeps = {
 export type ConsumeInput = {
 	contract: LaunchContract;
 	deps: ConsumeDeps;
-	envelope: Envelope;
+	/**
+	 * The delivered wire form, which is what a receiver actually holds: it read
+	 * the envelope from its inbox and the bytes it was sent are the file's, not
+	 * a locally measured figure. The consumer reads nothing else from it, so a
+	 * receiver built on a wire cannot fabricate fields it never had.
+	 */
+	envelope: EnvelopeWire;
+	/**
+	 * The session this consumer was launched by, when it knows which identity
+	 * launched it. Present, the envelope must name it as its sender; absent, that
+	 * half of the binding is not attempted rather than passed on a guess. The
+	 * primary binding is unaffected either way: the run id and the node id
+	 * recomputed from the run and child index hold regardless of what the
+	 * consumer was told about its own session.
+	 */
+	expectedSenderSessionId?: string;
 	/** The original query, held by the host as controlled recovery material (spec §8.2). */
 	fallbackQuery?: string;
 	identity: ConsumeIdentity;
@@ -506,6 +533,10 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 		});
 	if (negotiation.outcome === "text") {
 		const envelope = envelopeOf();
+		// A delivery that carries no state must not leave an earlier delivery's
+		// state envelope behind: the receiver reads that path by name, so a stale
+		// file would be consumed as though this message had published it.
+		clearStateEnvelope(contract.storageRoot, identity.runId, identity.childIndex);
 		// A text fallback is a delivery like any other: its envelope bytes and
 		// its query text count, so a calibration comparing text and vector paths
 		// is not skewed by an unmetered baseline (P4 group review X-2).
@@ -583,6 +614,16 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 		stateId: payloadId,
 	});
 	const envelope = envelopeOf(stateRef);
+	// The envelope is published before the delivery is metered, so a logged
+	// delivery never claims an envelope the receiver could not find — the same
+	// order, and the same reason, as the delegation path above. It lands on the
+	// state-plane sibling path; a failure to publish degrades rather than throws,
+	// because an absent state envelope is not a failure to the receiver.
+	try {
+		publishStateEnvelope(contract.storageRoot, identity.runId, identity.childIndex, envelope);
+	} catch (error) {
+		console.warn(`[pi-subagents] synapse: state envelope delivery skipped for ${identity.agent}: ${error instanceof Error ? error.message : String(error)}`);
+	}
 	deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, {
 		...choiceFields,
 		kind: "state-send",
@@ -610,7 +651,7 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
  * representation or permission failures never recover at all.
  */
 export async function consumeRetrieveState(input: ConsumeInput): Promise<ConsumeOutcome> {
-	const wire = input.envelope.wire;
+	const wire = input.envelope;
 	// The metering identity exists before any check so a refusal can still leave
 	// its trace: an append-only log is the only audit surface a rejected envelope
 	// will ever have, and a permission or configuration refusal is exactly the
@@ -628,10 +669,26 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 		input.deps.log.record(meterIdentity, { category, detail: reason, kind: "error" });
 		return { category, kind: "refused", reason };
 	};
-	if (wire.runId !== input.identity.runId || wire.receiverSessionId !== input.identity.sessionId) {
+	// Audience binding, on facts this side derives rather than on a string it was
+	// told. `receiverSessionId` is deliberately not compared: the sender records
+	// the id of the host's child session object while the receiver resolves its
+	// own identity differently, so an equality check would refuse correct runs —
+	// the ruling envelope-inbox.ts already records for its own verification. What
+	// replaces it binds at least as tightly: the node id is recomputed from this
+	// launch's own run and child index, and it is the same derivation that names
+	// the inbox this envelope was read from, so an envelope addressed to another
+	// child cannot be consumed here.
+	const expectedNodeId = nodeIdFor(input.identity.runId, input.identity.childIndex);
+	if (wire.runId !== input.identity.runId || wire.nodeId !== expectedNodeId) {
 		return refuse(
 			"permission",
-			`not-authorised: envelope names run ${wire.runId} for session ${wire.receiverSessionId}, the consumer is ${input.identity.runId}/${input.identity.sessionId}`,
+			`not-authorised: envelope names run ${wire.runId} node ${wire.nodeId}, the consumer is ${input.identity.runId}/${expectedNodeId}`,
+		);
+	}
+	if (input.expectedSenderSessionId !== undefined && wire.senderSessionId !== input.expectedSenderSessionId) {
+		return refuse(
+			"permission",
+			`not-authorised: envelope names sender session ${wire.senderSessionId}, this launch was created by ${input.expectedSenderSessionId}`,
 		);
 	}
 	const stateRef = wire.stateRef;

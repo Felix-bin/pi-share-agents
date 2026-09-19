@@ -1,11 +1,11 @@
 import * as os from "node:os";
 import { getAgentDir } from "../shared/utils.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { representationIdOf, resolveSynapseConfig, type UnvalidatedJson } from "./config.ts";
+import { representationIdOf, resolveSynapseConfig, type SynapseEmbeddingConfig, type UnvalidatedJson } from "./config.ts";
 import { resolveLaunchContract, type LaunchContract } from "./lifecycle.ts";
 import { deriveNamespaceId, resolveStorageRoot } from "./namespace.ts";
 import { registerSynapseTools, type SynapseToolHost, type SynapseToolsRegistration } from "./register-tools.ts";
-import { capabilityForAgent } from "./roles.ts";
+import { capabilityForAgent, consumesState } from "./roles.ts";
 
 /**
  * The SYNAPSE contract a delegated child receives.
@@ -27,6 +27,14 @@ export type SynapseChildContract = {
 	/** Budget for the recalled memory section the child is handed at launch. */
 	contextBudgetBytes: number;
 	contract: LaunchContract;
+	/**
+	 * The configured embedding provider, carried so both halves of a state
+	 * handover can be built from the contract alone: the host embeds the query
+	 * it is about to send, and the receiver re-embeds that query if its
+	 * recovery falls back to text. The key stays in the environment; nothing
+	 * secret is ever written here.
+	 */
+	embedding: SynapseEmbeddingConfig | null;
 	runId: string;
 	sessionId: string;
 };
@@ -54,6 +62,18 @@ export function synapseChildToolsEnabled(extensionConfig: UnvalidatedJson): bool
 
 export function childMayWrite(childTools: readonly string[]): boolean {
 	return childTools.some((tool) => MUTATING_TOOLS.has(tool));
+}
+
+/**
+ * Whether this child could consume a state payload at all.
+ *
+ * The answer is the receiver role's own rule, not a second copy of it: a child
+ * that was not granted a state-consuming tool negotiates to text no matter what
+ * the sender offers, so the host asks this before spending an embedding call on
+ * a handover that cannot land.
+ */
+export function childConsumesState(childTools: readonly string[]): boolean {
+	return consumesState(childTools);
 }
 
 /**
@@ -95,6 +115,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			scope: { pathPrefixes: [""], write: childMayWrite(input.childTools) },
 			storageRoot: resolved.root,
 		}),
+		embedding: config.embedding,
 		runId,
 		sessionId,
 	};

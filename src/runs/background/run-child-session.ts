@@ -23,7 +23,7 @@ import { formatSubagentModelVerificationError } from "../shared/model-fallback.t
 import { isMutatingTool, resolveCurrentPath } from "../shared/long-running-guard.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, toolTimeoutCallKey } from "../shared/tool-timeout.ts";
 import { createReportedChildSessionInput, type InProcessChildLaunch } from "../shared/child-launch.ts";
-import { closeChildDelegation, openChildDelegation } from "../shared/synapse-delegation.ts";
+import { closeChildDelegation, openChildDelegationWithState } from "../shared/synapse-delegation.ts";
 import type { OpenDelegation } from "../../synapse/delegation.ts";
 import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
@@ -694,13 +694,16 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				});
 				if (interrupted || timedOut || stopped) abortChild();
 				checkContinuation();
-				delegation = openChildDelegation({
+				// The task plane always, the state plane when this child can consume one;
+				// the second delivery is metered by the send side that produced it.
+				const opened = await openChildDelegationWithState({
 					childTools: input.launch.toolPlan.declaredBuiltinTools,
 					cwd: createInput.cwd,
 					message: input.prompt,
 					receiverSessionId: created.sessionId,
 					runtime: createInput.runtime,
 				});
+				delegation = opened.delegation;
 				await created.prompt(delegation?.prompt ?? input.prompt);
 				promptSettled = true;
 				closeChildDelegation(delegation, {

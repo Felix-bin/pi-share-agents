@@ -39,6 +39,7 @@ function childContract(): SynapseChildContract {
 			scope: { pathPrefixes: [""], write: true },
 			storageRoot: store,
 		}),
+		embedding: null,
 		runId: "run-7",
 		sessionId: "sess-parent",
 	};
