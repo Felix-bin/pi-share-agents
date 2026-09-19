@@ -54,6 +54,14 @@ type CorpusVectors = {
 	vectors: Float32Array[];
 };
 
+/**
+ * A corpus as the ranking sees it. Exported so a caller that ranks the same
+ * corpus — the delta calibration, which compares a recovered vector's top-k
+ * with the true vector's — reaches the hits through the production ranking
+ * rather than a second implementation of it.
+ */
+export type LoadedCorpus = CorpusVectors;
+
 function sha256Hex(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
@@ -80,7 +88,7 @@ function normOf(vector: Float32Array): number {
 }
 
 /** Loads and fully verifies the published corpus; every mismatch is fatal. */
-function loadCorpus(storageRoot: string, corpusSnapshotId: string, expectedDim: number, representationId: string): CorpusVectors {
+export function loadCorpusVectors(storageRoot: string, corpusSnapshotId: string, expectedDim: number, representationId: string): CorpusVectors {
 	// The id reaches path.join before anything is read: a non-hex value with
 	// separators must be refused here, at the boundary, rather than trusted to
 	// stay inside the storage root (config pins the shape today; the P3-5
@@ -171,6 +179,32 @@ function loadCorpus(storageRoot: string, corpusSnapshotId: string, expectedDim: 
 	return { chunkIds: chunks.map((chunk) => chunk.chunkId), chunkMeta: chunks.map(({ endLine, path: chunkPath, startLine }) => ({ endLine, path: chunkPath, startLine })), vectors };
 }
 
+/**
+ * Ranks every chunk of a loaded corpus against one query vector: cosine
+ * descending, ties by chunk id ascending. It is the only ranking in the build,
+ * so a caller comparing a recovered vector against a true one measures the order
+ * the wire path actually produces.
+ */
+export function rankCorpusChunks(corpus: CorpusVectors, queryVector: Float32Array, k: number): StateRetrievalHit[] {
+	const queryNorm = normOf(queryVector);
+	if (queryNorm === 0) {
+		throw new Error("integrity: query vector is all zeros; cosine against it is undefined");
+	}
+	const hits: StateRetrievalHit[] = corpus.vectors.map((vector, index) => {
+		// A corpus vector of another width cannot be compared; failing here beats
+		// scoring every later element against `undefined`.
+		if (vector.length !== queryVector.length) {
+			throw new Error(`representation-mismatch: corpus chunk ${corpus.chunkIds[index]} holds ${vector.length} floats, the query vector holds ${queryVector.length}`);
+		}
+		let dot = 0;
+		for (let element = 0; element < vector.length; element += 1) dot += queryVector[element]! * vector[element]!;
+		const meta = corpus.chunkMeta[index]!;
+		return { chunkId: corpus.chunkIds[index]!, cosine: dot / (queryNorm * normOf(vector)), endLine: meta.endLine, path: meta.path, startLine: meta.startLine };
+	});
+	hits.sort((left, right) => (left.cosine !== right.cosine ? right.cosine - left.cosine : left.chunkId < right.chunkId ? -1 : 1));
+	return hits.slice(0, k);
+}
+
 export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrievalInput): StateRetrievalResult {
 	const stateRef = input.stateRef;
 	// The service front door validates k, but this module is also callable
@@ -209,19 +243,14 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 	if (queryVector.length !== stateRef.dim) {
 		throw new Error(`integrity: state payload ${stateRef.payloadId} holds ${queryVector.length} floats, the envelope declared dim ${stateRef.dim}`);
 	}
-	const queryNorm = normOf(queryVector);
-	if (queryNorm === 0) {
+
+	const corpus = loadCorpusVectors(deps.storageRoot, input.corpusSnapshotId, stateRef.dim, stateRef.representationId);
+	// The zero-norm refusal lives inside the ranking now; the payload keeps its
+	// own message because the id is what a reader can act on.
+	if (normOf(queryVector) === 0) {
 		throw new Error(`integrity: state payload ${stateRef.payloadId} is an all-zero vector; cosine against it is undefined`);
 	}
-
-	const corpus = loadCorpus(deps.storageRoot, input.corpusSnapshotId, stateRef.dim, stateRef.representationId);
-	const hits: StateRetrievalHit[] = corpus.vectors.map((vector, index) => {
-		let dot = 0;
-		for (let element = 0; element < vector.length; element += 1) dot += queryVector[element]! * vector[element]!;
-		const meta = corpus.chunkMeta[index]!;
-		return { chunkId: corpus.chunkIds[index]!, cosine: dot / (queryNorm * normOf(vector)), endLine: meta.endLine, path: meta.path, startLine: meta.startLine };
-	});
-	hits.sort((left, right) => (left.cosine !== right.cosine ? right.cosine - left.cosine : left.chunkId < right.chunkId ? -1 : 1));
+	const hits = rankCorpusChunks(corpus, queryVector, input.k);
 
 	// Consumption is the receipt that proves the state was used: only a
 	// retrieval that ranked the corpus is counted, and send/receive alone
@@ -238,5 +267,5 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 		representationId: stateRef.representationId,
 		stateId: stateRef.payloadId,
 	});
-	return { corpusSnapshotId: input.corpusSnapshotId, hits: hits.slice(0, input.k), representationId: stateRef.representationId };
+	return { corpusSnapshotId: input.corpusSnapshotId, hits, representationId: stateRef.representationId };
 }
