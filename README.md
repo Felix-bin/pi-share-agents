@@ -344,8 +344,9 @@ npm run typecheck
 上游基座在未改动的 `HEAD` 上本身即有约 11059 条 lint 告警（存量债，非本 fork 引入），
 在仓库根直接运行 `npx oxlint` 会见红。清零它需要修改一万余个与本题无关的文件，
 会淹没真实 diff 并损害评审时的可复核性，因此采用「基线-棘轮」的通行做法：
-本线改动零新增告警，存量单独跟踪、赛后处理。对外表述一律为**「改动范围 lint 干净」**，
-不得声称全仓干净。
+本线改动零新增告警，存量单独跟踪、赛后处理——**跟踪 issue 见
+[Felix-bin/pi-share-agents#14](https://github.com/Felix-bin/pi-share-agents/issues/14)**。
+对外表述一律为**「改动范围 lint 干净」**，不得声称全仓干净。
 
 ## 已知缺口
 
