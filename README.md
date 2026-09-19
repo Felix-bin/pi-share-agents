@@ -138,7 +138,7 @@ pi -e ./index.ts --prompt-template ./prompts
 | 信封投递与接收侧校验 | **已接入。** 信封写入 `<storageRoot>/envelopes/<runId>/<childIndex>.json`，子 Agent 在首个回合读取并按协议解析，命名空间、能力 ID 与重算的快照 ID 任一不符即拒绝执行。信封不进模型上下文，零 token 开销。 |
 | 非文本状态传递（向量载荷） | **已实现且已验证**（限 AC-04/05/11 集成测试范围；集成测试经本地 HTTP stub 提供合成向量，真实 provider 验证待实验批次）：retrieve 委派协商为 state 时，发送侧嵌入查询并把 float32 向量发布到 CAS，信封携带 `stateRef`，接收侧校验（sha-256/维度/表示）后对固定的 `corpusSnapshotId` 语料做余弦 top-k 检索；prepare/send/receive/consume 四类事件分开计量，信封字节与失败/拒绝也入日志，对象损坏按重传≤1、文本回退≤1 的有限恢复链处理。生产宿主的检索委派触发点尚未接线（模块级 API 已就绪）。 |
 | 语义检索 / 嵌入 | **已实现且已验证**（单元与工具级测试范围；测试向量同样由本地 stub 提供，真实 provider 验证待实验批次）：配置 `synapse.embedding` 后记忆检索带语义余弦分量（冻结 0.3/0.2/0.5 权重），无嵌入配置时诚实报 `unavailable`；状态检索（`stateId`）走独立路径消费已验证的向量载荷。 |
-| 残差（`delta`）编码 | **已实现且已验证**（限编解码单元测试与 Python 参照黄金用例一致性范围；**未接线、未标定**）：`src/synapse/delta.ts` 实现量化（round-half-even）、稀疏残差编解码与量化域余弦，与 Python 参照实现 `stateplane/residual.py` 的三组黄金用例逐字节一致（覆盖精确 .5 并列、int8 裁剪、零残差终止三类判别，以及畸形输入拒绝）。发送/接收/回退接线与 `(grid, threshold)` 标定属后续任务；`stateRef` 已携带 `encoding` 与 `baseMemoryId`，接线无需改协议版本。 |
+| 残差（`delta`）编码 | **已实现且已验证**（限编解码单元测试与 Python 参照黄金用例一致性范围）：`src/synapse/delta.ts` 实现量化（round-half-even）、稀疏残差编解码与量化域余弦，与 Python 参照实现 `stateplane/residual.py` 的三组黄金用例逐字节一致（覆盖精确 .5 并列、int8 裁剪、零残差终止三类判别，以及畸形输入拒绝）并已**标定**为网格 127 / 阈值 0.99（int8、两字节索引）。**标定结论是负结果**：在没有组合达到 100% 检索一致性的前提下按最高档降级冻结，实测 top-1 一致 97.9%、top-5 集合一致 79.1%、有序一致 56.9%，平均载荷 1789.73 B（较 4096 B 完整向量降 56.3%，**仅载荷口径**）——净收益待全账计量，**不得据此声称收益为正**。报告的完整扫描表、配对统计与成立条件见 `docs/experiments/delta-calibration-20260919.md`。发送/接收/回退接线仍未完成。 |
 
 完整的已知缺口见[下文](#已知缺口)。
 
