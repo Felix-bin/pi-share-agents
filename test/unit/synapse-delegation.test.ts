@@ -84,7 +84,13 @@ function events(): MeteringEvent[] {
 }
 
 function kinds(): string[] {
-	return events().map((event) => event.kind);
+	// process-identity is recorded on Linux (where /proc exists) and skipped on
+	// Windows; it is orthogonal to the message flow these assertions check, so
+	// it is filtered here rather than making the expected sequence platform-
+	// dependent.
+	return events()
+		.map((event) => event.kind)
+		.filter((kind) => kind !== "process-identity");
 }
 
 beforeEach(() => {
@@ -230,6 +236,15 @@ describe("synapse delegation", () => {
 			input: 0,
 			output: 0,
 		});
+	});
+
+	it("does not record a process-identity event or throw on a platform without /proc", () => {
+		const delegation = open("synapse", "Task: explain the auth flow");
+		assert.ok(delegation);
+		assert.equal(
+			events().some((event) => event.kind === "process-identity"),
+			false,
+		);
 	});
 
 	it("meters a cancelled run as cancelled rather than as a failure it never was", () => {

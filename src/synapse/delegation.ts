@@ -7,7 +7,7 @@ import { classifySynapseError } from "./errors.ts";
 import { buildReceipt, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
 import type { LaunchContract } from "./lifecycle.ts";
 import { createMemoryService, type MemoryService } from "./memory-service.ts";
-import { createMeteringLog, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
+import { createMeteringLog, recordProcessIdentity, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
 import { capabilityForAgent, hostCapability } from "./roles.ts";
 
 /**
@@ -94,8 +94,22 @@ export function receiptPath(contract: LaunchContract, requestId: string): string
  * must not be recalled on its behalf, or the handoff would widen its reach.
  */
 export function createDelegationDeps(input: OpenDelegationInput): DelegationDeps {
+	const log = createMeteringLog(meteringLogPath(input.contract, input.identity.runId));
+	// Binds this OS process to the run identity for a future kernel-side
+	// collector. Called on whichever side opens delegation, so the same
+	// delegation can eventually produce one such event per process. On a
+	// platform without /proc this simply records nothing and never throws.
+	recordProcessIdentity(log, {
+		agent: input.identity.agent,
+		attempt: input.identity.attempt,
+		mode: input.contract.mode,
+		nodeId: nodeIdFor(input.identity.runId, input.identity.childIndex),
+		runId: input.identity.runId,
+		sessionId: input.identity.senderSessionId,
+		snapshotId: null,
+	});
 	return {
-		log: createMeteringLog(meteringLogPath(input.contract, input.identity.runId)),
+		log,
 		service: createMemoryService({
 			provenance: {
 				agent: input.identity.agent,

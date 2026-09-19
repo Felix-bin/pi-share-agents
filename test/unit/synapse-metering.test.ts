@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { aggregateMetering, createMeteringLog, readMeteringLog, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
+import { aggregateMetering, createMeteringLog, readMeteringLog, readProcessIdentity, recordProcessIdentity, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
 
 let root = "";
 let logPath = "";
@@ -267,6 +267,72 @@ describe("memory and duration accounting (AC-09)", () => {
 		const totals = aggregateMetering(readMeteringLog(logPath));
 		assert.equal(totals.storage.writeBytes, 500);
 		assert.equal(totals.storage.readBytes, 120);
+	});
+});
+
+describe("process identity binding", () => {
+	// A fixture stat line whose comm field is parenthesised and itself contains
+	// spaces and a nested paren, the case that breaks naive whitespace-splitting.
+	function statLine(startTicks: number): string {
+		return `12345 (my (weird) prog) S 1 12345 12345 34816 12345 4194304 100 0 5 0 20 5 0 0 20 0 4 0 ${startTicks} 10000000 500 18446744073709551615\n`;
+	}
+
+	it("parses startTicks from field 22 past the last close-paren of a tricky comm", () => {
+		const snapshot = readProcessIdentity({
+			pid: 4242,
+			readFile: (filePath) => {
+				if (filePath === "/proc/self/stat") return statLine(67890);
+				if (filePath === "/proc/uptime") return "12345.67 54321.89\n";
+				throw new Error(`unexpected path: ${filePath}`);
+			},
+		});
+		assert.deepEqual(snapshot, { pid: 4242, startTicks: 67890, uptimeAtRecordSeconds: 12345.67 });
+	});
+
+	it("returns null rather than throwing when /proc does not exist", () => {
+		const snapshot = readProcessIdentity({
+			readFile: () => {
+				throw new Error("ENOENT: no such file or directory, open '/proc/self/stat'");
+			},
+		});
+		assert.equal(snapshot, null);
+	});
+
+	it("returns null when a field cannot be parsed as a number", () => {
+		const snapshot = readProcessIdentity({ readFile: (filePath) => (filePath === "/proc/self/stat" ? "not a stat line" : "12345.67 0\n") });
+		assert.equal(snapshot, null);
+	});
+
+	it("records a process-identity event when the OS identity is available", () => {
+		recordProcessIdentity(log, identity(), { pid: 4242, readFile: (filePath) => (filePath === "/proc/self/stat" ? statLine(67890) : "12345.67 0\n") });
+		const [event] = readMeteringLog(logPath);
+		assert.ok(event);
+		assert.equal(event.kind, "process-identity");
+		assert.equal(event.kind === "process-identity" && event.pid, 4242);
+		assert.equal(event.kind === "process-identity" && event.startTicks, 67890);
+		assert.equal(event.kind === "process-identity" && event.uptimeAtRecordSeconds, 12345.67);
+	});
+
+	it("records nothing and does not throw when the OS identity is unavailable", () => {
+		const result = recordProcessIdentity(log, identity(), {
+			readFile: () => {
+				throw new Error("ENOENT");
+			},
+		});
+		assert.equal(result, null);
+		assert.deepEqual(readMeteringLog(logPath), []);
+	});
+
+	it("does not shift the duration span: aggregateMetering is identical with or without it", () => {
+		log.record(identity(), { kind: "task-span", phase: "start", taskId: "t1" });
+		log.record(identity(), { kind: "message-delivered", envelopeBytes: 10, messageId: "m1", textBytes: 100 });
+		log.record(identity(), { kind: "task-span", phase: "end", taskId: "t1" });
+		const withoutIdentity = aggregateMetering(readMeteringLog(logPath));
+
+		recordProcessIdentity(log, identity(), { pid: 1, readFile: (filePath) => (filePath === "/proc/self/stat" ? statLine(1) : "0.5 0\n") });
+		const withIdentity = aggregateMetering(readMeteringLog(logPath));
+
+		assert.deepEqual(withIdentity, withoutIdentity);
 	});
 });
 
