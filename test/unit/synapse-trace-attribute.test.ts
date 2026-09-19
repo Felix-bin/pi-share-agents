@@ -6,13 +6,16 @@ import {
 	attributionKeyOf,
 	bootNsecsOf,
 	bucketBytes,
+	bucketTouched,
 	LINUX_CLOCK_TICKS_PER_SECOND,
 	meteringEpochNsecs,
+	placedBytes,
 	processStartNsecs,
 	traceIoBytes,
 	UNATTRIBUTED_SHARE_THRESHOLD,
 	type AttributedProcessIo,
 	type KernelIoAttribution,
+	type TraceCollection,
 } from "../../src/synapse/trace-attribute.ts";
 import type { TraceDescriptorRecord, TraceLineError, TraceLog, TraceLossReport, TracePathRecord, TraceRecord } from "../../src/synapse/trace-log.ts";
 
@@ -88,9 +91,14 @@ function open(path: string, overrides: Partial<TracePathRecord> = {}): TracePath
 
 type TraceLogOverrides = { errors?: TraceLineError[]; losses?: TraceLossReport[]; records?: TraceRecord[] };
 
-function traceLog(overrides: TraceLogOverrides = {}): TraceLog {
-	return { errors: overrides.errors ?? [], losses: overrides.losses ?? [], records: overrides.records ?? [] };
+/** A collector that ran and produced this output — including the case where it produced nothing. */
+function collected(overrides: TraceLogOverrides = {}): TraceCollection {
+	const trace: TraceLog = { errors: overrides.errors ?? [], losses: overrides.losses ?? [], records: overrides.records ?? [] };
+	return { kind: "collected", trace };
 }
+
+/** No collector ran. Not spellable as an empty `collected()`, which is the point of the discriminant. */
+const NOT_COLLECTED: TraceCollection = { kind: "not-collected" };
 
 /** One `openat` plus one `write` of `bytes` to an envelope, by one process. */
 function envelopeWrite(pid: number, startTicks: number, bytes: number, nsecs = 20_000_000_000): TraceRecord[] {
@@ -134,7 +142,7 @@ describe("synapse kernel I/O attribution: the key", () => {
 
 describe("synapse kernel I/O attribution: joining trace records to run identities", () => {
 	it("attributes a process's bytes to the identity its pid and start time were bound to", () => {
-		const result = attributeKernelIo([identityEvent()], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		const row = rowFor(result, 42, 1_000);
 		assert.equal(onlyIdentity(row).runId, "run-1");
 		assert.equal(row.io.categories.envelope.writeBytes, 500);
@@ -152,7 +160,7 @@ describe("synapse kernel I/O attribution: joining trace records to run identitie
 		];
 		const records = [...envelopeWrite(42, 1_000, 300), ...envelopeWrite(42, 5_000, 700, 60_000_000_000)];
 
-		const result = attributeKernelIo(events, traceLog({ records }), ROOT);
+		const result = attributeKernelIo(events, collected({ records }), ROOT);
 		assert.equal(attributedRows(result).length, 2);
 
 		const older = rowFor(result, 42, 1_000);
@@ -167,7 +175,7 @@ describe("synapse kernel I/O attribution: joining trace records to run identitie
 	});
 
 	it("binds identities only from process-identity events, never from an event that merely shares the run", () => {
-		const result = attributeKernelIo([objectIoEvent()], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo([objectIoEvent()], collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		assert.equal(result.diagnostics.identityKeys, 0);
 		assert.equal(result.diagnostics.unattributedProcesses.length, 1);
 	});
@@ -179,7 +187,7 @@ describe("synapse kernel I/O attribution: joining trace records to run identitie
 			identityEvent({ identity: identity({ nodeId: "run-1/0" }) }),
 			identityEvent({ identity: identity({ nodeId: "run-1/1" }), monotonicMs: 2_000, uptimeAtRecordSeconds: 17 }),
 		];
-		const result = attributeKernelIo(events, traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo(events, collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		const row = rowFor(result, 42, 1_000);
 		assert.deepEqual(
 			row.identities.map((bound) => bound.nodeId),
@@ -193,7 +201,7 @@ describe("synapse kernel I/O attribution: joining trace records to run identitie
 
 	it("counts a bound identity that produced no observed I/O", () => {
 		const events = [identityEvent({ pid: 42 }), identityEvent({ pid: 99, startTicks: 1_100 })];
-		const result = attributeKernelIo(events, traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo(events, collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		assert.equal(result.diagnostics.identityKeys, 2);
 		assert.equal(result.diagnostics.identityKeysWithoutTrace, 1);
 	});
@@ -202,7 +210,7 @@ describe("synapse kernel I/O attribution: joining trace records to run identitie
 describe("synapse kernel I/O attribution: orphan records", () => {
 	it("counts a trace process with no identity mapping instead of dropping or guessing it", () => {
 		const records = [...envelopeWrite(42, 1_000, 900), ...envelopeWrite(77, 4_000, 100, 30_000_000_000)];
-		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 
 		assert.equal(result.diagnostics.unattributedProcesses.length, 1);
 		const [orphan] = result.diagnostics.unattributedProcesses;
@@ -229,7 +237,7 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 			// No openat behind fd 4: an unknown descriptor, still real bytes.
 			rw({ bytes: 200, fd: 4, nsecs: 30_000_000_000, pid: 77, ret: 200, startTicks: 4_000 }),
 		];
-		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		assert.equal(result.diagnostics.attributedBytes, 100_000);
 		assert.equal(result.diagnostics.unattributedBytes, 200);
 		assert.equal(result.diagnostics.unattributedShare, 200 / 100_200);
@@ -249,7 +257,7 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 			open(`${ROOT}/objects/cd/cdef01.bin`, { nsecs: 30_000_000_000, pid: 77, ret: 8, startTicks: 4_000 }),
 			rw({ bytes: 100, fd: 8, nsecs: 30_000_001_000, pid: 77, ret: 100, startTicks: 4_000, syscall: "read" }),
 		];
-		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		assert.equal(result.diagnostics.attributedBytes, 900);
 		assert.equal(result.diagnostics.unattributedBytes, 100);
 		assert.equal(result.diagnostics.unattributedShare, 0.1);
@@ -268,7 +276,7 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 			open(`${ROOT}/metering/run-1.jsonl`, { nsecs: 21_000_002_000, ret: 12 }),
 			rw({ bytes: 800, fd: 12, nsecs: 21_000_003_000, ret: 800 }),
 		];
-		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		// Ignored bytes are neither attributed nor unattributed: including them
 		// in the denominator would dilute the unattributed share.
 		assert.equal(result.diagnostics.attributedBytes, 500);
@@ -282,7 +290,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 	it("refuses the whole run's result when the collector admits it lost events", () => {
 		const result = attributeKernelIo(
 			[identityEvent()],
-			traceLog({ losses: [{ count: 17, kind: "lost", nsecs: 25_000_000_000 }], records: envelopeWrite(42, 1_000, 500) }),
+			collected({ losses: [{ count: 17, kind: "lost", nsecs: 25_000_000_000 }], records: envelopeWrite(42, 1_000, 500) }),
 			ROOT,
 		);
 		assert.equal(result.attributed, "unavailable");
@@ -300,14 +308,14 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 			{ count: 5, kind: "lost", nsecs: 25_000_000_000 },
 			{ count: 9, kind: "lost", nsecs: 26_000_000_000 },
 		];
-		const result = attributeKernelIo([identityEvent()], traceLog({ losses, records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ losses, records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		assert.equal(result.diagnostics.lossReports, 2);
 		assert.equal(result.diagnostics.lostEventsHighWater, 9);
 	});
 
 	it("refuses the result when a line could not be read, including a collector killed mid-write", () => {
 		const errors: TraceLineError[] = [{ detail: "line ends before the JSON document closes", line: 12, reason: "truncated" }];
-		const result = attributeKernelIo([identityEvent()], traceLog({ errors, records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ errors, records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		assert.equal(result.attributed, "unavailable");
 		assert.deepEqual(result.unavailableReasons, ["unreadable-lines"]);
 		assert.equal(result.diagnostics.traceLines.errors.truncated, 1);
@@ -317,7 +325,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 	it("refuses the result when the unattributed share is over the threshold", () => {
 		// 1.5% orphaned.
 		const records = [...envelopeWrite(42, 1_000, 985), ...envelopeWrite(77, 4_000, 15, 30_000_000_000)];
-		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		assert.equal(result.attributed, "unavailable");
 		assert.deepEqual(result.unavailableReasons, ["unattributed-over-threshold"]);
 		assert.equal(result.diagnostics.unattributedShare, 0.015);
@@ -328,7 +336,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 		const records = [...envelopeWrite(42, 1_000, 900), ...envelopeWrite(77, 4_000, 100, 30_000_000_000)];
 		const result = attributeKernelIo(
 			[identityEvent()],
-			traceLog({
+			collected({
 				errors: [{ detail: "line is not valid JSON", line: 3, reason: "malformed" }],
 				losses: [{ count: 2, kind: "lost", nsecs: 25_000_000_000 }],
 				records,
@@ -343,7 +351,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 		// share it stands with is still visible.
 		const underThreshold = attributeKernelIo(
 			[identityEvent()],
-			traceLog({ records: [...envelopeWrite(42, 1_000, 998), ...envelopeWrite(77, 4_000, 2, 30_000_000_000)] }),
+			collected({ records: [...envelopeWrite(42, 1_000, 998), ...envelopeWrite(77, 4_000, 2, 30_000_000_000)] }),
 			ROOT,
 		);
 		assert.equal(attributedRows(underThreshold).length, 1);
@@ -354,7 +362,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 		// Exactly 1%: the comparison is strictly greater, so this is reported.
 		const atThreshold = attributeKernelIo(
 			[identityEvent()],
-			traceLog({ records: [...envelopeWrite(42, 1_000, 990), ...envelopeWrite(77, 4_000, 10, 30_000_000_000)] }),
+			collected({ records: [...envelopeWrite(42, 1_000, 990), ...envelopeWrite(77, 4_000, 10, 30_000_000_000)] }),
 			ROOT,
 		);
 		assert.equal(atThreshold.diagnostics.unattributedShare, 0.01);
@@ -364,7 +372,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 
 	it("honours a calibrated threshold without changing what is reported", () => {
 		const records = [...envelopeWrite(42, 1_000, 900), ...envelopeWrite(77, 4_000, 100, 30_000_000_000)];
-		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT, { unattributedShareThreshold: 0.2 });
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT, { unattributedShareThreshold: 0.2 });
 		assert.equal(attributedRows(result).length, 1);
 		assert.equal(result.diagnostics.unattributedShare, 0.1);
 		assert.equal(result.diagnostics.unattributedShareThreshold, 0.2);
@@ -372,7 +380,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 
 	it("reports a share of no bytes as N/A rather than a zero share", () => {
 		// The collector saw calls but no byte moved: there is no share to state.
-		const result = attributeKernelIo([identityEvent()], traceLog({ records: [open(`${ROOT}/envelopes/m1.json`)] }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records: [open(`${ROOT}/envelopes/m1.json`)] }), ROOT);
 		assert.equal(result.diagnostics.unattributedShare, "N/A");
 		assert.deepEqual(result.unavailableReasons, []);
 		assert.equal(attributedRows(result).length, 1);
@@ -387,7 +395,7 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 	for (const badRoot of ["var/synapse", "C:\\synapse", "", "./var/synapse"]) {
 		it(`refuses the result rather than reporting an empty account against ${JSON.stringify(badRoot)}`, () => {
 			const records = [...envelopeWrite(42, 1_000, 50_000)];
-			const result = attributeKernelIo([identityEvent()], traceLog({ records }), badRoot);
+			const result = attributeKernelIo([identityEvent()], collected({ records }), badRoot);
 			assert.equal(result.attributed, "unavailable");
 			assert.deepEqual(result.unavailableReasons, ["unusable-storage-root"]);
 			// Nothing was classified, so no byte total is claimed either way.
@@ -406,14 +414,85 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		// This is the expected first failure once each agent runs in its own
 		// iSulad container: the collector on the host reports host paths while Pi
 		// inside the container sees container paths.
-		const result = attributeKernelIo([identityEvent()], traceLog({ records: envelopeWrite(42, 1_000, 50_000) }), "/srv/other-tree");
+		const result = attributeKernelIo([identityEvent()], collected({ records: envelopeWrite(42, 1_000, 50_000) }), "/srv/other-tree");
 		assert.equal(result.attributed, "unavailable");
-		assert.deepEqual(result.unavailableReasons, ["no-bytes-under-storage-root"]);
+		assert.deepEqual(result.unavailableReasons, ["no-io-under-storage-root"]);
 		assert.equal(result.diagnostics.attributedBytes, 0);
 		assert.equal(result.diagnostics.unattributedBytes, 0);
 		// The evidence that it was a mismatch and not a quiet run: every byte the
 		// collector saw is sitting outside the root.
 		assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 50_000);
+		assert.equal(result.diagnostics.coverage.complete, false);
+	});
+
+	it("refuses a mismatched root that one write to an inherited fd would otherwise excuse", () => {
+		// The shape this actually takes in production. The collector runs on the
+		// host and reports host paths (`/host/var/synapse/...`); Pi, inside its
+		// iSulad container, supplies `/var/synapse`. Meanwhile every backgrounded
+		// agent process writes to a stdout log descriptor it inherited, which no
+		// `openat` in the trace created — `async-execution.ts` passes those fds as
+		// the child's stdio — so `unknownDescriptor` is never empty on a real run.
+		//
+		// Those 240 pathless bytes are bytes, and they are attributed; they simply
+		// say nothing about whether the root matched. A guard counting attributed
+		// bytes would be satisfied by them on every run that will ever happen,
+		// while 1,000,000 bytes of real envelope traffic sit unplaced.
+		const records: TraceRecord[] = [
+			rw({ bytes: 240, fd: 1, nsecs: 20_000_000_000, ret: 240 }),
+			open("/host/var/synapse/envelopes/m2.json", { nsecs: 20_000_001_000, ret: 7 }),
+			rw({ bytes: 1_000_000, fd: 7, nsecs: 20_000_002_000, ret: 1_000_000 }),
+		];
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
+
+		assert.equal(result.attributed, "unavailable");
+		assert.deepEqual(result.unavailableReasons, ["no-io-under-storage-root"]);
+		assert.equal(result.diagnostics.coverage.complete, false);
+		// The pre-fix reading, kept visible: bytes were attributed, every one of
+		// them pathless, while the real traffic sits outside the root.
+		assert.equal(result.diagnostics.attributedBytes, 240);
+		assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 1_000_000);
+		assert.equal(result.diagnostics.unattributedShare, 0);
+	});
+
+	it("does not confuse pathless bytes with bytes placed under the root", () => {
+		// Observed from before the process started, so coverage is not what is
+		// under test here.
+		const records: TraceRecord[] = [rw({ bytes: 240, fd: 1, nsecs: 5_000_000_000, ret: 240 }), ...envelopeWrite(42, 1_000, 500, 5_000_001_000)];
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
+		const row = rowFor(result, 42, 1_000);
+		// Both totals are right, and they are different quantities: the share's
+		// denominator keeps the inherited-fd bytes, the root check does not.
+		assert.equal(traceIoBytes(row.io), 740);
+		assert.equal(placedBytes(row.io), 500);
+		assert.equal(row.io.unknownDescriptor.writeBytes, 240);
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(result.diagnostics.coverage.complete, true);
+	});
+
+	it("refuses a mismatched root whose only evidence is calls that failed", () => {
+		// A root naming a tree that is not there produces failures and no bytes at
+		// all. `bucketBytes` sees nothing to object to; a failed call still proves
+		// the path was reached for, and that is what the root check needs.
+		const records: TraceRecord[] = [
+			open("/host/var/synapse/envelopes/m2.json", { nsecs: 20_000_000_000, ret: -2 }),
+			rw({ bytes: 512, fd: 9, nsecs: 20_000_001_000, ret: -9 }),
+		];
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
+		assert.equal(result.attributed, "unavailable");
+		assert.deepEqual(result.unavailableReasons, ["no-io-under-storage-root"]);
+		assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 0);
+		assert.equal(result.diagnostics.ignored.outsideRoot.failedPathCalls, 1);
+		assert.equal(bucketTouched(result.diagnostics.ignored.outsideRoot), true);
+	});
+
+	it("takes a failed call under the root as proof the root matched", () => {
+		// The mirror image: the same failure, under the configured root. The root
+		// is evidently right, so there is nothing to refuse — even though not one
+		// byte moved anywhere.
+		const records: TraceRecord[] = [open(`${ROOT}/envelopes/m2.json`, { nsecs: 20_000_000_000, ret: -2 })];
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(rowFor(result, 42, 1_000).io.categories.envelope.failedPathCalls, 1);
 		assert.equal(result.diagnostics.coverage.complete, false);
 	});
 
@@ -424,7 +503,7 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 			open(`${ROOT}/metering/run-1.jsonl`, { nsecs: 20_000_000_000, ret: 12 }),
 			rw({ bytes: 800, fd: 12, nsecs: 20_000_001_000, ret: 800 }),
 		];
-		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		assert.deepEqual(result.unavailableReasons, []);
 		assert.equal(bucketBytes(result.diagnostics.ignored.excluded), 800);
 		// Nothing attributable moved, so the account certifies nothing either.
@@ -436,7 +515,7 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		// count of zero next to one loss report would be an "I did not look" zero.
 		const result = attributeKernelIo(
 			[identityEvent()],
-			traceLog({
+			collected({
 				errors: [{ detail: "line is not valid JSON", line: 3, reason: "malformed" }],
 				losses: [{ count: 9, kind: "lost", nsecs: 25_000_000_000 }],
 				records: envelopeWrite(42, 1_000, 50_000),
@@ -449,11 +528,22 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		assert.equal(result.diagnostics.traceLines.errors.malformed, 1);
 	});
 
+	it("distinguishes a collector that ran and saw nothing from no collector at all", () => {
+		// Same storage root, same events, same absence of trace lines. The only
+		// difference is which of the two facts the caller stated, and it decides
+		// whether the root is examined at all — which is why the input is a
+		// discriminant and not a nullable trace a caller could fumble.
+		const ranAndSawNothing = attributeKernelIo([identityEvent()], collected(), "var/synapse");
+		const neverRan = attributeKernelIo([identityEvent()], NOT_COLLECTED, "var/synapse");
+		assert.equal(ranAndSawNothing.attributed, "unavailable");
+		assert.equal(neverRan.attributed, "N/A");
+	});
+
 	it("checks the root of an empty trace file too, instead of calling it no collection", () => {
 		// An empty trace file is weak evidence of nothing happening, and a
 		// misconfigured root explains it better than a quiet run. Only `null` —
 		// "no collector ran" — skips the root check; see the `null` case above.
-		const result = attributeKernelIo([identityEvent()], traceLog(), "var/synapse");
+		const result = attributeKernelIo([identityEvent()], collected(), "var/synapse");
 		assert.equal(result.attributed, "unavailable");
 		assert.deepEqual(result.unavailableReasons, ["unusable-storage-root"]);
 	});
@@ -462,13 +552,13 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		// A Windows checkout's storage root is never POSIX-absolute and never
 		// collects. Refusing there would turn "this deployment does not collect"
 		// into "this run's measurement failed", on every run.
-		const result = attributeKernelIo([identityEvent()], null, "C:\\Users\\dev\\synapse");
+		const result = attributeKernelIo([identityEvent()], NOT_COLLECTED, "C:\\Users\\dev\\synapse");
 		assert.equal(result.attributed, "N/A");
 		assert.deepEqual(result.unavailableReasons, []);
 	});
 
 	it("accepts the absolute root the collector actually reports paths against", () => {
-		const result = attributeKernelIo([identityEvent()], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		assert.deepEqual(result.unavailableReasons, []);
 		assert.equal(result.diagnostics.attributedBytes, 500);
 	});
@@ -476,7 +566,7 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 
 describe("synapse kernel I/O attribution: no collection at all", () => {
 	it("reports N/A when this deployment ran no collector", () => {
-		const result = attributeKernelIo([identityEvent()], null, ROOT);
+		const result = attributeKernelIo([identityEvent()], NOT_COLLECTED, ROOT);
 		assert.equal(result.attributed, "N/A");
 		assert.equal(result.diagnostics.unattributedShare, "N/A");
 		assert.equal(result.diagnostics.coverage.observedFromNsecs, "N/A");
@@ -486,14 +576,14 @@ describe("synapse kernel I/O attribution: no collection at all", () => {
 	});
 
 	it("treats a trace with nothing in it the same as no trace, never as a run that did no I/O", () => {
-		const result = attributeKernelIo([identityEvent()], traceLog(), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected(), ROOT);
 		assert.equal(result.attributed, "N/A");
 		assert.notEqual(result.attributed, "unavailable");
 		assert.deepEqual(result.diagnostics.unattributedProcesses, []);
 	});
 
 	it("does not report N/A once the trace holds any line at all, even an unreadable one", () => {
-		const result = attributeKernelIo([identityEvent()], traceLog({ errors: [{ detail: "line is not valid JSON", line: 1, reason: "malformed" }] }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ errors: [{ detail: "line is not valid JSON", line: 1, reason: "malformed" }] }), ROOT);
 		assert.equal(result.attributed, "unavailable");
 		assert.deepEqual(result.unavailableReasons, ["unreadable-lines"]);
 	});
@@ -543,7 +633,7 @@ describe("synapse kernel I/O attribution: clock alignment across the two bases",
 		// The metering log cannot predate the process that created it. Here the
 		// readings claim it did, so no coverage answer may be derived from them.
 		const event = identityEvent({ monotonicMs: 5_000, startTicks: 1_000, uptimeAtRecordSeconds: 10 });
-		const result = attributeKernelIo([event], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo([event], collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		assert.equal(result.diagnostics.clockInconsistentIdentityEvents, 1);
 		const row = rowFor(result, 42, 1_000);
 		assert.equal(row.coverage.unobservedPrefixNsecs, "unavailable");
@@ -554,7 +644,7 @@ describe("synapse kernel I/O attribution: clock alignment across the two bases",
 		// startTicks floors to a tick boundary, so a log epoch may read up to one
 		// tick before the computed start without the bases disagreeing.
 		const event = identityEvent({ monotonicMs: 0, startTicks: 1_000, uptimeAtRecordSeconds: 9.995 });
-		const result = attributeKernelIo([event], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo([event], collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		assert.equal(result.diagnostics.clockInconsistentIdentityEvents, 0);
 	});
 });
@@ -569,7 +659,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		];
 		const result = attributeKernelIo(
 			[identityEvent(), identityEvent({ identity: identity({ nodeId: "run-1/9" }), pid: 7, startTicks: 100, uptimeAtRecordSeconds: 6 })],
-			traceLog({ records }),
+			collected({ records }),
 			ROOT,
 		);
 		const row = rowFor(result, 42, 1_000);
@@ -582,7 +672,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		// The process started at 10s since boot; the earliest line in the whole
 		// trace is at 20s. The first 10s of this process carries no evidence, so
 		// the total is not a full account and must not read as one.
-		const result = attributeKernelIo([identityEvent()], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		const row = rowFor(result, 42, 1_000);
 		assert.equal(row.coverage.observedFromStart, false);
 		assert.equal(row.coverage.unobservedPrefixNsecs, 10_000_000_000);
@@ -605,7 +695,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		];
 		const result = attributeKernelIo(
 			[identityEvent(), identityEvent({ identity: identity({ nodeId: "run-1/9" }), pid: 7, startTicks: 100, uptimeAtRecordSeconds: 6 })],
-			traceLog({ records }),
+			collected({ records }),
 			ROOT,
 		);
 		assert.equal(rowFor(result, 42, 1_000).coverage.unobservedPrefixNsecs, 5_000_000_000);
@@ -616,7 +706,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		// though the events it covers are gone.
 		const result = attributeKernelIo(
 			[identityEvent()],
-			traceLog({ losses: [{ count: 3, kind: "lost", nsecs: 8_000_000_000 }], records: envelopeWrite(42, 1_000, 500) }),
+			collected({ losses: [{ count: 3, kind: "lost", nsecs: 8_000_000_000 }], records: envelopeWrite(42, 1_000, 500) }),
 			ROOT,
 		);
 		assert.equal(result.diagnostics.coverage.observedFromNsecs, 8_000_000_000);
@@ -630,7 +720,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		// unobserved prefix has to change with it. A rate wired into the
 		// conversion but not reachable from here would leave this at 10s.
 		const event = identityEvent({ monotonicMs: 1_000, startTicks: 1_000, uptimeAtRecordSeconds: 16 });
-		const result = attributeKernelIo([event], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT, { ticksPerSecond: 250 });
+		const result = attributeKernelIo([event], collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT, { ticksPerSecond: 250 });
 		assert.equal(rowFor(result, 42, 1_000).coverage.unobservedPrefixNsecs, 20_000_000_000 - 4_000_000_000);
 		assert.equal(result.diagnostics.clockInconsistentIdentityEvents, 0);
 	});
@@ -640,7 +730,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		// uptime. A rounded reading would produce a coverage answer that looks
 		// every bit as decided as a real one.
 		const beyondSafe = Number.MAX_SAFE_INTEGER + 4_096;
-		const lateTrace = traceLog({ records: envelopeWrite(42, 1_000, 500, beyondSafe) });
+		const lateTrace = collected({ records: envelopeWrite(42, 1_000, 500, beyondSafe) });
 		const observed = attributeKernelIo([identityEvent()], lateTrace, ROOT);
 		assert.equal(observed.diagnostics.coverage.observedFromNsecs, "unavailable");
 		assert.equal(rowFor(observed, 42, 1_000).coverage.unobservedPrefixNsecs, "unavailable");
@@ -650,7 +740,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		// cannot be represented exactly is not a start time this module will use.
 		const farStartTicks = 2_000_000_000;
 		const farEvent = identityEvent({ monotonicMs: 1_000, startTicks: farStartTicks, uptimeAtRecordSeconds: 21_000_000 });
-		const started = attributeKernelIo([farEvent], traceLog({ records: envelopeWrite(42, farStartTicks, 500, 1_000_000_000) }), ROOT);
+		const started = attributeKernelIo([farEvent], collected({ records: envelopeWrite(42, farStartTicks, 500, 1_000_000_000) }), ROOT);
 		assert.equal(started.diagnostics.coverage.observedFromNsecs, 1_000_000_000);
 		assert.equal(rowFor(started, 42, farStartTicks).coverage.unobservedPrefixNsecs, "unavailable");
 		assert.equal(started.diagnostics.coverage.complete, false);
@@ -663,7 +753,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		// the emptiest results the module can produce — a whole account of the run.
 		const events = [identityEvent({ pid: 42 }), identityEvent({ pid: 99, startTicks: 1_100, uptimeAtRecordSeconds: 17 })];
 		const records: TraceRecord[] = [rw({ bytes: 0, fd: 3, nsecs: 5_000_000_000, pid: 42, ret: 0, startTicks: 1_000 })];
-		const result = attributeKernelIo(events, traceLog({ records }), ROOT);
+		const result = attributeKernelIo(events, collected({ records }), ROOT);
 
 		assert.equal(result.diagnostics.identityKeysWithoutTrace, 1);
 		// Everything a row-walking check could see says "complete": the one
@@ -677,7 +767,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 	it("does call a healthy account complete", () => {
 		// The positive control for every denial below: bytes attributed, observed
 		// from the start, every bound key present, nothing orphaned.
-		const result = attributeKernelIo([identityEvent()], traceLog({ records: envelopeWrite(42, 1_000, 500, 5_000_000_000) }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records: envelopeWrite(42, 1_000, 500, 5_000_000_000) }), ROOT);
 		assert.deepEqual(result.unavailableReasons, []);
 		assert.equal(result.diagnostics.coverage.complete, true);
 	});
@@ -686,7 +776,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		// 0.02%: reported rather than refused, but 200 bytes this account does not
 		// hold are 200 bytes that make it not whole.
 		const records = [...envelopeWrite(42, 1_000, 999_800, 5_000_000_000), ...envelopeWrite(77, 4_000, 200, 30_000_000_000)];
-		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		assert.deepEqual(result.unavailableReasons, []);
 		assert.equal(attributedRows(result).length, 1);
 		assert.equal(rowFor(result, 42, 1_000).coverage.observedFromStart, true);
@@ -697,7 +787,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 	it("does not let a row that moved no attributable byte certify the account", () => {
 		const result = attributeKernelIo(
 			[identityEvent()],
-			traceLog({ records: [open(`${ROOT}/envelopes/m1.json`, { nsecs: 5_000_000_000 })] }),
+			collected({ records: [open(`${ROOT}/envelopes/m1.json`, { nsecs: 5_000_000_000 })] }),
 			ROOT,
 		);
 		assert.equal(attributedRows(result).length, 1);
@@ -709,7 +799,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 	it("does not call an empty account complete", () => {
 		// Nothing was attributed, so there is no process whose coverage was
 		// proved; `complete` must not read as "the whole run is accounted for".
-		const result = attributeKernelIo([], traceLog({ records: envelopeWrite(77, 4_000, 0) }), ROOT);
+		const result = attributeKernelIo([], collected({ records: envelopeWrite(77, 4_000, 0) }), ROOT);
 		assert.equal(result.diagnostics.coverage.complete, false);
 	});
 });
