@@ -55,9 +55,10 @@
 - [ ] Change: 从 trace 记录重建 `(pid, fd) → path`，并按存储根相对前缀分类为
       envelope / content / memory-index / unclassified。`metering/` 与 `trace/` 显式排除。
 - Verify: 覆盖 spec §4.2 的全部边界——fd 继承、`dup`/`dup2`、进程退出清理、fd 关闭后复用；
-      **`renameat2` 跟随**：写入先落在 `.<basename>.<pid>.<ms>.<rand>.tmp`、rename 后才成为
-      最终路径，归类必须跟随 rename（不跟随时所有写入会静默掉进 `unclassified`，
-      用一个专门的测试钉死这条）；存储根外的路径不计入；无法归类的记 `unclassified` 而不猜测。
+      **临时文件归类**：写入先落在 `.<basename>.<pid>.<ms>.<rand>.tmp`、rename 后才成为最终路径，
+      但两个写入方都把临时文件建在目标同目录，因此按前缀分类天然正确，**不需要跟随 rename**
+      （spec §4.2 已据实修订）。用一个专门的测试钉死：对 `.tmp` 名的写入落进正确类别；
+      存储根外的路径不计入；无法归类的记 `unclassified` 而不猜测。
 - Depends on: Task 3
 
 ### Task 5: 归因与判定
