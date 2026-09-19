@@ -29,12 +29,16 @@ export type SynapseRole = (typeof SYNAPSE_ROLES)[number];
 export const SYNAPSE_CONSUMER_VERSION = 1;
 
 /**
- * Tools whose presence means the child can consume a decoded state. Empty in
- * this build: no tool decodes a vector yet, so every declaration reports
- * `consumesState: false` and negotiation falls back to text for a stated
- * reason instead of claiming a vector path.
+ * Tools whose presence means the child session can consume a decoded state.
+ * `synapse_read` is the one: the SYNAPSE extension that registers it also
+ * carries the state-retrieval path (stateId → verified payload → corpus
+ * cosine) the host drives on the child's behalf when a delegated retrieve
+ * arrives carrying a stateRef — the model itself never handles raw vectors.
+ * Staying derived from the granted tools, rather than read from the agent
+ * file, keeps a role that merely claims to understand vectors from making
+ * negotiation report a state path that cannot exist.
  */
-export const SYNAPSE_STATE_CONSUMING_TOOLS: readonly string[] = [];
+export const SYNAPSE_STATE_CONSUMING_TOOLS: readonly string[] = ["synapse_read"];
 
 type RoleSpec = {
 	actions: readonly SynapseAction[];

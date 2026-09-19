@@ -175,9 +175,21 @@ describe("model and embedding usage (AC-09)", () => {
 
 describe("state plane accounting (AC-09)", () => {
 	it("counts prepare, send, receive and consume separately", () => {
-		for (const kind of ["state-prepare", "state-send", "state-receive", "state-consume"] as const) {
+		for (const kind of ["state-prepare", "state-send", "state-receive"] as const) {
 			log.record(identity(), { kind, ok: true, payloadBytes: 4096, representationId: "rep-1", stateId: "s1" });
 		}
+		// A consume is the receipt that proves retrieval happened, so it names the
+		// payload, the corpus it ran against and how many chunks were ranked.
+		log.record(identity(), {
+			corpusSnapshotId: "c".repeat(64),
+			k: 5,
+			kind: "state-consume",
+			ok: true,
+			payloadBytes: 4096,
+			payloadId: "p".repeat(64),
+			representationId: "rep-1",
+			stateId: "s1",
+		});
 		const totals = aggregateMetering(readMeteringLog(logPath));
 		assert.deepEqual(
 			{ consumed: totals.state.consumed, prepared: totals.state.prepared, received: totals.state.received, sent: totals.state.sent },

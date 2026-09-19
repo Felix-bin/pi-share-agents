@@ -81,6 +81,7 @@ export function readDeliveredEnvelope(inboxPath: string): DeliveredEnvelope {
 	try {
 		raw = fs.readFileSync(inboxPath, "utf-8");
 	} catch (error) {
+		// SAFETY: readFileSync only throws fs errors, whose `code` field is the errno string this compares.
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "absent" };
 		return { reason: `envelope at ${inboxPath} could not be read: ${error instanceof Error ? error.message : String(error)}`, status: "rejected" };
 	}

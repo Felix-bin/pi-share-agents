@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { modelUsageFrom, openDelegation, type CloseDelegationInput, type OpenDelegation } from "../../synapse/delegation.ts";
+import { modelUsageFrom, openDelegation, openRetrieveDelegation, type CloseDelegationInput, type OpenDelegation, type RetrieveSendResult } from "../../synapse/delegation.ts";
 import type { ReceiptOutcome } from "../../synapse/handoff.ts";
+import type { Embedder } from "../../synapse/embedding.ts";
 import type { Usage } from "../../shared/types.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 
@@ -57,6 +58,55 @@ export function openChildDelegation(input: OpenChildDelegationInput): OpenDelega
 		// The catch is the boundary: the thrown value is turned into text here so
 		// nothing downstream has to handle an unparsed one.
 		warn(synapse.agent, "delegation metering", error instanceof Error ? error.message : String(error));
+		return null;
+	}
+}
+
+export type OpenChildRetrieveInput = {
+	/** The builtin tools the child was granted, as the tool plan resolved them. */
+	childTools: readonly string[];
+	cwd: string;
+	/** The sender's embedder; the product path builds it from synapse.embedding. */
+	embedder: Embedder;
+	/** How many corpus chunks the receiver should rank. */
+	k: number;
+	/** The query text to embed and hand over. */
+	query: string;
+	receiverSessionId: string;
+	runtime: ChildRuntimeConfig;
+};
+
+/**
+ * The state-plane sibling of openChildDelegation: a retrieve delegation whose
+ * negotiation may take the float32 path. Total in the same sense — a refusal
+ * or a thrown setup returns null/warns and the caller keeps its text behaviour
+ * rather than losing the run.
+ */
+export async function openChildRetrieveDelegation(input: OpenChildRetrieveInput): Promise<RetrieveSendResult | null> {
+	const synapse = input.runtime.synapse;
+	if (synapse === undefined) return null;
+	try {
+		return openRetrieveDelegation({
+			contract: synapse.contract,
+			embedder: input.embedder,
+			identity: {
+				agent: synapse.agent,
+				attempt: 1,
+				childIndex: input.runtime.childIndex,
+				childTools: input.childTools,
+				receiverSessionId: input.receiverSessionId,
+				requestId: `${synapse.runId}-${input.runtime.childIndex}-${randomUUID().slice(0, 8)}`,
+				runId: synapse.runId,
+				senderSessionId: synapse.sessionId,
+			},
+			k: input.k,
+			query: input.query,
+			worktreeRoot: input.cwd,
+		});
+	} catch (error) {
+		// The catch is the boundary: the thrown value is turned into text here so
+		// nothing downstream has to handle an unparsed one.
+		warn(synapse.agent, "retrieve delegation", error instanceof Error ? error.message : String(error));
 		return null;
 	}
 }

@@ -48,7 +48,20 @@ export type MeteringPayload =
 	| { envelopeBytes: number; kind: "message-delivered"; messageId: string; textBytes: number }
 	| { kind: "message-received"; messageId: string }
 	| { category: SynapseErrorClassification; kind: "message-failed"; messageId: string }
-	| { kind: "state-prepare" | "state-send" | "state-receive" | "state-consume"; ok: boolean; payloadBytes: number; representationId: string; stateId: string }
+	| { kind: "state-prepare" | "state-send" | "state-receive"; ok: boolean; payloadBytes: number; representationId: string; stateId: string }
+	| {
+			/** The corpus snapshot the state was ranked against; only a real retrieval consumes. */
+			corpusSnapshotId: string;
+			/** How many corpus chunks the consumer asked to rank. */
+			k: number;
+			kind: "state-consume";
+			ok: boolean;
+			payloadBytes: number;
+			/** The CAS object the decoded vector came from. */
+			payloadId: string;
+			representationId: string;
+			stateId: string;
+		}
 	| { kind: "model-usage"; role: "parent" | "child"; usage: ModelUsage | null }
 	| { costUsd: number | null; durationMs: number; inputTokens: number | null; kind: "embedding-call"; ok: boolean; requests: number }
 	| { authorisedValidHits: number; kind: "memory-query"; queryId: string }

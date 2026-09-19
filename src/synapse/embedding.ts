@@ -1,0 +1,367 @@
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { Type } from "typebox";
+import { Compile } from "typebox/compile";
+import { writeAtomicJson } from "../shared/atomic-json.ts";
+import type { SynapseEmbeddingConfig } from "./config.ts";
+import { createContentStore, type ContentStore } from "./content-store.ts";
+import type { MeteringIdentity, MeteringLog } from "./metering.ts";
+
+/**
+ * SiliconFlow embeddings client and its two-level cache.
+ *
+ * Wire format discipline: requests always use `encoding_format: "base64"`.
+ * The provider's default JSON decimal encoding perturbs the low bits of each
+ * float, and those low bits are exactly what the residual calibration (spec
+ * §8.1) quantises — a polluted input would silently invalidate the calibration
+ * corpus. Queries are sent one text per request because batch composition
+ * influences inference output; batching is reserved for corpus construction,
+ * where a fixed batch size keeps runs reproducible.
+ *
+ * The cache is an optimisation, never a source of truth: a cache entry is only
+ * ever replayed after the content store has re-verified the vector bytes
+ * against their digest, and any unreadable or mismatched entry is treated as a
+ * miss. A hit makes no network call and records no `embedding-call` event,
+ * because no call happened.
+ */
+
+export const SYNAPSE_EMBEDDING_TIMEOUT_MS = 30_000;
+/** Corpus batching only; queries are always single-text (see module comment). */
+export const SYNAPSE_EMBEDDING_BATCH_LIMIT = 32;
+
+export const SYNAPSE_VECTOR_MEDIA_TYPE = "application/x-float32-vector";
+
+const EMBEDDING_CACHE_DIR = "embedding-cache";
+
+export type EmbeddingRequest = { text: string };
+
+export type EmbeddingResult = {
+	vector: Float32Array;
+	promptTokens: number | null;
+	latencyMs: number;
+	cached: boolean;
+};
+
+export type Embedder = {
+	embedQuery(text: string): Promise<EmbeddingResult>;
+	embedBatch(texts: readonly string[]): Promise<readonly EmbeddingResult[]>;
+	readonly representationId: string;
+};
+
+type EmbedderBaseDeps = {
+	key: string;
+	/** Enables the persistent L2 cache rooted at the project storage directory. */
+	storageRoot?: string;
+	fetchFn?: typeof fetch;
+};
+
+export type EmbedderDeps =
+	| (EmbedderBaseDeps & {
+			/** Event identity comes from the host and must not be invented here; it is only meaningful together with a metering log. */
+			identity: MeteringIdentity;
+			metering: MeteringLog;
+	  })
+	| (EmbedderBaseDeps & { identity?: undefined; metering?: undefined });
+
+export class EmbeddingHttpError extends Error {
+	constructor(status: number) {
+		super(`embedding request failed with http ${status}`);
+		this.name = "EmbeddingHttpError";
+	}
+}
+
+const EmbeddingItemSchema = Type.Object({
+	embedding: Type.String({ minLength: 1 }),
+	index: Type.Optional(Type.Integer()),
+});
+
+const EmbeddingResponseSchema = Type.Object({
+	data: Type.Array(EmbeddingItemSchema, { minItems: 1 }),
+	usage: Type.Optional(Type.Object({ prompt_tokens: Type.Optional(Type.Number()) })),
+});
+
+const embeddingResponseValidator = Compile(EmbeddingResponseSchema);
+
+const CacheEntrySchema = Type.Object(
+	{
+		contentId: Type.String({ pattern: "^[0-9a-f]{64}$" }),
+		dim: Type.Integer({ minimum: 1 }),
+		promptTokens: Type.Union([Type.Number(), Type.Null()]),
+		representationId: Type.String({ minLength: 1 }),
+	},
+	{ additionalProperties: false },
+);
+
+const cacheEntryValidator = Compile(CacheEntrySchema);
+
+type CacheEntry = { contentId: string; dim: number; promptTokens: number | null; representationId: string };
+
+/** Mirrors `representationIdOf` in config.ts for callers holding only the embedding block. */
+function representationIdOfConfig(cfg: SynapseEmbeddingConfig): string {
+	return `${cfg.provider}/${cfg.model}/${cfg.dim}`;
+}
+
+function cacheKeyOf(representationId: string, text: string): string {
+	return createHash("sha256").update(`${representationId}\0${text}`, "utf-8").digest("hex");
+}
+
+function decodeFloat32LE(bytes: Uint8Array): Float32Array {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const out = new Float32Array(Math.floor(bytes.byteLength / 4));
+	for (let index = 0; index < out.length; index += 1) {
+		out[index] = view.getFloat32(index * 4, true);
+	}
+	return out;
+}
+
+function decodeEmbeddingBytes(bytes: Uint8Array): Float32Array {
+	// A payload whose length is not a whole number of float32 values would
+	// otherwise be silently truncated by decodeFloat32LE, and a dimension check
+	// cannot distinguish that from a provider bug it should have reported.
+	if (bytes.byteLength === 0 || bytes.byteLength % 4 !== 0) {
+		throw new Error(`embedding payload of ${bytes.byteLength} bytes is not a whole number of float32 values`);
+	}
+	return decodeFloat32LE(bytes);
+}
+
+function bytesOfVector(vector: Float32Array): Uint8Array {
+	return new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength);
+}
+
+function validatedUnitVector(values: Float32Array, dim: number): Float32Array {
+	if (values.length !== dim) {
+		throw new Error(`embedding dimension mismatch: response holds ${values.length} floats, configuration declares ${dim}`);
+	}
+	for (let index = 0; index < values.length; index += 1) {
+		const value = values[index]!;
+		if (!Number.isFinite(value)) {
+			throw new Error(`embedding vector contains a non-finite value at index ${index}`);
+		}
+	}
+	// hypot cannot overflow the way a naive sum of squares can for large components.
+	const norm = Math.hypot(...values);
+	if (!(norm > 0)) {
+		throw new Error("embedding vector has zero norm and cannot be normalized");
+	}
+	const unit = new Float32Array(dim);
+	for (let index = 0; index < dim; index += 1) {
+		unit[index] = values[index]! / norm;
+	}
+	return unit;
+}
+
+type PersistentCache = {
+	load: (key: string) => { bytes: Uint8Array; promptTokens: number | null } | null;
+	store: (key: string, vector: Float32Array, promptTokens: number | null) => void;
+};
+
+function createPersistentCache(storageRoot: string, representationId: string, dim: number): PersistentCache {
+	const cacheDir = path.join(storageRoot, EMBEDDING_CACHE_DIR);
+	const contentStore: ContentStore = createContentStore(storageRoot);
+
+	function entryPath(key: string): string {
+		return path.join(cacheDir, key.slice(0, 2), `${key}.json`);
+	}
+
+	function readEntry(key: string): CacheEntry | null {
+		let raw = "";
+		try {
+			raw = fs.readFileSync(entryPath(key), "utf-8");
+		} catch {
+			return null;
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return null;
+		}
+		if (!cacheEntryValidator.Check(parsed)) return null;
+		// The cache key already binds representationId and text, so a mismatching
+		// entry can only be corruption: fall through to a miss instead of serving it.
+		if (parsed.representationId !== representationId || parsed.dim !== dim) return null;
+		return parsed;
+	}
+
+	return {
+		load(key: string) {
+			const entry = readEntry(key);
+			if (entry === null) return null;
+			try {
+				// The content store re-verifies the digest on every read, so a cached
+				// vector is byte-accountable or not served at all.
+				return { bytes: contentStore.read(entry.contentId), promptTokens: entry.promptTokens };
+			} catch {
+				return null;
+			}
+		},
+		store(key: string, vector: Float32Array, promptTokens: number | null) {
+			const contentId = contentStore.put(bytesOfVector(vector), SYNAPSE_VECTOR_MEDIA_TYPE);
+			writeAtomicJson(entryPath(key), {
+				contentId,
+				dim,
+				promptTokens,
+				representationId,
+			} satisfies CacheEntry);
+		},
+	};
+}
+
+export function createSiliconFlowEmbedder(cfg: SynapseEmbeddingConfig, deps: EmbedderDeps): Embedder {
+	const representationId = representationIdOfConfig(cfg);
+	const fetchFn = deps.fetchFn ?? fetch;
+	const memory = new Map<string, EmbeddingResult>();
+	const persistent = deps.storageRoot === undefined ? null : createPersistentCache(deps.storageRoot, representationId, cfg.dim);
+
+	function recordCall(ok: boolean, durationMs: number, inputTokens: number | null): void {
+		if (deps.metering === undefined || deps.identity === undefined) return;
+		deps.metering.record(deps.identity, { costUsd: null, durationMs, inputTokens, kind: "embedding-call", ok, requests: 1 });
+	}
+
+	async function requestEmbeddings(input: string | readonly string[]): Promise<{ durationMs: number; vectors: Float32Array[]; promptTokens: number | null }> {
+		const expectedCount = Array.isArray(input) ? input.length : 1;
+		const startedAt = performance.now();
+		try {
+			const response = await fetchFn(cfg.endpoint, {
+				body: JSON.stringify({ encoding_format: "base64", input, model: cfg.model }),
+				headers: { authorization: `Bearer ${deps.key}`, "content-type": "application/json" },
+				method: "POST",
+				signal: AbortSignal.timeout(SYNAPSE_EMBEDDING_TIMEOUT_MS),
+			});
+			if (!response.ok) {
+				// Drain without reading into any error message: an error body is not
+				// evidence and must not leak into logs or prompts.
+				await response.arrayBuffer().catch(() => undefined);
+				throw new EmbeddingHttpError(response.status);
+			}
+			const parsed: unknown = await response.json();
+			if (!embeddingResponseValidator.Check(parsed)) {
+				throw new Error("embedding response does not match the expected schema");
+			}
+			if (parsed.data.length !== expectedCount) {
+				throw new Error(`embedding response holds ${parsed.data.length} vectors for ${expectedCount} inputs`);
+			}
+			const ordered = [...parsed.data].sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
+			const vectors = ordered.map((item) => validatedUnitVector(decodeEmbeddingBytes(Buffer.from(item.embedding, "base64")), cfg.dim));
+			const promptTokens = parsed.usage?.prompt_tokens ?? null;
+			const durationMs = performance.now() - startedAt;
+			recordCall(true, durationMs, promptTokens);
+			return { durationMs, promptTokens, vectors };
+		} catch (error) {
+			recordCall(false, performance.now() - startedAt, null);
+			throw error;
+		}
+	}
+
+	function fromCacheHit(key: string, bytes: Uint8Array, promptTokens: number | null, latencyMs: number): EmbeddingResult | null {
+		// Cached bytes were unit-normalized before they were stored and the content
+		// store has re-verified them against their digest, so replaying them without
+		// re-normalising keeps the cache byte-exact by construction; normalising
+		// again could flip a last-bit rounding on some vectors.
+		let vector: Float32Array;
+		try {
+			vector = decodeEmbeddingBytes(bytes);
+		} catch {
+			// An undecodable payload is a miss, like every other unreadable entry.
+			return null;
+		}
+		// The digest verifies the bytes against the content id, not against the
+		// entry's dimension claim, so a corrupted entry must miss here rather than
+		// serve a wrong-dimension vector as cached.
+		if (vector.length !== cfg.dim) return null;
+		const result: EmbeddingResult = { cached: true, latencyMs, promptTokens, vector };
+		// The cache keeps its own copy so a caller mutating a returned vector can
+		// never poison later cache hits.
+		memory.set(key, { ...result, vector: new Float32Array(vector) });
+		return result;
+	}
+
+	function storeQuietly(key: string, vector: Float32Array, promptTokens: number | null): void {
+		if (persistent === null) return;
+		try {
+			persistent.store(key, vector, promptTokens);
+		} catch {
+			// The cache is an optimisation: a failed persistent write must not fail
+			// an embedding that already succeeded over the network.
+		}
+	}
+
+	async function embedQuery(text: string): Promise<EmbeddingResult> {
+		if (text.length === 0) throw new Error("embedding input must be a non-empty string");
+		const startedAt = performance.now();
+		const key = cacheKeyOf(representationId, text);
+		const inMemory = memory.get(key);
+		if (inMemory !== undefined) {
+			return { ...inMemory, cached: true, latencyMs: performance.now() - startedAt, vector: new Float32Array(inMemory.vector) };
+		}
+		if (persistent !== null) {
+			const hit = persistent.load(key);
+			if (hit !== null) {
+				const replayed = fromCacheHit(key, hit.bytes, hit.promptTokens, performance.now() - startedAt);
+				if (replayed !== null) return replayed;
+			}
+		}
+		const { promptTokens, vectors } = await requestEmbeddings(text);
+		const result: EmbeddingResult = { cached: false, latencyMs: performance.now() - startedAt, promptTokens, vector: vectors[0]! };
+		memory.set(key, { ...result, vector: new Float32Array(result.vector) });
+		storeQuietly(key, result.vector, promptTokens);
+		return result;
+	}
+
+	async function embedBatch(texts: readonly string[]): Promise<readonly EmbeddingResult[]> {
+		const results: (EmbeddingResult | undefined)[] = Array.from<EmbeddingResult | undefined>({ length: texts.length });
+		const pending = new Map<string, { indexes: number[]; text: string }>();
+		for (const [position, text] of texts.entries()) {
+			if (text.length === 0) throw new Error("embedding input must be a non-empty string");
+			const startedAt = performance.now();
+			const key = cacheKeyOf(representationId, text);
+			const inMemory = memory.get(key);
+			if (inMemory !== undefined) {
+				results[position] = { ...inMemory, cached: true, latencyMs: performance.now() - startedAt, vector: new Float32Array(inMemory.vector) };
+				continue;
+			}
+			if (persistent !== null) {
+				const hit = persistent.load(key);
+				if (hit !== null) {
+					const replayed = fromCacheHit(key, hit.bytes, hit.promptTokens, performance.now() - startedAt);
+					if (replayed !== null) {
+						results[position] = replayed;
+						continue;
+					}
+				}
+			}
+			const existing = pending.get(key);
+			if (existing === undefined) pending.set(key, { indexes: [position], text });
+			else existing.indexes.push(position);
+		}
+		const misses = [...pending.entries()];
+		for (let start = 0; start < misses.length; start += SYNAPSE_EMBEDDING_BATCH_LIMIT) {
+			const chunk = misses.slice(start, start + SYNAPSE_EMBEDDING_BATCH_LIMIT);
+			const { durationMs, promptTokens, vectors } = await requestEmbeddings(chunk.map(([, miss]) => miss.text));
+			// promptTokens is the provider's usage for the whole chunk, not a per-text value.
+			for (const [[key, miss], vector] of zip(chunk, vectors)) {
+				const result: EmbeddingResult = { cached: false, latencyMs: durationMs, promptTokens, vector };
+				// Every returned result and the cache each hold their own vector, so no
+				// caller mutation can reach another slot or a later cache hit.
+				memory.set(key, { ...result, vector: new Float32Array(vector) });
+				results[miss.indexes[0]!] = { ...result, vector: new Float32Array(vector) };
+				for (const duplicate of miss.indexes.slice(1)) {
+					results[duplicate] = { ...result, cached: true, vector: new Float32Array(vector) };
+				}
+				storeQuietly(key, vector, promptTokens);
+			}
+		}
+		return results.map((result) => {
+			if (result === undefined) throw new Error("embedding batch left an unfilled slot");
+			return result;
+		});
+	}
+
+	return { embedBatch, embedQuery, representationId };
+}
+
+function zip<Key, Value>(keys: readonly Key[], values: readonly Value[]): [Key, Value][] {
+	if (keys.length !== values.length) throw new Error(`zip: ${keys.length} keys for ${values.length} values`);
+	return keys.map((key, index) => [key, values[index]!]);
+}

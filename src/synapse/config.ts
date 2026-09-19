@@ -27,6 +27,16 @@ export const SYNAPSE_EMBEDDING_PROVIDERS = ["siliconflow"] as const;
  */
 const TEST_ONLY_PROVIDERS = new Set(["deterministic-test", "fake", "hash"]);
 
+/**
+ * Semantic retrieval weights, frozen at the preliminary-round HybridRetriever
+ * calibration (keyword 0.3 / tag 0.2 / semantic cosine 0.5). The P4-2 delta
+ * calibration does not reopen them; any change requires a new frozen decision
+ * recorded as such.
+ */
+export const SYNAPSE_SEMANTIC_KEYWORD_WEIGHT = 0.3;
+export const SYNAPSE_SEMANTIC_TAG_WEIGHT = 0.2;
+export const SYNAPSE_SEMANTIC_COSINE_WEIGHT = 0.5;
+
 export const SYNAPSE_DEFAULT_CONTEXT_BUDGET_BYTES = 8192;
 export const SYNAPSE_DEFAULT_MAX_OBJECT_BYTES = 1024 * 1024;
 export const SYNAPSE_MAX_EMBEDDING_DIM = 8192;
@@ -51,6 +61,8 @@ export type SynapseEmbeddingConfig = {
 
 export type SynapseConfig = {
 	contextBudgetBytes: number;
+	/** Set by experiments to the id a `build-corpus` run produced; null keeps the "unset" placeholder. */
+	corpusSnapshotId: string | null;
 	embedding: SynapseEmbeddingConfig | null;
 	maxObjectBytes: number;
 	memory: SynapseMemoryMode;
@@ -73,6 +85,9 @@ const EmbeddingSchema = Type.Object(
 const RawConfigSchema = Type.Object(
 	{
 		contextBudgetBytes: Type.Optional(Type.Integer({ minimum: 1 })),
+		corpusSnapshotId: Type.Optional(
+			Type.String({ minLength: 1, pattern: "^[0-9a-f]{64}$", description: "64-hex id from a build-corpus run" }),
+		),
 		embedding: Type.Optional(EmbeddingSchema),
 		maxObjectBytes: Type.Optional(Type.Integer({ minimum: 1 })),
 		memory: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("project")])),
@@ -167,6 +182,7 @@ export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = o
 	}
 	return {
 		contextBudgetBytes: raw.contextBudgetBytes ?? SYNAPSE_DEFAULT_CONTEXT_BUDGET_BYTES,
+		corpusSnapshotId: raw.corpusSnapshotId ?? null,
 		embedding: raw.embedding === undefined ? null : resolveEmbedding(raw.embedding),
 		maxObjectBytes: raw.maxObjectBytes ?? SYNAPSE_DEFAULT_MAX_OBJECT_BYTES,
 		memory,

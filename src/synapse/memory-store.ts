@@ -12,9 +12,11 @@ import type { SourceFingerprint } from "./source-fingerprint.ts";
  *
  * Records, supersession events and objects are separate immutable files. A
  * record is published only after its body is proven present, so a reader never
- * follows a reference into nothing; an orphan discovered later is reported
+ * follows a reference into nothing; a body orphan discovered later is reported
  * rather than skipped, because silently dropping it would understate what the
- * run actually depended on.
+ * run actually depended on. Vector objects follow the same rule at the point
+ * they are loaded (searchSemantic), after authorisation — not at list time,
+ * which runs before any grant is checked.
  *
  * Status is not stored in the record. It is derived by replaying supersession
  * events at load time, which is what keeps records immutable while still
@@ -41,6 +43,17 @@ export type MemoryAssurance = (typeof MEMORY_ASSURANCES)[number];
 /** Effective status after replaying supersession events. */
 export type MemoryStatus = "active" | "superseded" | "conflict";
 
+/**
+ * Reference to the record's embedding vector in the content store. Null when
+ * no embedding was configured (or the record predates the field): the record
+ * stays loadable and retrievable by keyword and tag either way.
+ */
+export type MemoryEmbeddingRef = {
+	dim: number;
+	objectId: string;
+	representationId: string;
+};
+
 export type MemoryProvenance = {
 	agent: string;
 	attempt: number;
@@ -52,6 +65,7 @@ export type MemoryRecord = {
 	assurance: MemoryAssurance;
 	contentId: string;
 	createdAt: string;
+	embedding: MemoryEmbeddingRef | null;
 	kind: MemoryKind;
 	memoryId: string;
 	provenance: MemoryProvenance;
@@ -65,6 +79,8 @@ export type MemoryRecord = {
 export type MemoryPublishInput = {
 	assurance: MemoryAssurance;
 	contentId: string;
+	/** Vector reference for this record; omitted stores null. Not part of the memory id digest. */
+	embedding?: MemoryEmbeddingRef;
 	kind: MemoryKind;
 	/**
 	 * Identity of the logical operation that produced this record. A retry of the
@@ -129,11 +145,23 @@ const FingerprintSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+const EmbeddingRefSchema = Type.Object(
+	{
+		dim: Type.Integer({ minimum: 1 }),
+		objectId: Type.String({ pattern: ID_PATTERN }),
+		representationId: Type.String({ minLength: 1 }),
+	},
+	{ additionalProperties: false },
+);
+
 const RecordSchema = Type.Object(
 	{
 		assurance: Type.Union([Type.Literal("observation"), Type.Literal("derived")]),
 		contentId: Type.String({ pattern: ID_PATTERN }),
 		createdAt: Type.String({ minLength: 20 }),
+		// Optional so records written before the field existed still validate; the
+		// loader normalises a missing field to null.
+		embedding: Type.Optional(Type.Union([EmbeddingRefSchema, Type.Null()])),
 		kind: Type.Union([Type.Literal("evidence"), Type.Literal("tool-result"), Type.Literal("conclusion"), Type.Literal("strategy")]),
 		memoryId: Type.String({ pattern: ID_PATTERN }),
 		provenance: ProvenanceSchema,
@@ -222,7 +250,7 @@ export function createMemoryStore(rootDir: string, options: MemoryStoreOptions):
 		if (parsed.memoryId !== memoryId) {
 			throw new Error(`integrity: record ${memoryId} claims ${parsed.memoryId}`);
 		}
-		return parsed;
+		return { ...parsed, embedding: parsed.embedding ?? null };
 	}
 
 	function readEvents(): SupersessionEvent[] {
@@ -273,6 +301,11 @@ export function createMemoryStore(rootDir: string, options: MemoryStoreOptions):
 				if (!options.contentStore.has(record.contentId)) {
 					throw new Error(`orphan: memory ${record.memoryId} references missing object ${record.contentId}`);
 				}
+				// A missing vector object is not reported here: list() runs before any
+				// authorisation filter, and a denied record's broken vector must not
+				// fail a caller that would never have seen the record. The semantic
+				// load point (memory-service searchSemantic) reports it instead,
+				// naming the memory, after the grant has been checked.
 				if (record.recordStatus !== "active" && listOptions.includeSuperseded !== true) continue;
 				loaded.push(record);
 			}
@@ -301,6 +334,7 @@ export function createMemoryStore(rootDir: string, options: MemoryStoreOptions):
 				assurance: input.assurance,
 				contentId: input.contentId,
 				createdAt: now().toISOString(),
+				embedding: input.embedding ?? null,
 				kind: input.kind,
 				memoryId,
 				provenance: { ...input.provenance },
@@ -315,11 +349,14 @@ export function createMemoryStore(rootDir: string, options: MemoryStoreOptions):
 				const existing = readRecord(memoryId);
 				// A retry keeps the original creation time; anything else under the
 				// same id means two processes disagree about the same observation.
-				const { createdAt: _ignored, ...existingRest } = existing;
-				const { createdAt: _alsoIgnored, ...candidateRest } = candidate;
+				const { createdAt: _ignored, embedding: _existingEmbedding, ...existingRest } = existing;
+				const { createdAt: _alsoIgnored, embedding: _candidateEmbedding, ...candidateRest } = candidate;
 				if (canonicalDigest(existingRest) !== canonicalDigest(candidateRest)) {
 					throw new Error(`integrity: memory ${memoryId} already published with different content`);
 				}
+				// The vector reference is derived data, not record identity: a retry may
+				// recompute it (cold cache, provider bit drift, a later embedding
+				// configuration) and still lands on the record as first written.
 				return existing;
 			}
 			fs.mkdirSync(recordsDir, { recursive: true });

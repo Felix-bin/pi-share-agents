@@ -56,6 +56,8 @@ const PREFIX_CATEGORIES: readonly (readonly [string, SynapseErrorCategory])[] = 
 	["k-out-of-range", "configuration"],
 	["summary-too-large", "configuration"],
 	["query-required", "configuration"],
+	["stateRef-required", "configuration"],
+	["invalid corpus snapshot id", "configuration"],
 	["capability-unavailable", "representation"],
 	["representation-mismatch", "representation"],
 	["maxObjectBytes exceeded", "persistence"],
