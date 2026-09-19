@@ -5,6 +5,7 @@ import type { StoredCorpusMeta } from "./corpus.ts";
 import type { ContentStore } from "./content-store.ts";
 import type { StateRef } from "./envelope.ts";
 import type { MeteringIdentity, MeteringLog } from "./metering.ts";
+import { decodeStatePayload } from "./state-payload.ts";
 
 /**
  * Consumption of a received state vector against the fixed corpus (P3-4).
@@ -41,6 +42,18 @@ export type StateRetrievalResult = {
 };
 
 export type StateRetrievalDeps = {
+	/**
+	 * The receiver's own memory seam: the vector a residual names, read from the
+	 * receiver's store rather than from the envelope.
+	 *
+	 * Injected because a residual is only decodable against the base the sender
+	 * measured against, and the receiver must rebuild that base from its own
+	 * audited records — never from bytes the envelope supplied, which would let a
+	 * sender choose the base after seeing the residual. Null means the base cannot
+	 * be rebuilt (absent, unreadable, or in another space), which the caller
+	 * treats as object unavailability rather than as a corrupt envelope.
+	 */
+	baseVectorFor?: (memoryId: string, representationId: string) => Float32Array | null;
 	contentStore: ContentStore;
 	/** When present, a successful retrieval is recorded as a state-consume event. */
 	metering?: { identity: MeteringIdentity; log: MeteringLog };
@@ -213,12 +226,6 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 	if (!Number.isInteger(input.k) || input.k < 1) {
 		throw new Error(`k-out-of-range: ${input.k} is not an integer >= 1`);
 	}
-	// Residual coding is a declared encoding but not a decodable one in this
-	// build; claiming otherwise would let negotiation advertise a path that
-	// cannot exist.
-	if (stateRef.encoding !== "float32-vector") {
-		throw new Error(`representation-mismatch: state payload encoding ${JSON.stringify(stateRef.encoding)} cannot be consumed in this build; only float32-vector is decodable`);
-	}
 	// The store re-verifies the payload's digest on every read; the envelope's
 	// sha256 is then checked against the same bytes, so a ref naming one object
 	// while claiming another's digest is refused rather than trusted.
@@ -239,9 +246,37 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 	if (payload.byteLength !== stateRef.byteLength) {
 		throw new Error(`integrity: state payload ${stateRef.payloadId} holds ${payload.byteLength} bytes, the envelope declared ${stateRef.byteLength}`);
 	}
-	const queryVector = decodeFloat32LE(payload, `state payload ${stateRef.payloadId}`);
-	if (queryVector.length !== stateRef.dim) {
-		throw new Error(`integrity: state payload ${stateRef.payloadId} holds ${queryVector.length} floats, the envelope declared dim ${stateRef.dim}`);
+	// A residual is decoded against a base the receiver rebuilds from its own
+	// memory; a full vector is read straight off the payload. Both encodings end as
+	// the same kind of query vector, so everything below is encoding-blind — and an
+	// encoding this build cannot decode is refused rather than guessed at. This runs
+	// after the digest and length checks so a corrupt payload is reported as corrupt
+	// rather than as an unrebuildable residual.
+	let queryVector: Float32Array;
+	if (stateRef.encoding === "delta") {
+		// The envelope's own validation requires a base id for a delta; re-checking
+		// here keeps the failure inside the outcome type instead of trusting a
+		// caller that reached this function past the validator.
+		const baseMemoryId = stateRef.baseMemoryId;
+		if (baseMemoryId === null) {
+			throw new Error("integrity: stateRef names encoding delta without a baseMemoryId; the residual cannot be rebuilt");
+		}
+		const base = deps.baseVectorFor === undefined ? null : deps.baseVectorFor(baseMemoryId, stateRef.representationId);
+		if (base === null) {
+			// Unavailability, not corruption: the residual is intact and its digest
+			// verified — what is missing is the base it was computed against. The
+			// caller's recovery is a full vector, which is a different message rather
+			// than a different way of reading this one.
+			throw new Error(`object-unavailable: base memory ${baseMemoryId} holds no vector in ${stateRef.representationId}; the residual cannot be rebuilt`);
+		}
+		// decodeStatePayload enforces the base width against dim, so the decoded
+		// length is dim by construction and needs no second check here.
+		queryVector = decodeStatePayload({ base, dim: stateRef.dim, payload, representationId: stateRef.representationId });
+	} else {
+		queryVector = decodeFloat32LE(payload, `state payload ${stateRef.payloadId}`);
+		if (queryVector.length !== stateRef.dim) {
+			throw new Error(`integrity: state payload ${stateRef.payloadId} holds ${queryVector.length} floats, the envelope declared dim ${stateRef.dim}`);
+		}
 	}
 
 	const corpus = loadCorpusVectors(deps.storageRoot, input.corpusSnapshotId, stateRef.dim, stateRef.representationId);
@@ -259,6 +294,9 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 	// receivedWithoutConsume reconciliation counts states that were consumed.
 	deps.metering?.log.record(deps.metering.identity, {
 		corpusSnapshotId: input.corpusSnapshotId,
+		// Which encoding was consumed, so a delta's payload bytes can be told apart
+		// from a full vector's in the aggregate without re-reading the envelopes.
+		encoding: stateRef.encoding,
 		k: input.k,
 		kind: "state-consume",
 		ok: true,

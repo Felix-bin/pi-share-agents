@@ -10,6 +10,8 @@ import { SYNAPSE_VECTOR_MEDIA_TYPE } from "../../src/synapse/embedding.ts";
 import type { StateRef } from "../../src/synapse/envelope.ts";
 import { createMemoryService, type MemoryService } from "../../src/synapse/memory-service.ts";
 import { createMeteringLog, readMeteringLog, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
+import type { PredictedBase } from "../../src/synapse/predict-base.ts";
+import { chooseStatePayload } from "../../src/synapse/state-payload.ts";
 import { retrieveWithState, type StateRetrievalDeps } from "../../src/synapse/state-retrieval.ts";
 import { createDeterministicEmbedder } from "../support/deterministic-embedder.ts";
 
@@ -64,6 +66,27 @@ function stateRefOf(vector: Float32Array, representationId = embedder.representa
 	for (const [index, value] of vector.entries()) buffer.writeFloatLE(value, index * 4);
 	const payloadId = contentStore.put(new Uint8Array(buffer), SYNAPSE_VECTOR_MEDIA_TYPE);
 	return { baseMemoryId: null, byteLength: buffer.byteLength, dim: vector.length, encoding: "float32-vector", payloadId, representationId, sha256: payloadId };
+}
+
+/**
+ * Publishes a residual computed against `base` and returns the envelope material
+ * that names it. The base itself is NOT published as a state payload: a residual
+ * is decodable only from the receiver's own memory, so the tests supply it
+ * through the `baseVectorFor` seam exactly as the receiver's store does.
+ */
+function deltaStateRefOf(vector: Float32Array, base: PredictedBase): StateRef {
+	const choice = chooseStatePayload({ base, fullVector: vector, representationId: embedder.representationId });
+	assert.equal(choice.encoding, "delta", "the fixture must actually produce a residual");
+	const payloadId = contentStore.put(choice.payload, "application/x-synapse-delta");
+	return {
+		baseMemoryId: choice.baseMemoryId,
+		byteLength: choice.payload.byteLength,
+		dim: vector.length,
+		encoding: "delta",
+		payloadId,
+		representationId: embedder.representationId,
+		sha256: payloadId,
+	};
 }
 
 function service(pinned?: string | null): MemoryService {
@@ -243,9 +266,59 @@ describe("state payload integrity guards", () => {
 		assert.throws(() => retrieveWithState(deps(), { corpusSnapshotId, k: 3, stateRef: truncated }), /integrity: .*declared/);
 	});
 
-	it("refuses a delta payload: residual decoding is not wired in this build", () => {
-		const stateRef = { ...stateRefOf(chunkVector(1)), baseMemoryId: "b".repeat(64), encoding: "delta" as const };
-		assert.throws(() => retrieveWithState(deps(), { corpusSnapshotId, k: 3, stateRef }), /representation-mismatch: .*delta/);
+	it("consumes a residual against a base rebuilt from memory (P4-4)", () => {
+		const query = chunkVector(1);
+		const base: PredictedBase = { memoryId: "b".repeat(64), representationId: embedder.representationId, vector: chunkVector(1) };
+		const stateRef = deltaStateRefOf(query, base);
+		// The residual is smaller than the vector it replaces, so the path is worth
+		// taking at all; the ranking is what must survive the round trip.
+		assert.ok(stateRef.byteLength < DIM * 4);
+		const result = retrieveWithState(
+			deps({ baseVectorFor: (memoryId) => (memoryId === base.memoryId ? base.vector : null) }),
+			{ corpusSnapshotId, k: 3, stateRef },
+		);
+		assert.equal(result.hits[0]?.chunkId, chunks[1]?.chunkId);
+		// Consumption is metered with the encoding that crossed, so delta payload
+		// bytes can be told apart from a full vector's in the aggregate.
+		const consumed = readMeteringLog(logPath).filter((event) => event.kind === "state-consume");
+		assert.equal(consumed.length, 1);
+		assert.equal(consumed[0]?.encoding, "delta");
+	});
+
+	it("treats a base the receiver cannot rebuild as unavailability, not as corruption", () => {
+		const query = chunkVector(1);
+		const base: PredictedBase = { memoryId: "b".repeat(64), representationId: embedder.representationId, vector: chunkVector(1) };
+		const stateRef = deltaStateRefOf(query, base);
+		// A residual whose bytes verify but whose base is gone is a different failure
+		// from a corrupt payload: the message can be recovered by re-sending a full
+		// vector, and the category is what lets the caller know that.
+		assert.throws(() => retrieveWithState(deps({ baseVectorFor: () => null }), { corpusSnapshotId, k: 3, stateRef }), /object-unavailable: base memory/);
+	});
+
+	it("treats a missing base seam as unavailability rather than reading the base from the envelope", () => {
+		const query = chunkVector(1);
+		const base: PredictedBase = { memoryId: "b".repeat(64), representationId: embedder.representationId, vector: chunkVector(1) };
+		const stateRef = deltaStateRefOf(query, base);
+		assert.throws(() => retrieveWithState(deps(), { corpusSnapshotId, k: 3, stateRef }), /object-unavailable: base memory/);
+	});
+
+	it("refuses a base whose width contradicts dim, so no residual is decoded against the wrong vector", () => {
+		const query = chunkVector(1);
+		const base: PredictedBase = { memoryId: "b".repeat(64), representationId: embedder.representationId, vector: chunkVector(1) };
+		const stateRef = deltaStateRefOf(query, base);
+		const short = new Float32Array(DIM - 1);
+		assert.throws(
+			() => retrieveWithState(deps({ baseVectorFor: () => short }), { corpusSnapshotId, k: 3, stateRef }),
+			/integrity: base width/,
+		);
+	});
+
+	it("refuses a delta stateRef that names no base at all", () => {
+		const stateRef = { ...stateRefOf(chunkVector(1)), baseMemoryId: null, encoding: "delta" as const };
+		assert.throws(
+			() => retrieveWithState(deps({ baseVectorFor: () => chunkVector(1) }), { corpusSnapshotId, k: 3, stateRef }),
+			/integrity: .*without a baseMemoryId/,
+		);
 	});
 
 	it("detects a corrupted corpus vectors file through its published digest", () => {

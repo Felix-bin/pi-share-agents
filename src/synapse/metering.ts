@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { canonicalDigest } from "./canonical-json.ts";
 import type { SynapseMode } from "./config.ts";
 import type { SynapseErrorClassification } from "./errors.ts";
+import type { StateFallbackReason } from "./state-payload.ts";
 
 /**
  * Append-only measurement log and its aggregation.
@@ -48,10 +49,37 @@ export type MeteringPayload =
 	| { envelopeBytes: number; kind: "message-delivered"; messageId: string; textBytes: number }
 	| { kind: "message-received"; messageId: string }
 	| { category: SynapseErrorClassification; kind: "message-failed"; messageId: string }
-	| { kind: "state-prepare" | "state-send" | "state-receive"; ok: boolean; payloadBytes: number; representationId: string; stateId: string }
+	| {
+			/**
+			 * Which encoding crossed. Optional so events written before the delta path
+			 * existed still parse; a reader aggregating delta bytes must treat a missing
+			 * value as the full-vector path rather than as "unknown".
+			 */
+			encoding?: "delta" | "float32-vector";
+			/**
+			 * Why a full vector was sent where a residual was possible; set only on the
+			 * sender's own events. This is the trigger-rate evidence: without it, a
+			 * situation where the residual path never engages is indistinguishable from
+			 * one where it engages and loses.
+			 */
+			fallbackReason?: StateFallbackReason;
+			kind: "state-prepare" | "state-send" | "state-receive";
+			/**
+			 * Set on the send half of a recovery hop, so a reader can see that this
+			 * particular delivery was a retry. The count lives on `state-restore`: a hop
+			 * is one event there, and counting it here as well would double it.
+			 */
+			restore?: "resend" | "full-vector";
+			ok: boolean;
+			payloadBytes: number;
+			representationId: string;
+			stateId: string;
+		}
 	| {
 			/** The corpus snapshot the state was ranked against; only a real retrieval consumes. */
 			corpusSnapshotId: string;
+			/** Which encoding was consumed; optional for events written before delta existed. */
+			encoding?: "delta" | "float32-vector";
 			/** How many corpus chunks the consumer asked to rank. */
 			k: number;
 			kind: "state-consume";
@@ -62,11 +90,35 @@ export type MeteringPayload =
 			representationId: string;
 			stateId: string;
 		}
+	| {
+			/**
+			 * One recovery hop actually taken: `resend` repeated the same bytes,
+			 * `full-vector` replaced an unrebuildable residual, `text` left the state
+			 * plane for a re-embedded search. Recorded whether or not the hop worked,
+			 * because "how often did the state plane need recovering" is a question
+			 * about attempts, not about successes.
+			 */
+			hop: "full-vector" | "resend" | "text";
+			kind: "state-restore";
+			ok: boolean;
+		}
 	| { kind: "model-usage"; role: "parent" | "child"; usage: ModelUsage | null }
 	| { costUsd: number | null; durationMs: number; inputTokens: number | null; kind: "embedding-call"; ok: boolean; requests: number }
 	| { authorisedValidHits: number; kind: "memory-query"; queryId: string }
 	| { kind: "memory-reuse"; memoryId: string; sourceAgent: string }
-	| { bytes: number; direction: "read" | "write"; kind: "object-io" }
+	| {
+			bytes: number;
+			direction: "read" | "write";
+			kind: "object-io";
+			/**
+			 * Why the bytes moved, for the reads that are a cost of the residual path
+			 * rather than of the memory path. `base-rebuild` is a receiver rebuilding
+			 * the base a residual names; `base-selection` is a sender ranking its own
+			 * records to pick one. Absent means an ordinary content or corpus read,
+			 * which is the only thing a pre-delta event could have been.
+			 */
+			purpose?: "base-rebuild" | "base-selection" | "ranking";
+		}
 	| { kind: "task-span"; phase: "start" | "end"; taskId: string }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
 
@@ -143,7 +195,29 @@ export type MeteringTotals = {
 	memory: { crossAgentReuses: number; hitRate: number | NotApplicable; queries: number; reuses: number };
 	messages: { delivered: number; duplicateDeliveries: number; failed: number; received: number };
 	model: { child: UsageTotals; complete: boolean; parent: UsageTotals; totalCost: number | Unavailable };
-	state: { consumed: number; failedSends: number; prepared: number; received: number; receivedWithoutConsume: number; sent: number; sentBytes: number };
+	state: {
+		/** Receiver-side reads that rebuilt a residual's base: the delta path's own cost. */
+		baseReadBytes: number;
+		/** Sender-side reads that ranked records to choose a base: a cost of selecting one. */
+		baseSelectionReadBytes: number;
+		consumed: number;
+		/**
+		 * Payload bytes that were SENT as a residual. Deliberately the sending side's
+		 * figure, the same side `sentBytes` counts: receive and consume observe the
+		 * same message again, so adding them would report one message as three. Whether
+		 * a residual was consumed is answered by `consumed` and by `decodeDelta:` errors,
+		 * not by inflating this number.
+		 */
+		deltaPayloadBytes: number;
+		failedSends: number;
+		prepared: number;
+		received: number;
+		receivedWithoutConsume: number;
+		/** Recovery hops taken, by any kind including the text fallback: one `state-restore` event each. */
+		restoreCount: number;
+		sent: number;
+		sentBytes: number;
+	};
 	storage: { readBytes: number; writeBytes: number };
 	text: { handoffBytes: number };
 };
@@ -185,7 +259,19 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 		memory: { crossAgentReuses: 0, hitRate: "N/A", queries: 0, reuses: 0 },
 		messages: { delivered: 0, duplicateDeliveries: 0, failed: 0, received: 0 },
 		model: { child: projectUsage(child), complete: false, parent: projectUsage(parent), totalCost: 0 },
-		state: { consumed: 0, failedSends: 0, prepared: 0, received: 0, receivedWithoutConsume: 0, sent: 0, sentBytes: 0 },
+		state: {
+			baseReadBytes: 0,
+			baseSelectionReadBytes: 0,
+			consumed: 0,
+			deltaPayloadBytes: 0,
+			failedSends: 0,
+			prepared: 0,
+			received: 0,
+			receivedWithoutConsume: 0,
+			restoreCount: 0,
+			sent: 0,
+			sentBytes: 0,
+		},
 		storage: { readBytes: 0, writeBytes: 0 },
 		text: { handoffBytes: 0 },
 	};
@@ -222,8 +308,12 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			case "state-send":
 				// Bytes count on every attempt: a failed send still crossed the wire.
 				totals.state.sentBytes += event.payloadBytes;
+				if (event.encoding === "delta") totals.state.deltaPayloadBytes += event.payloadBytes;
 				if (event.ok) totals.state.sent += 1;
 				else totals.state.failedSends += 1;
+				break;
+			case "state-restore":
+				totals.state.restoreCount += 1;
 				break;
 			case "state-receive":
 				if (event.ok) {
@@ -271,6 +361,11 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			case "object-io":
 				if (event.direction === "read") totals.storage.readBytes += event.bytes;
 				else totals.storage.writeBytes += event.bytes;
+				// The residual path's reads are broken out so the full-account
+				// comparison does not have to infer them from a storage total that also
+				// holds memory, content and corpus traffic.
+				if (event.purpose === "base-rebuild") totals.state.baseReadBytes += event.bytes;
+				else if (event.purpose === "base-selection") totals.state.baseSelectionReadBytes += event.bytes;
 				break;
 			case "task-span":
 				if (event.phase === "start") starts.set(event.taskId, event.monotonicMs);

@@ -1,5 +1,4 @@
 import { decodeDelta, dequantize, encodeDelta, quantize } from "./delta.ts";
-import type { DeltaParams } from "./delta.ts";
 import { SYNAPSE_DELTA_PARAMS } from "./delta-params.ts";
 import type { PredictedBase } from "./predict-base.ts";
 
@@ -7,12 +6,17 @@ import type { PredictedBase } from "./predict-base.ts";
  * The state payload on the wire: which encoding a sender chooses, and how a
  * receiver turns those bytes back into a vector.
  *
- * The choice is a rate-distortion decision, not a preference. A residual is only
- * sent when it is smaller than the vector it replaces *and* still smaller once
- * the receiver's base read is counted — the second half is what the full-account
- * rule of plan §5.4 requires, because a saving that ignores the base read is not
- * a saving. Under the frozen int8 layout the first half holds by construction
- * (3 bytes per component against 4), so the interesting branch is the second.
+ * The choice is a policy, not a rate-distortion optimum, and it is deliberately
+ * narrow: a residual is sent only when it is smaller than the vector it replaces
+ * *and* no larger than half of it. Under the frozen int8 layout the first half
+ * holds by construction (3 bytes per component against 4), so the working
+ * criterion is the second. What the choice does NOT do is count the receiver's
+ * base read on the residual's side — a 4 KiB base read exceeds any payload saving
+ * at dim 1024, so counting it here would make every residual lose, the mechanism
+ * would never run, and there would be nothing to measure. Whether the base read
+ * makes the whole path a net loss is the full-account question, answered by
+ * measurement in P4-5 (see docs/experiments/AC-17-acceptance-preregistration-20260919.md),
+ * not hidden inside the sender's choice.
  *
  * Both directions live here so the sender and the receiver cannot drift: the
  * payload the sender writes is the payload this module's decoder expects, and
@@ -38,7 +42,6 @@ export type StateEncodingChoice = {
 export type ChooseStatePayloadInput = {
 	base: PredictedBase | null;
 	fullVector: Float32Array;
-	params: DeltaParams;
 	/** The space the sender embeds in; a base from another space cannot be subtracted from. */
 	representationId: string;
 };
@@ -92,7 +95,13 @@ export function chooseStatePayload(input: ChooseStatePayloadInput): StateEncodin
 	if (base === null) return { ...fullVector(), reason: "no-base" };
 	if (base.representationId !== input.representationId) return { ...fullVector(), reason: "base-space-mismatch" };
 
-	const residual = encodeDelta(quantize(input.fullVector, input.params.grid), quantize(base.vector, input.params.grid), input.params);
+	// The grid comes from the frozen constants rather than from the caller, for the
+	// same reason the decoder's does: a payload does not name its grid, so an encoder
+	// that could be handed a different one would produce bytes that every checksum
+	// accepts and that decode into a plausible wrong vector. Changing the grid is a
+	// wire-format decision, not a parameter.
+	const params = SYNAPSE_DELTA_PARAMS;
+	const residual = encodeDelta(quantize(input.fullVector, params.grid), quantize(base.vector, params.grid), params);
 	// The card's rule, kept as a guard rather than as the working criterion: with an
 	// int8 value and a two-byte index a payload cannot reach the vector's size, so
 	// this branch only becomes reachable if the frozen layout widens.

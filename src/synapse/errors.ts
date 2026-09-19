@@ -52,6 +52,11 @@ const PREFIX_CATEGORIES: readonly (readonly [string, SynapseErrorCategory])[] = 
 	["orphan", "integrity"],
 	["namespace-corrupt", "integrity"],
 	["integrity", "integrity"],
+	// A residual that does not decode is corruption of a payload that already passed
+	// its digest check, so it belongs in the same class as any other damaged object —
+	// and in the recovery chain, which only object and integrity failures enter. Left
+	// unclassified it would skip recovery entirely and fail as an unknown error.
+	["decodeDelta:", "integrity"],
 	["namespace-mismatch", "configuration"],
 	["k-out-of-range", "configuration"],
 	["summary-too-large", "configuration"],

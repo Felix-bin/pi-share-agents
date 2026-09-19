@@ -12,6 +12,8 @@ import type { LaunchContract } from "./lifecycle.ts";
 import { createMemoryService, type MemoryService, type SearchResult } from "./memory-service.ts";
 import { createMeteringLog, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
 import { capabilityForAgent, hostCapability, SYNAPSE_CONSUMER_VERSION } from "./roles.ts";
+import type { PredictedBase } from "./predict-base.ts";
+import { chooseStatePayload, SYNAPSE_DELTA_MEDIA_TYPE } from "./state-payload.ts";
 import type { StateRetrievalResult } from "./state-retrieval.ts";
 
 /**
@@ -319,7 +321,19 @@ export type ConsumeIdentity = {
 	sessionId: string;
 };
 
-export type SendDeps = { log: MeteringLog };
+export type SendDeps = {
+	log: MeteringLog;
+	/**
+	 * The sender's base-selection seam: given the query, name the memory whose
+	 * vector a residual may be computed against, or null when none is usable.
+	 *
+	 * Injected rather than built here because the base comes from the sender's own
+	 * memory store and its frozen semantic weighting — the same ranking the
+	 * retrieval path reports (P4-3). Absent means no base exists, which is the
+	 * `no-base` reason for sending a full vector rather than a failure.
+	 */
+	predictedBase?: (query: { text: string }) => Promise<PredictedBase | null>;
+};
 
 export type OpenRetrieveInput = {
 	contract: LaunchContract;
@@ -337,6 +351,20 @@ export type RetrieveSendResult =
 	| { envelope: Envelope; kind: "state"; stateRef: StateRef }
 	| { envelope: Envelope; kind: "text"; reason: TextFallbackReason };
 
+/** A re-send that replaces the failed message rather than repeating it. */
+export type ResendReplacement = {
+	bytes: Uint8Array;
+	/**
+	 * The space the replacement is sent under. Its encoding is fixed to a full vector
+	 * because that is what "replace an unrebuildable residual" means — a delta
+	 * replacement would re-enter the same failure. The two id fields are not the
+	 * caller's to state either: they are the digest of `bytes`, so the recovery fills
+	 * them from what it actually stored and a replacement whose ids disagreed with its
+	 * bytes cannot be expressed.
+	 */
+	stateRef: Omit<StateRef, "encoding" | "payloadId" | "sha256"> & { encoding: "float32-vector" };
+};
+
 export type ConsumeDeps = {
 	/**
 	 * Present only when a text fallback may re-embed the original query here.
@@ -346,8 +374,16 @@ export type ConsumeDeps = {
 	 */
 	embedder?: Embedder;
 	log: MeteringLog;
-	/** The sender's one permitted re-send of the original object bytes; null = cannot. */
-	resend?: () => Uint8Array | null;
+	/**
+	 * The sender's one permitted re-send; null = cannot.
+	 *
+	 * Plain bytes re-publish the same object, which recovers a payload lost or
+	 * corrupted in transit. A replacement carries its own stateRef instead, which is
+	 * the only way to recover a residual the receiver cannot rebuild: the base lives
+	 * in the receiver's memory, so no re-send of the residual's own bytes can help,
+	 * and the fallback AC-17 requires is a full vector.
+	 */
+	resend?: () => Uint8Array | ResendReplacement | null;
 	service?: MemoryService;
 };
 
@@ -388,10 +424,29 @@ function unitVectorOf(vector: Float32Array, label: string): Float32Array {
 	return unit;
 }
 
-function littleEndianBytes(vector: Float32Array): Uint8Array {
-	const buffer = Buffer.alloc(vector.length * 4);
-	for (const [index, value] of vector.entries()) buffer.writeFloatLE(value, index * 4);
-	return new Uint8Array(buffer);
+/**
+ * The sender half of a retrieve negotiation. Exported because the `delta`
+ * encoding is declarable but not otherwise observable: negotiation only ever
+ * requires the common `float32-vector`, so without a named declaration a future
+ * edit could drop `delta` from this list and every behavioural test would still
+ * pass — while the capability the envelope advertises silently narrowed.
+ */
+export function retrieveSenderCapability(representationId: string): CapabilityDeclaration {
+	// The host both asks and answers retrieval, but only the receiver needs the
+	// consuming tool; declaring float32 on the sender side is what lets the pair
+	// leave text at all.
+	return {
+		actions: ["delegate", "retrieve"],
+		agent: "parent",
+		consumesState: false,
+		consumerVersion: SYNAPSE_CONSUMER_VERSION,
+		// delta is declared as a supported encoding; whether one is actually sent is
+		// decided per message by the rate-distortion choice below. Negotiation states
+		// capability, the choice states the fact — folding the choice into negotiation
+		// would make the capability table vary with the payload's numbers.
+		encodings: ["text", "float32-vector", "delta"],
+		representationId,
+	};
 }
 
 /**
@@ -403,17 +458,7 @@ function littleEndianBytes(vector: Float32Array): Uint8Array {
  */
 export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<RetrieveSendResult | null> {
 	const { contract, identity } = input;
-	// The host both asks and answers retrieval, but only the receiver needs the
-	// consuming tool; declaring float32 on the sender side is what lets the pair
-	// leave text at all.
-	const sender: CapabilityDeclaration = {
-		actions: ["delegate", "retrieve"],
-		agent: "parent",
-		consumesState: false,
-		consumerVersion: SYNAPSE_CONSUMER_VERSION,
-		encodings: ["text", "float32-vector"],
-		representationId: contract.representationId,
-	};
+	const sender = retrieveSenderCapability(contract.representationId);
 	const receiver = capabilityForAgent({ agent: identity.agent, childTools: identity.childTools, representationId: contract.representationId });
 	const negotiation = negotiate({
 		action: "retrieve",
@@ -492,27 +537,54 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	// keeps the invariant true for any embedder, per spec §8.1.
 	const embedded = await input.embedder.embedQuery(input.query);
 	const vector = unitVectorOf(embedded.vector, "the retrieve query");
-	const payload = littleEndianBytes(vector);
+	// Base selection runs against the sender's own memory, through the injected
+	// seam; a null base is the normal cold-start answer and lands on the full-vector
+	// branch with its reason recorded, not on an error path.
+	const base = deps.predictedBase === undefined ? null : await deps.predictedBase({ text: input.query });
+	// One function decides encoding and bytes together, so the payload this side
+	// publishes is always the one the decoder expects for the encoding it names.
+	const choice = chooseStatePayload({
+		base,
+		fullVector: vector,
+		representationId: input.embedder.representationId,
+	});
+	const payload = choice.payload;
 	// The store is content-addressed, so the object id is the sha-256 of exactly
 	// the bytes that were sent — the digest the envelope then claims (spec §8.1).
+	// The media type follows the encoding: a residual is not a float32 vector, and a
+	// reader that sniffed it as one would decode plausible garbage.
 	const store = createContentStore(contract.storageRoot);
-	const payloadId = store.put(payload, SYNAPSE_VECTOR_MEDIA_TYPE);
+	const payloadId = store.put(payload, choice.encoding === "delta" ? SYNAPSE_DELTA_MEDIA_TYPE : SYNAPSE_VECTOR_MEDIA_TYPE);
 	// The state payload is storage traffic like any other object: its bytes
 	// belong in storage.writeBytes so a calibration's storage-cost column is
 	// not quietly missing the vector payloads (P4 group review X-5).
 	deps.log.record(meterIdentity, { bytes: payload.byteLength, direction: "write", kind: "object-io" });
 	const stateRef: StateRef = {
-		baseMemoryId: null,
+		baseMemoryId: choice.baseMemoryId,
 		byteLength: payload.byteLength,
+		// dim stays the full vector's width even for a residual: it is what the
+		// receiver needs to rebuild, and the envelope validates the payload against it.
 		dim: vector.length,
-		encoding: "float32-vector",
+		encoding: choice.encoding,
 		payloadId,
 		representationId: input.embedder.representationId,
 		sha256: payloadId,
 	};
-	deps.log.record(meterIdentity, { kind: "state-prepare", ok: true, payloadBytes: payload.byteLength, representationId: stateRef.representationId, stateId: payloadId });
+	// canonicalJson refuses a present-but-undefined value, so the reason key is
+	// added rather than set to undefined: an absent reason and a null one would
+	// both be wrong to write.
+	const choiceFields = choice.reason === null ? { encoding: choice.encoding } : { encoding: choice.encoding, fallbackReason: choice.reason };
+	deps.log.record(meterIdentity, {
+		...choiceFields,
+		kind: "state-prepare",
+		ok: true,
+		payloadBytes: payload.byteLength,
+		representationId: stateRef.representationId,
+		stateId: payloadId,
+	});
 	const envelope = envelopeOf(stateRef);
 	deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, {
+		...choiceFields,
 		kind: "state-send",
 		ok: true,
 		payloadBytes: payload.byteLength,
@@ -611,6 +683,7 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 	// Receipt on the state plane is the payload being addressable; a missing
 	// object is a recovery input, not a delivery failure.
 	input.deps.log.record(meterIdentity, {
+		encoding: stateRef.encoding,
 		kind: "state-receive",
 		ok: store.has(stateRef.payloadId),
 		payloadBytes: stateRef.byteLength,
@@ -619,14 +692,14 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 	});
 
 	type ConsumeAttempt = { kind: "ok"; result: StateRetrievalResult } | { category: SynapseErrorClassification; kind: "error"; reason: string };
-	const attemptConsume = (): ConsumeAttempt => {
+	const attemptConsume = (against: StateRef): ConsumeAttempt => {
 		try {
-			return { kind: "ok", result: service.search({ k: input.k, stateId: stateRef.payloadId, stateRef }) };
+			return { kind: "ok", result: service.search({ k: input.k, stateId: against.payloadId, stateRef: against }) };
 		} catch (error) {
 			return { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
 		}
 	};
-	const first = attemptConsume();
+	const first = attemptConsume(stateRef);
 	if (first.kind === "ok") return { kind: "consumed", result: first.result };
 
 	// Only object-class problems recover: the bytes may have been lost in
@@ -636,40 +709,78 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 	if (first.category === "object-unavailable" || first.category === "integrity") {
 		let afterResend: ConsumeAttempt = first;
 		if (input.deps.resend !== undefined) {
-			const bytes = input.deps.resend();
-			if (bytes !== null) {
+			const resent = input.deps.resend();
+			if (resent !== null) {
+				// A replacement states its own encoding, space and base but not its ids:
+				// the recovery below is what stores the bytes, so it is the only party
+				// that can name them without the two disagreeing.
+				// The union is discriminated by the value's own shape, so neither branch
+				// needs an assertion: a Uint8Array repeats the message, anything else
+				// replaces it.
+				let replacement: ResendReplacement | null = null;
+				let bytes: Uint8Array;
+				if (resent instanceof Uint8Array) {
+					bytes = resent;
+				} else {
+					replacement = resent;
+					bytes = resent.bytes;
+				}
 				// The re-sent bytes are caller-supplied; a store that rejects them
 				// (oversized, or colliding with an object stored under another media
 				// type) is a failed recovery, not an exception through the seam.
 				let resendFailed: ConsumeAttempt | null = null;
+				let against: StateRef = stateRef;
 				try {
+					const mediaType = (replacement?.stateRef.encoding ?? stateRef.encoding) === "delta" ? SYNAPSE_DELTA_MEDIA_TYPE : SYNAPSE_VECTOR_MEDIA_TYPE;
+					const idToReplace = replacement === null ? stateRef.payloadId : "";
 					// A corrupted object that still matches its file name would make
 					// the store's put a no-op and the retry fail again: a body that
 					// no longer hashes to its id is removed first (its metadata is
 					// rewritten by the put below), so the re-sent verified copy
 					// actually lands (P4 group review X-1).
-					if (store.has(stateRef.payloadId)) {
+					if (idToReplace !== "" && store.has(idToReplace)) {
 						try {
-							store.read(stateRef.payloadId);
+							store.read(idToReplace);
 						} catch {
-							fs.rmSync(store.objectPath(stateRef.payloadId), { force: true });
+							fs.rmSync(store.objectPath(idToReplace), { force: true });
 						}
 					}
 					// A re-send is a delivery in its own right and is metered as one;
 					// the content-addressed store makes re-publishing the same bytes a no-op.
-					const resentId = store.put(bytes, SYNAPSE_VECTOR_MEDIA_TYPE);
+					const resentId = store.put(bytes, mediaType);
+					if (replacement !== null) {
+						against = { ...replacement.stateRef, payloadId: resentId, sha256: resentId };
+						// The replacement is a second delivery, so it is received as one: without
+						// this line the receiver would hold a consume for an id it never recorded
+						// receiving, and the received/consumed reconciliation would report the
+						// message as received-but-unconsumed even though it was consumed.
+						input.deps.log.record(meterIdentity, {
+							encoding: against.encoding,
+							kind: "state-receive",
+							ok: true,
+							payloadBytes: bytes.byteLength,
+							representationId: against.representationId,
+							stateId: resentId,
+						});
+					}
 					input.deps.log.record(meterIdentity, { bytes: bytes.byteLength, direction: "write", kind: "object-io" });
 					input.deps.log.record({ ...meterIdentity, attempt: meterIdentity.attempt + 1 }, {
+						encoding: against.encoding,
 						kind: "state-send",
 						ok: true,
 						payloadBytes: bytes.byteLength,
-						representationId: stateRef.representationId,
+						representationId: against.representationId,
+						// The hop is what a reader counts: a recovery that repeats the same
+						// message and one that replaces it are both one hop, and the encoding
+						// says which happened.
+						restore: replacement === null ? "resend" : "full-vector",
 						stateId: resentId,
 					});
+					input.deps.log.record(meterIdentity, { hop: replacement === null ? "resend" : "full-vector", kind: "state-restore", ok: true });
 				} catch (error) {
 					resendFailed = { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
 				}
-				afterResend = resendFailed ?? attemptConsume();
+				afterResend = resendFailed ?? attemptConsume(against);
 				if (afterResend.kind === "ok") return { kind: "consumed", result: afterResend.result };
 			}
 		}
@@ -680,6 +791,9 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 			// never an exception through the seam.
 			try {
 				const result = await service.searchSemantic({ k: input.k, query: input.fallbackQuery });
+				// Recorded as a hop of its own so "how often did the state plane need
+				// recovering" counts this the same way it counts a re-send.
+				input.deps.log.record(meterIdentity, { hop: "text", kind: "state-restore", ok: true });
 				return { kind: "text-fallback", result };
 			} catch (error) {
 				const fallbackFailure = { category: classifySynapseError(error), kind: "error" as const, reason: error instanceof Error ? error.message : String(error) };

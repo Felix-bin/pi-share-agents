@@ -187,50 +187,86 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 	}
 
 	/**
+	 * Reads and fully re-verifies one record's stored vector, metering the read.
+	 *
+	 * One reading path for both consumers of a stored vector — the semantic ranking
+	 * and the residual base rebuild — so a base can never be admitted through looser
+	 * checks than a ranking vector. Corruption is reported together with the record
+	 * that points at it rather than as a bare store error.
+	 */
+	function readRecordVector(record: MemoryRecord, purpose: "base-rebuild" | "base-selection" | "ranking"): Float32Array {
+		const embedding = record.embedding;
+		if (embedding === null) {
+			throw new Error(`integrity: memory ${record.memoryId} has no stored vector`);
+		}
+		let bytes: Uint8Array;
+		try {
+			bytes = contentStore.read(embedding.objectId);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			throw new Error(`integrity: vector object ${embedding.objectId} for memory ${record.memoryId} cannot be read: ${detail}`);
+		}
+		if (bytes.byteLength === 0 || bytes.byteLength % 4 !== 0) {
+			throw new Error(
+				`integrity: vector object ${embedding.objectId} for memory ${record.memoryId} holds ${bytes.byteLength} bytes, not a whole number of float32 values`,
+			);
+		}
+		const vector = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+		if (vector.length !== embedding.dim) {
+			throw new Error(
+				`integrity: vector object ${embedding.objectId} for memory ${record.memoryId} holds ${vector.length} floats, record claims ${embedding.dim}`,
+			);
+		}
+		for (let index = 0; index < vector.length; index += 1) {
+			if (!Number.isFinite(vector[index]!)) {
+				throw new Error(
+					`integrity: vector object ${embedding.objectId} for memory ${record.memoryId} holds a non-finite value at index ${index}`,
+				);
+			}
+		}
+		options.metering?.log.record(options.metering.identity, { bytes: bytes.byteLength, direction: "read", kind: "object-io", purpose });
+		return vector;
+	}
+
+	/**
+	 * The base a residual was computed against, rebuilt from this receiver's own
+	 * records (P4-4). Null covers every reason the base is unusable — no such
+	 * record, no stored vector, another representation space, or outside this scope
+	 * — and reaches the caller as one object-unavailability rather than leaking
+	 * which of those it was. A record that has a vector but whose object cannot be
+	 * read throws instead: that is corruption of a record the caller named, and it
+	 * carries its own category.
+	 */
+	function baseVectorForState(memoryId: string, representationId: string): Float32Array | null {
+		let record: MemoryRecord;
+		try {
+			record = memoryStore.get(memoryId);
+		} catch {
+			return null;
+		}
+		if (record.embedding === null || record.embedding.representationId !== representationId) return null;
+		if (!isReadable(record, options.scope)) return null;
+		return readRecordVector(record, "base-rebuild");
+	}
+
+	/**
 	 * The records that may take part in a semantic ranking, with their vectors
 	 * loaded from the content store. Authorisation runs before any read, so a
 	 * denied record's corrupt object cannot fail a search that would never have
 	 * shown it, and a record embedded under another representation is left out
 	 * rather than scored with a foreign cosine.
 	 */
-	function loadRecordVectors(records: readonly MemoryRecord[], embedder: Embedder): Map<string, Float32Array> {
+	function loadRecordVectors(
+		records: readonly MemoryRecord[],
+		embedder: Embedder,
+		purpose: "base-selection" | "ranking",
+	): Map<string, Float32Array> {
 		const recordVectors = new Map<string, Float32Array>();
 		for (const record of records) {
 			if (record.embedding === null) continue;
 			if (!isReadable(record, options.scope)) continue;
 			if (record.embedding.representationId !== embedder.representationId) continue;
-			// The store re-verifies the digest on every read. An unreadable object
-			// (missing, digest mismatch), bytes that are not a whole number of
-			// float32 values, or a float count that contradicts the record are
-			// corruption and are reported together with the record that points at
-			// them.
-			let bytes: Uint8Array;
-			try {
-				bytes = contentStore.read(record.embedding.objectId);
-			} catch (error) {
-				const detail = error instanceof Error ? error.message : String(error);
-				throw new Error(`integrity: vector object ${record.embedding.objectId} for memory ${record.memoryId} cannot be read: ${detail}`);
-			}
-			if (bytes.byteLength === 0 || bytes.byteLength % 4 !== 0) {
-				throw new Error(
-					`integrity: vector object ${record.embedding.objectId} for memory ${record.memoryId} holds ${bytes.byteLength} bytes, not a whole number of float32 values`,
-				);
-			}
-			const vector = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
-			if (vector.length !== record.embedding.dim) {
-				throw new Error(
-					`integrity: vector object ${record.embedding.objectId} for memory ${record.memoryId} holds ${vector.length} floats, record claims ${record.embedding.dim}`,
-				);
-			}
-			for (let index = 0; index < vector.length; index += 1) {
-				if (!Number.isFinite(vector[index]!)) {
-					throw new Error(
-						`integrity: vector object ${record.embedding.objectId} for memory ${record.memoryId} holds a non-finite value at index ${index}`,
-					);
-				}
-			}
-			options.metering?.log.record(options.metering.identity, { bytes: bytes.byteLength, direction: "read", kind: "object-io" });
-			recordVectors.set(record.memoryId, vector);
+			recordVectors.set(record.memoryId, readRecordVector(record, purpose));
 		}
 		return recordVectors;
 	}
@@ -302,7 +338,9 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 			throw new Error("synapse.corpusSnapshotId is not configured; state retrieval needs a pinned corpus snapshot");
 		}
 		return retrieveWithState(
-			{ contentStore, metering: options.metering, storageRoot: options.storeRoot },
+			// A residual is rebuilt from this receiver's own records, never from the
+			// envelope; the same scope and the same verified read the ranking uses.
+			{ baseVectorFor: baseVectorForState, contentStore, metering: options.metering, storageRoot: options.storeRoot },
 			{ corpusSnapshotId: pinned, k, stateRef },
 		);
 	}
@@ -342,7 +380,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 		// rather than spending an embedding call on an empty string.
 		if (query.trim() === "") return rankMemories(input, k, undefined);
 		const records = memoryStore.list({ includeSuperseded: input.includeHistorical === true });
-		const recordVectors = loadRecordVectors(records, embedder);
+		const recordVectors = loadRecordVectors(records, embedder, "ranking");
 		// No usable vectors at all means the semantic component never took part:
 		// report it unavailable instead of stamping "ok" on a keyword ranking.
 		if (recordVectors.size === 0) return rankMemories(input, k, undefined, records);
@@ -395,7 +433,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 			// No embedder means no query vector, and no empty query has one either.
 			if (embedder === undefined || query.text.trim() === "") return null;
 			const records = memoryStore.list({ includeSuperseded: false });
-			const recordVectors = loadRecordVectors(records, embedder);
+			const recordVectors = loadRecordVectors(records, embedder, "base-selection");
 			if (recordVectors.size === 0) return null;
 			const embedded = await embedder.embedQuery(query.text);
 			// A stored vector whose dimension disagrees with the query's despite a

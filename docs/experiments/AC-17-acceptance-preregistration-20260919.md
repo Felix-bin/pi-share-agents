@@ -30,24 +30,39 @@ delta（残差）的净收益符号是本次决赛的**结论性问题**：它�
 嵌入 provider 与模型（SiliconFlow `BAAI/bge-m3`, dim 1024）、温度（若涉及）、序列与轮次、`k`、seed、
 代码 SHA、`PI_CODING_AGENT_DIR` 与 `synapse.storageRoot`。
 
+**三条同样必须写进 manifest 的受控条件**（否则数字会**静默**偏向某一臂，而不是报错）：
+
+1. **metering 已挂接**：`object-io`（基读取）与 `embedding-call` 都经 `options.metering?.log` 写入，
+   挂接是可选的。若某一臂的 service 或 embedder 未挂 metering，`baseReadBytes` 与嵌入成本会**静默记成 0**。
+   跑数前须核对每臂的 metering 挂接与日志路径。
+2. **嵌入缓存状态**：两级缓存持久化在 `storageRoot` 内，缓存命中不产生 `embedding-call` 事件。
+   冷/热缓存下的嵌入成本不可比，须在 manifest 声明并在两臂间保持一致。
+3. **`deltaPayloadBytes` 口径**：发送侧单计（见上文），读取该字段时不得再与 receive/consume 相加。
+
 ---
 
 ## 3. 主指标（预登记，不得事后替换）
 
 | # | 指标 | 计量来源（均为**已存在**的计量事件，字段名即代码字段） | 方向 |
 |---|---|---|---|
-| ① | **线上传输总字节**（载荷口径） | `state-prepare`/`state-send`/`state-receive`/`state-consume` 的 `payloadBytes` + `message-delivered` 的 `envelopeBytes` | 越小越好 |
+| ① | **线上传输总字节**（载荷口径） | `state-send` 的 `payloadBytes` 之和（**发送侧单计**，与 `sentBytes` 同口径；恢复重传的 `state-send` 也计入，因为它确实过了线）+ `message-delivered` 的 `envelopeBytes` | 越小越好 |
 | ② | **全账总字节**（含本地 I/O） | ① + `object-io`（`direction="read"` 且归因为**基读取**的部分）+ `embedding-call`（`inputTokens`/`requests`）+ 回退链产生的全部字节 | 越小越好 |
 | ③ | **检索一致性** | 有序 top-5 一致（主判据，沿用 P4-2；top-1 与集合口径作诊断并列） | 越大越好 |
-| ④ | **回退次数** | `restoreCount`（P4-4 新增聚合项）：重传 + 文本回退的实际跳数之和 | 越少越好 |
+| ④ | **回退次数** | `restoreCount`：`state-restore` 事件数（`resend` / `full-vector` / `text` 三类合计，每次实际发生的跳各记一条） | 越少越好 |
+
+**"线上传输总字节"为什么只算发送侧**：接收与消费事件观察到的是**同一条消息**，把三处相加会把一条消息报成三条。
+`deltaPayloadBytes` 因此是发送侧的口径；"这条残差有没有真的被消费"由 `consumed` 计数与 `decodeDelta:` 类错误回答，
+不靠放大字节数回答。
 
 **基读取的口径（关键，易被读成藏成本）**：`object-io` 事件本身不带"这是基读取"的标记。
 P4-4 落地时必须给出**归因规则**并把规则写进证据包；本预登记只认两种可辩护的口径，且**两张表都要出**：
 
 - **冷基**：每个 delta 轮次都从存储读取基向量（`readVerified` 无进程内缓存的现状，见
   `content-store.ts` 的 `readVerified`）——这是**默认报表口径**。
-- **热基**：基向量常驻（进程内缓存或共享内存），基读取摊薄到 ≈0——这是**趋势报表口径**，
-  依据是 M6 的记忆跨任务复用语义下基记录本就会被反复使用。
+- **热基**：基向量常驻（进程内缓存或共享内存），基读取摊薄到 ≈0——这是**趋势报表口径**。
+  **本交付没有基向量缓存的实现**（`content-store` 的 `readVerified` 每次 `fs.readFileSync`），
+  因此热基一行的数字只能是**由冷基扣减基读取所得的推导值**，落表时必须标注"推导 / 非实测"，
+  不得与冷基的实测列混排。
 
 **M8「非文本状态传递次数及数据规模」的报表必须是分层表**，同屏并列三列（载荷 / 含信封 / 全账），
 基读取单列一行，冷热两行。**禁止只报载荷口径**。

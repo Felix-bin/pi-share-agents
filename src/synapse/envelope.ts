@@ -115,7 +115,11 @@ export type Envelope = EnvelopeWire & {
 const StateRefSchema = Type.Object(
 	{
 		baseMemoryId: Type.Union([Type.String({ pattern: MEMORY_ID_PATTERN }), Type.Null()]),
-		byteLength: Type.Integer({ minimum: 1 }),
+		// Zero is allowed: a residual whose base already meets the encoder's stop
+		// condition has no components to carry, and that empty payload decodes to the
+		// base. A positive minimum would let the sender produce a message the receiver
+		// then refuses to parse — the best case of the mechanism failing on the wire.
+		byteLength: Type.Integer({ minimum: 0 }),
 		dim: Type.Integer({ maximum: 8192, minimum: 1 }),
 		encoding: Type.Union([Type.Literal("float32-vector"), Type.Literal("delta")]),
 		payloadId: Type.String({ pattern: CONTENT_ID_PATTERN }),
@@ -155,6 +159,8 @@ function assertStateRef(stateRef: StateRef): void {
 		throw new Error(`stateRef byteLength ${stateRef.byteLength} does not match dim ${stateRef.dim} (expected ${fullLength})`);
 	}
 	if (stateRef.encoding === "delta") {
+		// The lower bound is zero by design, not by omission: see the schema note on
+		// why an empty residual is a real message rather than a malformed one.
 		// A residual longer than the vector it replaces would have no reason to exist.
 		if (stateRef.byteLength > fullLength) {
 			throw new Error(`stateRef byteLength ${stateRef.byteLength} exceeds the full vector it replaces (${fullLength})`);
