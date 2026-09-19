@@ -27,6 +27,17 @@ import { type MemoryQuery, searchMemories, type SemanticScoring } from "./retrie
  * vector leaves the caller sending a full vector; a zero base would be cheaper
  * but the envelope's delta validation refuses a residual without a base id, so
  * the fallback has to happen at the caller.
+ *
+ * Validity is tightened past the task card, which bans only a *stale* base: this
+ * selector demands *current*, so a record whose source can no longer be verified
+ * is skipped rather than used. An unverifiable source is not evidence that it has
+ * not changed, and a base the receiver cannot audit would put the base id outside
+ * the provenance chain the envelope exists to carry. The cost is a narrower base
+ * pool, not a correctness risk, and it is bounded by the full-vector fallback
+ * above. Deliberate tightening (K3 裁决 D3，2026-09-19) with a data-driven revisit
+ * condition: if continuous-task runs show unverifiable sources dominating the
+ * candidate pool enough to starve the residual path, widening to the card's
+ * literal reading is one line here plus one test case.
  */
 
 export type PredictedBase = {

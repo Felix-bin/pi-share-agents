@@ -327,6 +327,9 @@ node --experimental-strip-types --import ./test/support/register-loader.mjs --te
 # 对 src 与新增测试做类型检查
 npx tsc --noEmit -p tsconfig.synapse-tests.json
 
+# 本线的 lint 范围（见下方口径说明）
+npm run lint:synapse
+
 # 完整测试套件（含本 fork 测试）与源码类型检查
 npm run test:all
 npm run typecheck
@@ -335,6 +338,14 @@ npm run typecheck
 测试结果以当前提交的实际运行输出为准。[主测试流程](./.github/workflows/test.yml) 使用 Node.js 24，
 覆盖 Ubuntu 与 Windows；Windows 的单元和集成测试使用 `--test-concurrency=2`。
 复现失败时应保留平台、Node 版本、失败用例与日志，不能仅以“环境问题”认定通过。
+
+**lint 口径（范围化，须公开说明）**：本 fork 的 lint 门禁只覆盖**改动范围**——
+`src/synapse/` 全量，加上当前改动提交所涉文件的并集（命令 `npm run lint:synapse`）。
+上游基座在未改动的 `HEAD` 上本身即有约 11059 条 lint 告警（存量债，非本 fork 引入），
+在仓库根直接运行 `npx oxlint` 会见红。清零它需要修改一万余个与本题无关的文件，
+会淹没真实 diff 并损害评审时的可复核性，因此采用「基线-棘轮」的通行做法：
+本线改动零新增告警，存量单独跟踪、赛后处理。对外表述一律为**「改动范围 lint 干净」**，
+不得声称全仓干净。
 
 ## 已知缺口
 
