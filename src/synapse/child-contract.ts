@@ -87,8 +87,8 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			// run produced, and without one the stable "unset" placeholder keeps the
 			// vector path disabled.
 			capabilityId: capabilityForAgent({ agent, childTools: input.childTools, representationId }).capabilityId,
-			contextRefs: [],
 			corpusSnapshotId: config.corpusSnapshotId ?? "unset",
+			memoryRefs: [],
 			mode: config.mode,
 			namespaceId: deriveNamespaceId(input.cwd),
 			representationId,

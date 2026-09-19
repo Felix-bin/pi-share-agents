@@ -10,6 +10,13 @@ node_modules/
 .fallow/
 tmp/
 
+# Local-only checkout of the upstream SYNAPSE Python prototype. It is a reference
+# implementation we read, not code we ship: the upstream tree carries ~84MB of
+# competition media (PPT, demo video) that would live in this repo's history
+# forever and slow down every `pi install git:` clone.
+# See docs/synapse-python-prototype.md for how to create it.
+/reference/
+
 # Fallback ignores for local ad-hoc agent and lane reports.
 /memory.md
 /todo.md

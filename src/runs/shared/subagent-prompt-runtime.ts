@@ -18,6 +18,7 @@ import type { ChildWatchdogConfig } from "../../watchdog/child-status.ts";
 import { requestWatchdogPermission, type WatchdogPermissionRequest, type WatchdogPermissionResult } from "../../watchdog/permission-arbiter.ts";
 import { SUBAGENT_WATCHDOG_WARNING_TYPE } from "../../watchdog/types.ts";
 import { registerSynapseChildTools } from "../../synapse/child-contract.ts";
+import { envelopeInboxPath, readDeliveredEnvelope, verifyEnvelopeAgainstContract } from "../../synapse/envelope-inbox.ts";
 import { registerWaitTool } from "../background/wait-tool.ts";
 import { drainOutstandingWork } from "../background/auto-drain.ts";
 import {
@@ -380,6 +381,26 @@ export function registerPermissionGate(
 	});
 }
 
+/**
+ * Verifies the structured envelope the parent addressed to this child.
+ *
+ * An absent envelope is not a failure: the parent skips delegation whenever
+ * negotiation refuses it or the meter cannot be opened, and the child then runs
+ * exactly the task upstream would have sent. An envelope that is present but
+ * does not describe this launch is a divergence, and the child refuses rather
+ * than running work under a contract nobody chose.
+ */
+function verifyDeliveredEnvelope(config: ChildRuntimeConfig): void {
+	const synapse = config.synapse;
+	if (!synapse) return;
+	const inbox = envelopeInboxPath(synapse.contract.storageRoot, synapse.runId, config.childIndex);
+	const delivered = readDeliveredEnvelope(inbox);
+	if (delivered.status === "absent") return;
+	if (delivered.status === "rejected") throw new Error(`SYNAPSE envelope rejected: ${delivered.reason}`);
+	const mismatch = verifyEnvelopeAgainstContract({ contract: synapse.contract, wire: delivered.wire });
+	if (mismatch !== null) throw new Error(`SYNAPSE envelope rejected: ${mismatch}`);
+}
+
 function registerToolBudget(pi: ExtensionAPI, budget: ResolvedToolBudget | undefined): void {
 	if (!budget) return;
 	let toolCount = 0;
@@ -474,6 +495,16 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 	if (config.synapse && typeof pi.registerTool === "function") {
 		registerSynapseChildTools(pi, config.synapse, process.cwd());
 	}
+	// The envelope is published after this session exists and immediately before
+	// the task is sent, so it is checked at the first agent turn rather than at
+	// session start, when the inbox is still empty. The flag is set only after a
+	// clean check: a rejected envelope must keep refusing every later turn.
+	let envelopeVerified = false;
+	const verifyEnvelopeOnce = (): void => {
+		if (envelopeVerified) return;
+		verifyDeliveredEnvelope(config);
+		envelopeVerified = true;
+	};
 	const supervisorMetadata = childSupervisorMetadata(config);
 	let nativeSupervisorClientRegistered = false;
 	const registerNativeSupervisorClientOnce = (): void => {
@@ -488,6 +519,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 		registerNativeSupervisorClientOnce();
 	});
 	onRuntimeEvent("agent_start", () => {
+		verifyEnvelopeOnce();
 		if (!config.requiredTools) return;
 		const diagnostic = evaluateChildToolDiagnostic(config, pi.getAllTools().map((tool) => tool.name));
 		config.toolDiagnostic?.(diagnostic);

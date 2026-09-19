@@ -44,8 +44,8 @@ export function openChildDelegation(input: OpenChildDelegationInput): OpenDelega
 				// a new child session and therefore a new request, which the log shows
 				// as a second delivery rather than as a duplicate of the first.
 				attempt: 1,
+				childIndex: input.runtime.childIndex,
 				childTools: input.childTools,
-				nodeId: `${synapse.runId}/${input.runtime.childIndex}`,
 				receiverSessionId: input.receiverSessionId,
 				requestId: `${synapse.runId}-${input.runtime.childIndex}-${randomUUID().slice(0, 8)}`,
 				runId: synapse.runId,
@@ -92,8 +92,8 @@ export async function openChildRetrieveDelegation(input: OpenChildRetrieveInput)
 			identity: {
 				agent: synapse.agent,
 				attempt: 1,
+				childIndex: input.runtime.childIndex,
 				childTools: input.childTools,
-				nodeId: `${synapse.runId}/${input.runtime.childIndex}`,
 				receiverSessionId: input.receiverSessionId,
 				requestId: `${synapse.runId}-${input.runtime.childIndex}-${randomUUID().slice(0, 8)}`,
 				runId: synapse.runId,

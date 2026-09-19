@@ -12,7 +12,7 @@ import {
 function snapshotInput(overrides: Partial<SnapshotInput> = {}): SnapshotInput {
 	return {
 		capabilityId: overrides.capabilityId ?? "c".repeat(64),
-		contextRefs: overrides.contextRefs ?? ["a".repeat(64)],
+		memoryRefs: overrides.memoryRefs ?? ["a".repeat(64)],
 		corpusSnapshotId: overrides.corpusSnapshotId ?? "corpus-1",
 		namespaceId: overrides.namespaceId ?? "0123456789abcdef",
 		permissionProjection: overrides.permissionProjection ?? { pathPrefixes: ["src"], write: false },
@@ -44,7 +44,7 @@ describe("frozen snapshot", () => {
 
 	it("changes id when any frozen input changes", () => {
 		const base = freezeSnapshot(snapshotInput()).snapshotId;
-		assert.notEqual(freezeSnapshot(snapshotInput({ contextRefs: ["b".repeat(64)] })).snapshotId, base);
+		assert.notEqual(freezeSnapshot(snapshotInput({ memoryRefs: ["b".repeat(64)] })).snapshotId, base);
 		assert.notEqual(freezeSnapshot(snapshotInput({ corpusSnapshotId: "corpus-2" })).snapshotId, base);
 		assert.notEqual(freezeSnapshot(snapshotInput({ capabilityId: "d".repeat(64) })).snapshotId, base);
 		assert.notEqual(freezeSnapshot(snapshotInput({ permissionProjection: { pathPrefixes: [""], write: false } })).snapshotId, base);
@@ -52,23 +52,23 @@ describe("frozen snapshot", () => {
 	});
 
 	it("does not depend on the order context references were collected in", () => {
-		const forward = freezeSnapshot(snapshotInput({ contextRefs: ["a".repeat(64), "b".repeat(64)] }));
-		const reversed = freezeSnapshot(snapshotInput({ contextRefs: ["b".repeat(64), "a".repeat(64)] }));
+		const forward = freezeSnapshot(snapshotInput({ memoryRefs: ["a".repeat(64), "b".repeat(64)] }));
+		const reversed = freezeSnapshot(snapshotInput({ memoryRefs: ["b".repeat(64), "a".repeat(64)] }));
 		assert.equal(forward.snapshotId, reversed.snapshotId);
 	});
 
 	it("drops a duplicate reference instead of paying for it twice", () => {
-		const frozen = freezeSnapshot(snapshotInput({ contextRefs: ["a".repeat(64), "a".repeat(64)] }));
-		assert.deepEqual(frozen.contextRefs, ["a".repeat(64)]);
+		const frozen = freezeSnapshot(snapshotInput({ memoryRefs: ["a".repeat(64), "a".repeat(64)] }));
+		assert.deepEqual(frozen.memoryRefs, ["a".repeat(64)]);
 	});
 
 	it("refuses more references than the contract allows", () => {
 		const many = Array.from({ length: 33 }, (_unused, index) => index.toString(16).padStart(64, "0"));
-		assert.throws(() => freezeSnapshot(snapshotInput({ contextRefs: many })), /contextRefs/);
+		assert.throws(() => freezeSnapshot(snapshotInput({ memoryRefs: many })), /memoryRefs/);
 	});
 
 	it("refuses a reference that is not a content id", () => {
-		assert.throws(() => freezeSnapshot(snapshotInput({ contextRefs: ["../../etc/passwd"] })), /contextRefs/);
+		assert.throws(() => freezeSnapshot(snapshotInput({ memoryRefs: ["../../etc/passwd"] })), /memoryRefs/);
 	});
 });
 
@@ -91,7 +91,7 @@ describe("envelope construction", () => {
 		assert.match(envelope.snapshotId, /^[0-9a-f]{64}$/);
 		assert.equal(envelope.capabilityId, "c".repeat(64));
 		assert.equal(envelope.corpusSnapshotId, "corpus-1");
-		assert.deepEqual(envelope.contextRefs, ["a".repeat(64)]);
+		assert.deepEqual(envelope.memoryRefs, ["a".repeat(64)]);
 	});
 
 	it("has no state reference unless one was supplied", () => {
@@ -114,7 +114,7 @@ describe("envelope construction", () => {
 		);
 		assert.equal(envelope.stateRef?.encoding, "float32-vector");
 		assert.equal(envelope.stateRef?.baseMemoryId, null);
-		assert.equal(envelope.protocolVersion, 1);
+		assert.equal(envelope.protocolVersion, 2);
 	});
 
 	it("measures its own control bytes so the envelope is not free in the accounting", () => {
@@ -132,7 +132,14 @@ describe("envelope parsing", () => {
 
 	it("rejects a protocol version it does not know", () => {
 		const envelope = buildEnvelope(envelopeInput());
-		assert.throws(() => parseEnvelope({ ...envelope.wire, protocolVersion: 2 }), /protocolVersion/);
+		assert.throws(() => parseEnvelope({ ...envelope.wire, protocolVersion: 3 }), /protocolVersion/);
+	});
+
+	it("rejects v1, which named the memory refs as context refs", () => {
+		// The rename was a hard cutover: no envelope was ever persisted under v1,
+		// so there is nothing to migrate and nothing to accept.
+		const envelope = buildEnvelope(envelopeInput());
+		assert.throws(() => parseEnvelope({ ...envelope.wire, protocolVersion: 1 }), /protocolVersion/);
 	});
 
 	it("rejects an envelope missing a bound identity rather than filling in a default", () => {

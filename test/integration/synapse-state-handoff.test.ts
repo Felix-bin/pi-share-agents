@@ -55,7 +55,7 @@ let contracts: ContractPair;
 function contractFor(agentScope: { write: boolean }): LaunchContract {
 	return resolveLaunchContract({
 		capabilityId: "a".repeat(64),
-		contextRefs: [],
+		memoryRefs: [],
 		corpusSnapshotId,
 		mode: "synapse",
 		namespaceId: "0123456789abcdef",
@@ -69,8 +69,8 @@ function sendIdentity(childTools: readonly string[]): SendIdentity {
 	return {
 		agent: "retriever",
 		attempt: 1,
+		childIndex: 0,
 		childTools,
-		nodeId: "run-1/0",
 		receiverSessionId: "sess-child",
 		requestId: "req-1",
 		runId: "run-1",
@@ -79,7 +79,7 @@ function sendIdentity(childTools: readonly string[]): SendIdentity {
 }
 
 function consumeIdentity(runId = "run-1", sessionId = "sess-child"): ConsumeIdentity {
-	return { agent: "retriever", attempt: 1, nodeId: "run-1/0", runId, sessionId };
+	return { agent: "retriever", attempt: 1, childIndex: 0, runId, sessionId };
 }
 
 function sendDeps(): SendDeps {

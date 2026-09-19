@@ -5,6 +5,7 @@ import { negotiate, type CapabilityDeclaration, type NegotiationResult, type Tex
 import { createContentStore } from "./content-store.ts";
 import { type Embedder, SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
 import { buildEnvelope, freezeSnapshot, type Envelope, type StateRef } from "./envelope.ts";
+import { nodeIdFor, publishEnvelope, safeComponent } from "./envelope-inbox.ts";
 import { classifySynapseError, type SynapseErrorClassification } from "./errors.ts";
 import { buildReceipt, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
 import type { LaunchContract } from "./lifecycle.ts";
@@ -32,19 +33,18 @@ import type { StateRetrievalResult } from "./state-retrieval.ts";
  * rather than by one path drifting.
  */
 
-/** Keeps a run or request id usable as a single path component. */
-function safeComponent(value: string): string {
-	const cleaned = value.replace(/[^A-Za-z0-9._-]/g, "_");
-	return cleaned.length > 0 ? cleaned : "unattributed";
-}
-
 export type DelegationIdentity = {
 	/** The receiving agent, which is also the role whose capability is declared. */
 	agent: string;
 	attempt: number;
+	/**
+	 * Which child of this run is receiving. The node id and the envelope inbox are
+	 * both derived from it, so the address the parent meters and the address the
+	 * receiver reads from cannot disagree.
+	 */
+	childIndex: number | undefined;
 	/** The builtin tools the child was granted; decides whether it can consume state. */
 	childTools: readonly string[];
-	nodeId: string;
 	receiverSessionId: string;
 	requestId: string;
 	runId: string;
@@ -181,11 +181,12 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 	if (negotiation.outcome === "refused") return null;
 
 	const deps = input.deps ?? createDelegationDeps(input);
+	const nodeId = nodeIdFor(identity.runId, identity.childIndex);
 	const meterIdentity: MeteringIdentity = {
 		agent: identity.agent,
 		attempt: identity.attempt,
 		mode: contract.mode,
-		nodeId: identity.nodeId,
+		nodeId,
 		runId: identity.runId,
 		sessionId: identity.senderSessionId,
 		snapshotId: null,
@@ -214,8 +215,8 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 
 	const snapshot = freezeSnapshot({
 		capabilityId: negotiation.capabilityId,
-		contextRefs: handoff.refs,
 		corpusSnapshotId: contract.corpusSnapshotId,
+		memoryRefs: handoff.refs,
 		namespaceId: contract.namespaceId,
 		permissionProjection: { pathPrefixes: contract.scope.pathPrefixes, write: contract.scope.write },
 		representationId: contract.representationId,
@@ -224,7 +225,7 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 		action: "delegate",
 		attempt: identity.attempt,
 		inputParams: { agent: identity.agent, memoryRefs: [...handoff.refs], task: input.message },
-		nodeId: identity.nodeId,
+		nodeId,
 		ownerRunId: identity.runId,
 		receiverSessionId: identity.receiverSessionId,
 		requestId: identity.requestId,
@@ -232,6 +233,15 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 		senderSessionId: identity.senderSessionId,
 		snapshot,
 	});
+	// The envelope is published before the delivery is metered, so a logged
+	// delivery never claims an envelope the receiver could not find. A failure to
+	// publish is degraded rather than fatal: the receiver treats an absent
+	// envelope as upstream's own delegation, which is what it would have run.
+	try {
+		publishEnvelope(contract.storageRoot, identity.runId, identity.childIndex, envelope);
+	} catch (error) {
+		console.warn(`[pi-subagents] synapse: envelope delivery skipped for ${identity.agent}: ${error instanceof Error ? error.message : String(error)}`);
+	}
 	const prompt = promptWith(input.message, handoff);
 	const boundIdentity: MeteringIdentity = { ...meterIdentity, snapshotId: snapshot.snapshotId };
 	deps.log.record(boundIdentity, {
@@ -299,7 +309,12 @@ export type SendIdentity = DelegationIdentity;
 export type ConsumeIdentity = {
 	agent: string;
 	attempt: number;
-	nodeId: string;
+	/**
+	 * Which child of the run is consuming. The node id is derived from it, the
+	 * same way the sending side derives it, so a meter entry written on either
+	 * side addresses the same node.
+	 */
+	childIndex: number | undefined;
 	runId: string;
 	sessionId: string;
 };
@@ -410,18 +425,21 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	});
 	if (negotiation.outcome === "refused") return null;
 	const deps = input.deps ?? { log: createMeteringLog(meteringLogPath(contract, identity.runId)) };
+	// The node id is derived from the run and child index rather than carried, so
+	// the address this side meters and the inbox the receiver reads cannot drift.
+	const nodeId = nodeIdFor(identity.runId, identity.childIndex);
 	const meterIdentity: MeteringIdentity = {
 		agent: identity.agent,
 		attempt: identity.attempt,
 		mode: contract.mode,
-		nodeId: identity.nodeId,
+		nodeId,
 		runId: identity.runId,
 		sessionId: identity.senderSessionId,
 		snapshotId: null,
 	};
 	const snapshot = freezeSnapshot({
 		capabilityId: negotiation.capabilityId,
-		contextRefs: [],
+		memoryRefs: [],
 		corpusSnapshotId: contract.corpusSnapshotId,
 		namespaceId: contract.namespaceId,
 		permissionProjection: { pathPrefixes: contract.scope.pathPrefixes, write: contract.scope.write },
@@ -432,7 +450,7 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 			action: "retrieve",
 			attempt: identity.attempt,
 			inputParams: { k: input.k, query: input.query },
-			nodeId: identity.nodeId,
+			nodeId,
 			ownerRunId: identity.runId,
 			receiverSessionId: identity.receiverSessionId,
 			requestId: identity.requestId,
@@ -529,7 +547,7 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 		agent: input.identity.agent,
 		attempt: input.identity.attempt,
 		mode: input.contract.mode,
-		nodeId: input.identity.nodeId,
+		nodeId: nodeIdFor(input.identity.runId, input.identity.childIndex),
 		runId: input.identity.runId,
 		sessionId: input.identity.sessionId,
 		snapshotId: wire.snapshotId,

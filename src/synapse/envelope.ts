@@ -17,9 +17,16 @@ import type { SynapseAction, SynapseEncoding } from "./capability.ts";
  * only the algorithm that fills these fields is still missing.
  */
 
-export const SYNAPSE_PROTOCOL_VERSION = 1;
-export const SYNAPSE_MAX_CONTEXT_REFS = 32;
+export const SYNAPSE_PROTOCOL_VERSION = 2;
+export const SYNAPSE_MAX_MEMORY_REFS = 32;
 
+/**
+ * Memory ids and content ids are both 64 hex characters, which is why naming
+ * them apart matters: `memoryRefs` names records in the memory store, while
+ * `payloadId` and `sha256` name bytes in the content store. One pattern serving
+ * both let a field be validated as the wrong kind of id without failing.
+ */
+const MEMORY_ID_PATTERN = "^[0-9a-f]{64}$";
 const CONTENT_ID_PATTERN = "^[0-9a-f]{64}$";
 const FLOAT32_BYTES = 4;
 
@@ -30,8 +37,8 @@ export type PermissionProjection = {
 
 export type SnapshotInput = {
 	capabilityId: string;
-	contextRefs: readonly string[];
 	corpusSnapshotId: string;
+	memoryRefs: readonly string[];
 	namespaceId: string;
 	permissionProjection: PermissionProjection;
 	representationId: string;
@@ -39,8 +46,8 @@ export type SnapshotInput = {
 
 export type FrozenSnapshot = {
 	capabilityId: string;
-	contextRefs: string[];
 	corpusSnapshotId: string;
+	memoryRefs: string[];
 	namespaceId: string;
 	permissionProjection: PermissionProjection;
 	representationId: string;
@@ -48,7 +55,7 @@ export type FrozenSnapshot = {
 };
 
 export type StateRef = {
-	/** The prediction base a delta was computed against; null for a full vector. */
+	/** The prediction base a delta was computed against; null for a full vector. A memory id. */
 	baseMemoryId: string | null;
 	byteLength: number;
 	dim: number;
@@ -76,7 +83,6 @@ export type EnvelopeWire = {
 	action: SynapseAction;
 	attempt: number;
 	capabilityId: string;
-	contextRefs: string[];
 	corpusSnapshotId: string;
 	/**
 	 * Input parameters as canonical JSON text. Text rather than a nested object
@@ -84,6 +90,8 @@ export type EnvelopeWire = {
 	 * produce the same wire bytes, the same digest and the same measured cost.
 	 */
 	inputParamsJson: string;
+	/** Ids of the shared-memory records handed over, not of their bodies. */
+	memoryRefs: string[];
 	namespaceId: string;
 	nodeId: string;
 	ownerRunId: string;
@@ -106,7 +114,7 @@ export type Envelope = EnvelopeWire & {
 
 const StateRefSchema = Type.Object(
 	{
-		baseMemoryId: Type.Union([Type.String({ pattern: CONTENT_ID_PATTERN }), Type.Null()]),
+		baseMemoryId: Type.Union([Type.String({ pattern: MEMORY_ID_PATTERN }), Type.Null()]),
 		byteLength: Type.Integer({ minimum: 1 }),
 		dim: Type.Integer({ maximum: 8192, minimum: 1 }),
 		encoding: Type.Union([Type.Literal("float32-vector"), Type.Literal("delta")]),
@@ -122,9 +130,9 @@ const EnvelopeSchema = Type.Object(
 		action: Type.Union([Type.Literal("delegate"), Type.Literal("retrieve")]),
 		attempt: Type.Integer({ minimum: 1 }),
 		capabilityId: Type.String({ pattern: CONTENT_ID_PATTERN }),
-		contextRefs: Type.Array(Type.String({ pattern: CONTENT_ID_PATTERN }), { maxItems: SYNAPSE_MAX_CONTEXT_REFS }),
 		corpusSnapshotId: Type.String({ minLength: 1 }),
 		inputParamsJson: Type.String(),
+		memoryRefs: Type.Array(Type.String({ pattern: MEMORY_ID_PATTERN }), { maxItems: SYNAPSE_MAX_MEMORY_REFS }),
 		namespaceId: Type.String({ pattern: "^[0-9a-f]{16}$" }),
 		nodeId: Type.String({ minLength: 1 }),
 		ownerRunId: Type.String({ minLength: 1 }),
@@ -158,15 +166,15 @@ function assertStateRef(stateRef: StateRef): void {
 }
 
 export function freezeSnapshot(input: SnapshotInput): FrozenSnapshot {
-	const contextRefs = [...new Set(input.contextRefs)].sort();
-	if (contextRefs.length > SYNAPSE_MAX_CONTEXT_REFS) {
-		throw new Error(`contextRefs: ${contextRefs.length} exceeds the limit of ${SYNAPSE_MAX_CONTEXT_REFS}`);
+	const memoryRefs = [...new Set(input.memoryRefs)].sort();
+	if (memoryRefs.length > SYNAPSE_MAX_MEMORY_REFS) {
+		throw new Error(`memoryRefs: ${memoryRefs.length} exceeds the limit of ${SYNAPSE_MAX_MEMORY_REFS}`);
 	}
-	const idPattern = new RegExp(CONTENT_ID_PATTERN);
-	for (const ref of contextRefs) {
-		// A model may propose references; only content ids ever reach the host's
+	const idPattern = new RegExp(MEMORY_ID_PATTERN);
+	for (const ref of memoryRefs) {
+		// A model may propose references; only memory ids ever reach the host's
 		// store, so anything else is rejected before it is frozen.
-		if (!idPattern.test(ref)) throw new Error(`contextRefs: ${JSON.stringify(ref)} is not a content id`);
+		if (!idPattern.test(ref)) throw new Error(`memoryRefs: ${JSON.stringify(ref)} is not a memory id`);
 	}
 	const permissionProjection: PermissionProjection = {
 		pathPrefixes: [...new Set(input.permissionProjection.pathPrefixes)].sort(),
@@ -174,15 +182,15 @@ export function freezeSnapshot(input: SnapshotInput): FrozenSnapshot {
 	};
 	return {
 		capabilityId: input.capabilityId,
-		contextRefs,
 		corpusSnapshotId: input.corpusSnapshotId,
+		memoryRefs,
 		namespaceId: input.namespaceId,
 		permissionProjection,
 		representationId: input.representationId,
 		snapshotId: canonicalDigest({
 			capabilityId: input.capabilityId,
-			contextRefs,
 			corpusSnapshotId: input.corpusSnapshotId,
+			memoryRefs,
 			namespaceId: input.namespaceId,
 			permissionProjection: { pathPrefixes: [...permissionProjection.pathPrefixes], write: permissionProjection.write },
 			representationId: input.representationId,
@@ -196,9 +204,9 @@ export function buildEnvelope(input: EnvelopeInput): Envelope {
 		action: input.action,
 		attempt: input.attempt,
 		capabilityId: input.snapshot.capabilityId,
-		contextRefs: [...input.snapshot.contextRefs],
 		corpusSnapshotId: input.snapshot.corpusSnapshotId,
 		inputParamsJson: canonicalJson(input.inputParams),
+		memoryRefs: [...input.snapshot.memoryRefs],
 		namespaceId: input.snapshot.namespaceId,
 		nodeId: input.nodeId,
 		ownerRunId: input.ownerRunId,
