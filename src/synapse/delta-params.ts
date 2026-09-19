@@ -56,4 +56,12 @@ export const SYNAPSE_DELTA_PARAMS: DeltaParams = { grid: 127, threshold: 0.99 };
 export const SYNAPSE_DELTA_LAYOUT = "int8";
 
 /** The calibration this file was frozen from: `docs/experiments/<id>.md` and its `.json` twin. */
+/**
+ * The expanded calibration (991 rounds / 990 pairs, same corpus and provider) is
+ * in docs/experiments/delta-calibration-20260919-expanded.md. It did not move this
+ * point: the paired difference against the literal pick stayed at +1.41pp with a
+ * 95% CI of [-1.66, +4.49]pp, and resolving it would need about 4680 pairs while
+ * the memory store's own record cap allows roughly 995 — so the difference is
+ * permanently below this setup's resolution floor rather than merely unmeasured.
+ */
 export const SYNAPSE_DELTA_CALIBRATION_ID = "delta-calibration-20260919";
