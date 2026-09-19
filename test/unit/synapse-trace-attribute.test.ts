@@ -401,6 +401,63 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		});
 	}
 
+	it("refuses a root that is absolute but names a different tree than the collector reports", () => {
+		// The syntactic check passes and every path still lands outside the root.
+		// This is the expected first failure once each agent runs in its own
+		// iSulad container: the collector on the host reports host paths while Pi
+		// inside the container sees container paths.
+		const result = attributeKernelIo([identityEvent()], traceLog({ records: envelopeWrite(42, 1_000, 50_000) }), "/srv/other-tree");
+		assert.equal(result.attributed, "unavailable");
+		assert.deepEqual(result.unavailableReasons, ["no-bytes-under-storage-root"]);
+		assert.equal(result.diagnostics.attributedBytes, 0);
+		assert.equal(result.diagnostics.unattributedBytes, 0);
+		// The evidence that it was a mismatch and not a quiet run: every byte the
+		// collector saw is sitting outside the root.
+		assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 50_000);
+		assert.equal(result.diagnostics.coverage.complete, false);
+	});
+
+	it("does not refuse a run whose only observed bytes were the measurement's own storage", () => {
+		// `metering/` matches only after the root prefix matched, so excluded
+		// bytes are evidence the root is right — the opposite of a mismatch.
+		const records: TraceRecord[] = [
+			open(`${ROOT}/metering/run-1.jsonl`, { nsecs: 20_000_000_000, ret: 12 }),
+			rw({ bytes: 800, fd: 12, nsecs: 20_000_001_000, ret: 800 }),
+		];
+		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(bucketBytes(result.diagnostics.ignored.excluded), 800);
+		// Nothing attributable moved, so the account certifies nothing either.
+		assert.equal(result.diagnostics.coverage.complete, false);
+	});
+
+	it("reports what the collector said even on the bad-root path", () => {
+		// A bad root does not make a ring-buffer overflow disappear, and a loss
+		// count of zero next to one loss report would be an "I did not look" zero.
+		const result = attributeKernelIo(
+			[identityEvent()],
+			traceLog({
+				errors: [{ detail: "line is not valid JSON", line: 3, reason: "malformed" }],
+				losses: [{ count: 9, kind: "lost", nsecs: 25_000_000_000 }],
+				records: envelopeWrite(42, 1_000, 50_000),
+			}),
+			"var/synapse",
+		);
+		assert.deepEqual(result.unavailableReasons, ["collector-reported-loss", "unreadable-lines", "unusable-storage-root"]);
+		assert.equal(result.diagnostics.lossReports, 1);
+		assert.equal(result.diagnostics.lostEventsHighWater, 9);
+		assert.equal(result.diagnostics.traceLines.errors.malformed, 1);
+	});
+
+	it("checks the root of an empty trace file too, instead of calling it no collection", () => {
+		// An empty trace file is weak evidence of nothing happening, and a
+		// misconfigured root explains it better than a quiet run. Only `null` —
+		// "no collector ran" — skips the root check; see the `null` case above.
+		const result = attributeKernelIo([identityEvent()], traceLog(), "var/synapse");
+		assert.equal(result.attributed, "unavailable");
+		assert.deepEqual(result.unavailableReasons, ["unusable-storage-root"]);
+	});
+
 	it("still reports N/A on a host that collected nothing, whatever shape its storage root has", () => {
 		// A Windows checkout's storage root is never POSIX-absolute and never
 		// collects. Refusing there would turn "this deployment does not collect"
@@ -614,6 +671,38 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		assert.equal(result.diagnostics.coverage.processesWithUnobservedPrefix, 0);
 		assert.equal(result.diagnostics.unattributedShare, "N/A");
 		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(result.diagnostics.coverage.complete, false);
+	});
+
+	it("does call a healthy account complete", () => {
+		// The positive control for every denial below: bytes attributed, observed
+		// from the start, every bound key present, nothing orphaned.
+		const result = attributeKernelIo([identityEvent()], traceLog({ records: envelopeWrite(42, 1_000, 500, 5_000_000_000) }), ROOT);
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(result.diagnostics.coverage.complete, true);
+	});
+
+	it("does not call an account complete while any observed byte was left unattributed", () => {
+		// 0.02%: reported rather than refused, but 200 bytes this account does not
+		// hold are 200 bytes that make it not whole.
+		const records = [...envelopeWrite(42, 1_000, 999_800, 5_000_000_000), ...envelopeWrite(77, 4_000, 200, 30_000_000_000)];
+		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(attributedRows(result).length, 1);
+		assert.equal(rowFor(result, 42, 1_000).coverage.observedFromStart, true);
+		assert.equal(result.diagnostics.coverage.processesWithUnobservedPrefix, 0);
+		assert.equal(result.diagnostics.coverage.complete, false);
+	});
+
+	it("does not let a row that moved no attributable byte certify the account", () => {
+		const result = attributeKernelIo(
+			[identityEvent()],
+			traceLog({ records: [open(`${ROOT}/envelopes/m1.json`, { nsecs: 5_000_000_000 })] }),
+			ROOT,
+		);
+		assert.equal(attributedRows(result).length, 1);
+		assert.equal(rowFor(result, 42, 1_000).coverage.observedFromStart, true);
+		assert.equal(result.diagnostics.attributedBytes, 0);
 		assert.equal(result.diagnostics.coverage.complete, false);
 	});
 

@@ -211,16 +211,23 @@ export type AttributedProcessIo = {
 
 export type KernelIoCoverage = {
 	/**
-	 * True only when the account demonstrably holds the whole run: something was
-	 * attributed, every attributed process was observed from its start, and no
-	 * bound identity is missing from the trace entirely.
+	 * True only when the account demonstrably holds the whole run: some byte was
+	 * attributed, every attributed process was observed from its start, no bound
+	 * identity is missing from the trace entirely, and no observed byte was left
+	 * unattributed.
 	 *
-	 * That last condition is not redundant. A process that did all its I/O before
-	 * the collector started emits no trace line at all, so it has no row and no
-	 * per-process coverage to be false — it is invisible to any check that walks
-	 * only what the trace contains. Without it, the most complete-looking result
-	 * this module can produce is also one of the emptiest, which is precisely the
-	 * reading `complete` exists to make impossible.
+	 * Each condition closes a way for an account to look whole while it is not,
+	 * and three of them are about things that have *no row to be false on*:
+	 *
+	 *  - a process that did all its I/O before the collector started emits no
+	 *    trace line at all, so it is invisible to any check that walks only what
+	 *    the trace contains;
+	 *  - a row that moved no attributable byte certifies nothing. Counting rows
+	 *    rather than bytes is what let a run whose every byte fell outside the
+	 *    storage root certify itself complete;
+	 *  - orphaned bytes under the 1% threshold are reported rather than refused,
+	 *    but bytes that could not be placed on an identity are still bytes this
+	 *    account does not hold.
 	 */
 	complete: boolean;
 	/** Earliest boot-based reading in the whole trace; `"N/A"` with no trace, `unavailable` when no line carried one. */
@@ -231,8 +238,25 @@ export type KernelIoCoverage = {
 /** Unreadable lines by the reason the parser gave, every reason present even at zero: a zero here is evidence, not a gap. */
 export type TraceLineErrorCounts = Record<TraceLineErrorReason, number>;
 
-/** Why an account that exists may not be reported. All applicable reasons are given, never just the first. */
-export type KernelIoUnavailableReason = "collector-reported-loss" | "unattributed-over-threshold" | "unreadable-lines" | "unusable-storage-root";
+/**
+ * Why an account that exists may not be reported. All applicable reasons are
+ * given, never just the first — a reader who fixes the loss should not then
+ * discover the threshold.
+ *
+ * `no-bytes-under-storage-root` is the one that is not about the collector: it
+ * fires when the collector observed byte movement and none of it was under the
+ * storage root at all. The root was then syntactically usable but named a
+ * different tree than the collector reports paths against — the expected first
+ * failure once each agent runs in its own iSulad container, where the collector
+ * sees host paths and Pi sees container paths. Without it, a total mismatch
+ * comes back as an account of zero bytes with nothing to object to.
+ */
+export type KernelIoUnavailableReason =
+	| "collector-reported-loss"
+	| "no-bytes-under-storage-root"
+	| "unattributed-over-threshold"
+	| "unreadable-lines"
+	| "unusable-storage-root";
 
 /**
  * Everything the judgement was made from, reported whether or not it went
@@ -243,6 +267,13 @@ export type KernelIoUnavailableReason = "collector-reported-loss" | "unattribute
  * They are evidence *about* the account, not the account: a share means nothing
  * without its denominator. They are not a substitute for a result that was
  * refused, and using them as one would defeat the entire point of this module.
+ *
+ * Two outcomes are reached before any classification runs — no collection, and
+ * an unusable storage root — and on those paths `attributedBytes` and
+ * `unattributedBytes` read `0` while being typed `number`, which is
+ * indistinguishable from a genuine zero except by looking at `attributed` and
+ * `unavailableReasons` first. That is the same shape the `"N/A"` path has
+ * always had, and it is why neither field may be read before those two.
  */
 export type KernelIoDiagnostics = {
 	/** Keys bound to more than one identity: real bytes, not splittable across nodes. */
@@ -309,7 +340,42 @@ function emptyErrorCounts() {
 	return { malformed: 0, "too-long": 0, truncated: 0 } satisfies TraceLineErrorCounts;
 }
 
-/** Diagnostics for an outcome reached before any classification happened: every quantity absent, none of them zero by pretence. */
+/** Highest `count` any loss report carried. Cumulative counts are not summed; a trace with no losses genuinely has none. */
+function lossHighWater(trace: TraceLog): number {
+	let highWater = 0;
+	for (const loss of trace.losses) highWater = Math.max(highWater, loss.count);
+	return highWater;
+}
+
+/**
+ * The reasons that come from the collector's own output rather than from the
+ * join. Shared by every outcome so that a result reached early cannot quietly
+ * report fewer reasons than the same trace would produce later on.
+ */
+function collectorReasons(trace: TraceLog): KernelIoUnavailableReason[] {
+	const reasons: KernelIoUnavailableReason[] = [];
+	// Any admitted loss condemns the whole run's kernel-side result. The loss is
+	// cumulative and undirected: there is no way to know which process's bytes
+	// went missing, so there is no subset that survives it.
+	if (trace.losses.length > 0) reasons.push("collector-reported-loss");
+	// A line that could not be read is a record that cannot be counted, which is
+	// the same hole a loss report admits to — design §6 requires exactly this for
+	// the truncated trace of a collector killed mid-write, and a malformed or
+	// over-long line is no more countable than a truncated one.
+	if (trace.errors.length > 0) reasons.push("unreadable-lines");
+	return reasons;
+}
+
+/**
+ * Diagnostics for an outcome reached before any classification happened: every
+ * quantity the join would have produced is absent rather than zero.
+ *
+ * What the collector itself reported is *not* absent, and is counted here in
+ * full — line counts, loss reports and the loss high-water mark alike. Those
+ * facts were read off the trace, not derived from a classification that never
+ * ran, and reporting a `0` for one of them would be the exact "I did not look"
+ * zero that `metering.ts` forbids from its first comment onwards.
+ */
 function unclassifiedDiagnostics(threshold: number, observedFromNsecs: number | Unavailable | NotApplicable, trace: TraceLog | null): KernelIoDiagnostics {
 	const errors = emptyErrorCounts();
 	for (const error of trace?.errors ?? []) errors[error.reason] += 1;
@@ -322,7 +388,7 @@ function unclassifiedDiagnostics(threshold: number, observedFromNsecs: number | 
 		identityKeysWithoutTrace: 0,
 		ignored: { excluded: emptyBucket(), outsideRoot: emptyBucket() },
 		lossReports: trace?.losses.length ?? 0,
-		lostEventsHighWater: 0,
+		lostEventsHighWater: trace === null ? 0 : lossHighWater(trace),
 		traceLines: { errors, losses: trace?.losses.length ?? 0, records: trace?.records.length ?? 0 },
 		unattributedBytes: 0,
 		unattributedProcesses: [],
@@ -351,12 +417,20 @@ function notCollected(threshold: number): KernelIoAttribution {
  * whole result. The test is `startsWith("/")` and nothing more: trace paths are
  * kernel paths from a Linux collector, parsed as POSIX text on whatever host
  * runs this, so a Windows-shaped root is exactly as unusable as a relative one.
+ *
+ * Syntax is all this can catch. A root that is absolute but names a different
+ * tree than the collector reports paths against passes here and is caught by
+ * `no-bytes-under-storage-root` after classification instead.
+ *
+ * Whatever the collector reported is still reported: a bad root does not make a
+ * ring-buffer overflow disappear, so the loss and unreadable-line reasons are
+ * given alongside this one.
  */
 function unusableStorageRoot(threshold: number, trace: TraceLog): KernelIoAttribution {
 	return {
 		attributed: "unavailable",
 		diagnostics: unclassifiedDiagnostics(threshold, "unavailable", trace),
-		unavailableReasons: ["unusable-storage-root"],
+		unavailableReasons: [...collectorReasons(trace), "unusable-storage-root"],
 	};
 }
 
@@ -454,17 +528,26 @@ function coverageOf(io: TraceProcessIo, observedFromNsecs: number | Unavailable,
  * Joins classified kernel I/O to run identities and decides whether the result
  * may be reported (design §4.4).
  *
- * `trace` is `null` when this deployment ran no collector at all. That, and a
- * trace file with nothing in it, are the same fact — no collection happened —
- * and both give `"N/A"`, never a zero-byte account that would read as "this run
- * did no I/O".
+ * **`trace` must be `null` when no collector ran**, and an empty `TraceLog` must
+ * mean a collector that ran and produced a file with nothing in it. The two are
+ * not interchangeable, and a caller may not substitute one for the other:
  *
- * `storageRoot` must be absolute whenever there is a trace to place against it;
- * see `unusableStorageRoot`. The check is gated on the trace existing, and not
- * hoisted above it, because a host that collects nothing also has no paths to
- * classify — on Windows the storage root is never POSIX-absolute, and refusing
- * there would turn "this deployment does not collect" into "this run's
- * measurement failed" on every single run.
+ *  - `null` says "there is nothing to place", so the storage root is never
+ *    examined and the answer is `"N/A"`. This is the path every non-Linux host
+ *    takes, where the storage root is not POSIX-absolute and never could be;
+ *  - an empty `TraceLog` still has its root checked, and a bad root there is
+ *    refused rather than reported as `"N/A"`. An empty trace file is weak
+ *    evidence of nothing happening, and a misconfigured root is a likelier
+ *    explanation for it than a quiet run — so that case is not allowed to look
+ *    like a clean "this deployment does not collect".
+ *
+ * Passing an empty `TraceLog` to mean "no collector" would therefore turn every
+ * Windows run into a refused measurement. Both still answer `"N/A"` when the
+ * root is sound; the distinction only decides which failures stay visible.
+ *
+ * `storageRoot` must be absolute whenever a trace exists; see
+ * `unusableStorageRoot` for what that catches and `no-bytes-under-storage-root`
+ * for what it cannot.
  */
 export function attributeKernelIo(
 	events: readonly MeteringEvent[],
@@ -513,8 +596,6 @@ export function attributeKernelIo(
 
 	const errors = emptyErrorCounts();
 	for (const error of trace.errors) errors[error.reason] += 1;
-	let lostEventsHighWater = 0;
-	for (const loss of trace.losses) lostEventsHighWater = Math.max(lostEventsHighWater, loss.count);
 
 	const totalBytes = attributedBytes + unattributedBytes;
 	// A share of no bytes is not a zero share: nothing was observed to be
@@ -522,17 +603,24 @@ export function attributeKernelIo(
 	// same question the same way for `memory.hitRate` with zero queries.
 	const unattributedShare: number | NotApplicable = totalBytes === 0 ? "N/A" : unattributedBytes / totalBytes;
 
-	const unavailableReasons: KernelIoUnavailableReason[] = [];
-	// Any admitted loss condemns the whole run's kernel-side result. The loss is
-	// cumulative and undirected: there is no way to know which process's bytes
-	// went missing, so there is no subset that survives it.
-	if (trace.losses.length > 0) unavailableReasons.push("collector-reported-loss");
-	// A line that could not be read is a record that cannot be counted, which is
-	// the same hole a loss report admits to — design §6 requires exactly this for
-	// the truncated trace of a collector killed mid-write, and a malformed or
-	// over-long line is no more countable than a truncated one.
-	if (trace.errors.length > 0) unavailableReasons.push("unreadable-lines");
+	const unavailableReasons = collectorReasons(trace);
 	if (unattributedShare !== "N/A" && unattributedShare > threshold) unavailableReasons.push("unattributed-over-threshold");
+	// The collector watched real bytes move and not one of them was under the
+	// storage root. The root is syntactically fine, so it named a different tree
+	// than the collector reports paths against — the expected first failure when
+	// each agent moves into its own iSulad container and the collector, on the
+	// host, sees host paths while Pi sees container paths.
+	//
+	// Refusing rather than merely denying `complete`, because the alternative
+	// reading — "this run genuinely did no SYNAPSE I/O" — is an account of zero
+	// bytes, which is worth nothing to a caller even when it is true. Trading a
+	// worthless-but-honest result for a defence against a total, invisible
+	// attribution loss is not a close call.
+	//
+	// `excluded` bytes are deliberately not part of this test: `metering/` and
+	// `trace/` only match after the root prefix matched, so seeing any of them
+	// is evidence the root is right.
+	if (totalBytes === 0 && bucketBytes(classification.ignored.outsideRoot) > 0) unavailableReasons.push("no-bytes-under-storage-root");
 
 	const identityKeysWithoutTrace = bindings.size - usedKeys.size;
 
@@ -543,12 +631,15 @@ export function attributeKernelIo(
 			attributedBytes,
 			clockInconsistentIdentityEvents: clockInconsistentEvents,
 			coverage: {
-				// A bound process that emitted no trace line at all has no row here
-				// and so no per-process coverage that could be false. Walking only
-				// what the trace contains would call that the most complete result
-				// this module can produce, which is the reading `complete` exists to
-				// prevent — so a key with no trace denies completeness outright.
-				complete: attributed.length > 0 && processesWithUnobservedPrefix === 0 && identityKeysWithoutTrace === 0,
+				// Counted in bytes, not in rows. A row that moved no attributable
+				// byte certifies nothing — that is how a run whose every byte fell
+				// outside the storage root used to certify itself complete — and a
+				// bound process that emitted no trace line at all has no row here to
+				// be false on. Orphaned bytes deny it too: under the threshold they
+				// are reported rather than refused, but they are still bytes this
+				// account does not hold.
+				complete:
+					attributedBytes > 0 && processesWithUnobservedPrefix === 0 && identityKeysWithoutTrace === 0 && unattributedProcesses.length === 0,
 				observedFromNsecs,
 				processesWithUnobservedPrefix,
 			},
@@ -556,7 +647,7 @@ export function attributeKernelIo(
 			identityKeysWithoutTrace,
 			ignored: classification.ignored,
 			lossReports: trace.losses.length,
-			lostEventsHighWater,
+			lostEventsHighWater: lossHighWater(trace),
 			traceLines: { errors, losses: trace.losses.length, records: trace.records.length },
 			unattributedBytes,
 			unattributedProcesses,
