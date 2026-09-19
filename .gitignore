@@ -17,6 +17,11 @@ tmp/
 # See docs/synapse-python-prototype.md for how to create it.
 /reference/
 
+# Collector build output. vmlinux.h is generated from the running kernel's BTF
+# and the skeleton from the compiled object, so both are machine-specific:
+# committing them would pin the build to whichever kernel produced them.
+/native/synapse-io-collector/build/
+
 # Fallback ignores for local ad-hoc agent and lane reports.
 /memory.md
 /todo.md
