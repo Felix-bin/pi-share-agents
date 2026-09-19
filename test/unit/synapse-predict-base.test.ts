@@ -215,15 +215,20 @@ describe("synapse predicted base", () => {
 
 	it("reports the base's representation id from the record that supplied it", () => {
 		const backed = record({ embedding: VECTOR_REF, memoryId: HEAD_ID, summary: "residual", taskTopic: "residual" });
+		const semantic: SemanticScoring = { queryVector: vector(1, 0), recordVectors: new Map([[HEAD_ID, vector(0, 1)]]) };
 		const selected = selectPredictedBase({
 			query: { text: "residual" },
 			records: [backed],
 			scope: scope(),
-			semantic: { queryVector: vector(1, 0), recordVectors: new Map([[HEAD_ID, vector(0, 1)]]) },
+			semantic,
 			validityOf: () => "current",
 		});
 		assert.equal(selected?.representationId, REPRESENTATION_ID);
-		assert.notEqual(selected?.vector, undefined);
+		// The base must be the record's own vector, not the query's and not a zero
+		// vector of the right width: those are the two wrong answers a caller could
+		// not tell apart from a right one by shape alone.
+		assert.deepEqual([...(selected?.vector ?? [])], [0, 1]);
+		assert.notDeepEqual([...(selected?.vector ?? [])], [...(semantic.recordVectors.get(HEAD_ID) ?? [])].map(() => 0));
 	});
 
 	it("hands back a copy so a caller cannot mutate the vector it was given", () => {
@@ -309,15 +314,34 @@ describe("synapse memory service predicted base", () => {
 	it("names the first ranked record that carries a vector, reading it out of the store", async () => {
 		// Written while no embedder was configured, so this record keeps ranking on
 		// its text alone and can never carry a base.
-		const unbacked = await remember(service(), "op-unbacked", "residual encoder 观察");
+		await remember(service(), "op-unbacked", "residual encoder 观察");
 		const embedder = createDeterministicEmbedder(4);
 		const svc = service(embedder);
 		const backed = await remember(svc, "op-backed", "residual");
 		const base = await svc.predictBase({ text: "residual encoder" });
-		assert.notEqual(base?.memoryId, unbacked.record.memoryId);
 		assert.equal(base?.memoryId, backed.record.memoryId);
 		assert.equal(base?.representationId, embedder.representationId);
 		assert.equal(base?.vector.length, 4);
+	});
+
+	it("never bases on a record the caller's scope does not cover, even when it ranks first", async () => {
+		const allowed = await remember(service(), "op-allowed", "residual");
+		// Written while the store was open, then read back through a scope that may
+		// not see it: the vector loader must filter by authorisation before it reads
+		// any object, or a denied record could become the base.
+		const embedder = createDeterministicEmbedder(4);
+		const recorder = service(embedder);
+		const denied = await remember(recorder, "op-denied", "residual encoder");
+		const restricted: MemoryService = createMemoryService({
+			embedder,
+			provenance: { agent: "parent", attempt: 1, runId: "run-1", sessionId: "sess-1" },
+			// The denied record's grant is the empty path set, which isReadable refuses.
+			scope: { agent: "parent", namespaceId: "0123456789abcdef", pathPrefixes: [], write: true },
+			storeRoot,
+			worktreeRoot: worktree,
+		});
+		assert.notEqual(denied.record.memoryId, allowed.record.memoryId);
+		assert.equal(await restricted.predictBase({ text: "residual encoder" }), null);
 	});
 
 	it("answers null over a store where no record carries a vector", async () => {
