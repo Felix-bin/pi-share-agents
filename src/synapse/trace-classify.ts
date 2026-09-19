@@ -48,6 +48,11 @@ export type SynapseIoCategory = (typeof SYNAPSE_IO_CATEGORIES)[number];
  * writer that grows a new top-level entry lands in `unclassified` until this
  * table learns about it — visibly under-attributed rather than silently
  * misattributed.
+ *
+ * `receipts/` (`delegation.ts:87-89`) is a real top-level entry this table
+ * deliberately does not name: design §4.2 lists three categories and receipts
+ * are none of them. So `unclassified` is expected to be nonzero on the very
+ * first real trace, and a reader of the result should not read it as a bug.
  */
 const CATEGORY_BY_ROOT_ENTRY = new Map<string, SynapseIoCategory>([
 	["envelopes", "envelope"],
@@ -119,8 +124,15 @@ function resolveSegments(segments: readonly string[]): string[] | null {
  * A relative path, or one that climbs above the root, is `outside-root`: the
  * collector is expected to emit resolved absolute paths, and a path this
  * function cannot place is reported as unplaced rather than guessed at.
+ *
+ * Both arguments must be absolute. Segments alone cannot tell `/var/synapse/x`
+ * from `var/synapse/x`, so without this check a relative path that happened to
+ * mirror the root's segments would classify *into a category* — the one failure
+ * direction that is invisible in the result. An empty or relative storage root
+ * is rejected for the same reason: it would make every path match.
  */
 export function classifyTracePath(storageRoot: string, filePath: string): TracePathClassification {
+	if (!storageRoot.startsWith("/") || !filePath.startsWith("/")) return { kind: "outside-root" };
 	const rootSegments = resolveSegments(posixSegments(storageRoot));
 	const pathSegments = resolveSegments(posixSegments(filePath));
 	if (rootSegments === null || pathSegments === null) return { kind: "outside-root" };

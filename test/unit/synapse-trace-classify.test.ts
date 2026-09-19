@@ -62,6 +62,9 @@ describe("synapse trace path classification: storage-root layout", () => {
 	it("reports an unknown entry under the root as unclassified rather than guessing a category", () => {
 		assert.equal(categoryOf(`${ROOT}/whatever/x.json`), "unclassified");
 		assert.equal(categoryOf(`${ROOT}/config.json`), "unclassified");
+		// A real top-level entry (`delegation.ts:87-89`) that belongs to none of the
+		// three categories: unclassified is nonzero from the first real trace on.
+		assert.equal(categoryOf(`${ROOT}/receipts/req-1.json`), "unclassified");
 		// The root directory itself is inside the root but names no layout entry.
 		assert.equal(categoryOf(ROOT), "unclassified");
 	});
@@ -73,6 +76,19 @@ describe("synapse trace path classification: storage-root layout", () => {
 		assert.equal(categoryOf("/var/synapse-backup/envelopes/m1.json"), "outside-root");
 		// A relative path cannot be placed against an absolute root, and is reported unplaced.
 		assert.equal(categoryOf("envelopes/m1.json"), "outside-root");
+	});
+
+	it("does not let a relative path that mirrors the root's segments classify into a category", () => {
+		// Segments alone cannot tell this from `/var/synapse/envelopes/m1.json`, and
+		// crediting it to `envelope` would be the invisible kind of wrong.
+		assert.equal(categoryOf("var/synapse/envelopes/m1.json"), "outside-root");
+		assert.equal(categoryOf("./var/synapse/objects/ab/abc.bin"), "outside-root");
+	});
+
+	it("refuses a storage root that is not absolute, rather than matching everything against it", () => {
+		assert.equal(classifyTracePath("", "envelopes/m1.json").kind, "outside-root");
+		assert.equal(classifyTracePath("", "/var/synapse/envelopes/m1.json").kind, "outside-root");
+		assert.equal(classifyTracePath("var/synapse", "/var/synapse/envelopes/m1.json").kind, "outside-root");
 	});
 
 	it("resolves `..` so a path cannot climb out of the root and back into an excluded directory", () => {
@@ -112,10 +128,21 @@ describe("synapse trace classification: temporary files classify by prefix, with
 		assert.deepEqual(withRename.categories, withoutRename.categories);
 	});
 
-	it("puts a temporary file written outside the storage layout in unclassified, visibly, rather than in a category", () => {
+	it("puts a temporary file written outside the storage root in ignored.outsideRoot, not in a category", () => {
 		const io = onlyProcess([open("/tmp/.m1.json.4242.1758240000000.a1b2c3.tmp"), rw({ ret: 512 })]);
 		for (const category of SYNAPSE_IO_CATEGORIES) assert.deepEqual(io.categories[category], EMPTY);
 		assert.deepEqual(classifyTraceIo([open("/tmp/x.tmp"), rw({ ret: 512 })], ROOT).ignored.outsideRoot, bucket({ writeBytes: 512 }));
+	});
+
+	it("puts a temporary file written elsewhere inside the root in unclassified, visibly, rather than in a category", () => {
+		// The prediction design §4.2 makes about a future writer that stops creating
+		// its temp file in the target's own directory: those bytes go missing from
+		// the category, but they are reported, not silently misfiled.
+		const temp = `${ROOT}/staging/.m1.json.4242.1758240000000.a1b2c3.tmp`;
+		const io = onlyProcess([open(temp), rw({ ret: 512 }), rename(`${ROOT}/envelopes/m1.json`)]);
+		assert.deepEqual(io.unclassified, bucket({ writeBytes: 512 }));
+		for (const category of SYNAPSE_IO_CATEGORIES) assert.deepEqual(io.categories[category], EMPTY);
+		assert.deepEqual(classifyTraceIo([open(temp), rw({ ret: 512 })], ROOT).ignored, { excluded: EMPTY, outsideRoot: EMPTY });
 	});
 });
 
@@ -137,7 +164,7 @@ describe("synapse trace classification: the descriptor table", () => {
 		assert.deepEqual(io.unknownDescriptor, EMPTY);
 	});
 
-	it("keys the table by (pid, fd), so two processes on the same fd number do not collide", () => {
+	it("keys the table by (pid, startTicks, fd), so two processes on the same fd number do not collide", () => {
 		const records: TraceRecord[] = [
 			open(`${ROOT}/envelopes/m1.json`, { pid: 100, ret: 7, tid: 100 }),
 			open(`${ROOT}/objects/ab/abc.bin`, { pid: 200, ret: 7, tid: 200 }),
