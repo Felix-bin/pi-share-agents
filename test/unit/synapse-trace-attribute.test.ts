@@ -239,6 +239,27 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 		assert.equal(traceIoBytes(row.io), 100_000);
 	});
 
+	it("counts read bytes as well as written ones, on both sides of the share", () => {
+		// Reads and writes stay apart in the buckets but both are bytes the join
+		// was responsible for placing. A denominator that summed only writes
+		// would understate every read-heavy run's orphaned share.
+		const records: TraceRecord[] = [
+			open(`${ROOT}/objects/ab/abcdef.bin`, { nsecs: 20_000_000_000, ret: 8 }),
+			rw({ bytes: 900, fd: 8, nsecs: 20_000_001_000, ret: 900, syscall: "read" }),
+			open(`${ROOT}/objects/cd/cdef01.bin`, { nsecs: 30_000_000_000, pid: 77, ret: 8, startTicks: 4_000 }),
+			rw({ bytes: 100, fd: 8, nsecs: 30_000_001_000, pid: 77, ret: 100, startTicks: 4_000, syscall: "read" }),
+		];
+		const result = attributeKernelIo([identityEvent()], traceLog({ records }), ROOT);
+		assert.equal(result.diagnostics.attributedBytes, 900);
+		assert.equal(result.diagnostics.unattributedBytes, 100);
+		assert.equal(result.diagnostics.unattributedShare, 0.1);
+		const [orphan] = result.diagnostics.unattributedProcesses;
+		assert.ok(orphan !== undefined);
+		assert.equal(orphan.categories.content.readBytes, 100);
+		assert.equal(bucketBytes(orphan.categories.content), 100);
+		assert.equal(traceIoBytes(orphan), 100);
+	});
+
 	it("leaves deliberately ignored bytes out of the account and still reports them", () => {
 		const records: TraceRecord[] = [
 			...envelopeWrite(42, 1_000, 500),
@@ -271,7 +292,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 		// The partial sum is visible as evidence, but it is not the result: the
 		// account itself is refused, so no caller can mistake it for a total.
 		assert.equal(result.diagnostics.attributedBytes, 500);
-		assert.notEqual(result.attributed, result.diagnostics.attributedBytes);
+		assert.equal(Array.isArray(result.attributed), false, "a refused account must not also be readable as rows");
 	});
 
 	it("does not sum cumulative loss counts", () => {
@@ -358,6 +379,44 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 	});
 });
 
+describe("synapse kernel I/O attribution: an unusable storage root", () => {
+	// Every path in the trace would classify as `outside-root` against a root no
+	// path can be placed against, putting the run's whole I/O in `ignored` — a
+	// bucket no judgement reads. The account would come back empty, unorphaned
+	// and unrefused: a 100% attribution loss wearing the face of a clean pass.
+	for (const badRoot of ["var/synapse", "C:\\synapse", "", "./var/synapse"]) {
+		it(`refuses the result rather than reporting an empty account against ${JSON.stringify(badRoot)}`, () => {
+			const records = [...envelopeWrite(42, 1_000, 50_000)];
+			const result = attributeKernelIo([identityEvent()], traceLog({ records }), badRoot);
+			assert.equal(result.attributed, "unavailable");
+			assert.deepEqual(result.unavailableReasons, ["unusable-storage-root"]);
+			// Nothing was classified, so no byte total is claimed either way.
+			assert.equal(result.diagnostics.attributedBytes, 0);
+			assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 0);
+			assert.equal(result.diagnostics.unattributedShare, "N/A");
+			assert.equal(result.diagnostics.coverage.complete, false);
+			// The lines that were there are still counted: the root was unusable,
+			// the collector's output was not.
+			assert.equal(result.diagnostics.traceLines.records, records.length);
+		});
+	}
+
+	it("still reports N/A on a host that collected nothing, whatever shape its storage root has", () => {
+		// A Windows checkout's storage root is never POSIX-absolute and never
+		// collects. Refusing there would turn "this deployment does not collect"
+		// into "this run's measurement failed", on every run.
+		const result = attributeKernelIo([identityEvent()], null, "C:\\Users\\dev\\synapse");
+		assert.equal(result.attributed, "N/A");
+		assert.deepEqual(result.unavailableReasons, []);
+	});
+
+	it("accepts the absolute root the collector actually reports paths against", () => {
+		const result = attributeKernelIo([identityEvent()], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(result.diagnostics.attributedBytes, 500);
+	});
+});
+
 describe("synapse kernel I/O attribution: no collection at all", () => {
 	it("reports N/A when this deployment ran no collector", () => {
 		const result = attributeKernelIo([identityEvent()], null, ROOT);
@@ -384,6 +443,12 @@ describe("synapse kernel I/O attribution: no collection at all", () => {
 });
 
 describe("synapse kernel I/O attribution: clock alignment across the two bases", () => {
+	it("states the tick rate userspace reads out of /proc", () => {
+		// `USER_HZ` is 100 for everything read out of /proc, whatever the kernel's
+		// internal CONFIG_HZ. The whole boot-based timeline rests on it.
+		assert.equal(LINUX_CLOCK_TICKS_PER_SECOND, 100);
+	});
+
 	it("converts start ticks to nanoseconds since boot without drift", () => {
 		assert.equal(processStartNsecs(0), 0);
 		assert.equal(processStartNsecs(1), NSECS_PER_TICK);
@@ -501,6 +566,55 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		assert.equal(result.diagnostics.coverage.complete, true);
 		// Coverage being provable does not rescue a run that lost events.
 		assert.equal(result.attributed, "unavailable");
+	});
+
+	it("carries a non-standard tick rate all the way through the join, not just into the conversion", () => {
+		// At USER_HZ 250 the same startTicks names a different instant, so the
+		// unobserved prefix has to change with it. A rate wired into the
+		// conversion but not reachable from here would leave this at 10s.
+		const event = identityEvent({ monotonicMs: 1_000, startTicks: 1_000, uptimeAtRecordSeconds: 16 });
+		const result = attributeKernelIo([event], traceLog({ records: envelopeWrite(42, 1_000, 500) }), ROOT, { ticksPerSecond: 250 });
+		assert.equal(rowFor(result, 42, 1_000).coverage.unobservedPrefixNsecs, 20_000_000_000 - 4_000_000_000);
+		assert.equal(result.diagnostics.clockInconsistentIdentityEvents, 0);
+	});
+
+	it("reports a reading past the exactly-representable range as unavailable rather than rounding it", () => {
+		// Nanoseconds since boot leave the safe-integer range after ~104 days of
+		// uptime. A rounded reading would produce a coverage answer that looks
+		// every bit as decided as a real one.
+		const beyondSafe = Number.MAX_SAFE_INTEGER + 4_096;
+		const lateTrace = traceLog({ records: envelopeWrite(42, 1_000, 500, beyondSafe) });
+		const observed = attributeKernelIo([identityEvent()], lateTrace, ROOT);
+		assert.equal(observed.diagnostics.coverage.observedFromNsecs, "unavailable");
+		assert.equal(rowFor(observed, 42, 1_000).coverage.unobservedPrefixNsecs, "unavailable");
+		assert.equal(rowFor(observed, 42, 1_000).coverage.observedFromStart, false);
+
+		// The same bound on the other side of the comparison: a start time that
+		// cannot be represented exactly is not a start time this module will use.
+		const farStartTicks = 2_000_000_000;
+		const farEvent = identityEvent({ monotonicMs: 1_000, startTicks: farStartTicks, uptimeAtRecordSeconds: 21_000_000 });
+		const started = attributeKernelIo([farEvent], traceLog({ records: envelopeWrite(42, farStartTicks, 500, 1_000_000_000) }), ROOT);
+		assert.equal(started.diagnostics.coverage.observedFromNsecs, 1_000_000_000);
+		assert.equal(rowFor(started, 42, farStartTicks).coverage.unobservedPrefixNsecs, "unavailable");
+		assert.equal(started.diagnostics.coverage.complete, false);
+	});
+
+	it("does not call an account complete while a bound process is missing from the trace entirely", () => {
+		// The process that did all its I/O before the collector started emits no
+		// trace line at all, so it has no row and no per-process coverage to be
+		// false. A `complete` that walked only the rows would call this — one of
+		// the emptiest results the module can produce — a whole account of the run.
+		const events = [identityEvent({ pid: 42 }), identityEvent({ pid: 99, startTicks: 1_100, uptimeAtRecordSeconds: 17 })];
+		const records: TraceRecord[] = [rw({ bytes: 0, fd: 3, nsecs: 5_000_000_000, pid: 42, ret: 0, startTicks: 1_000 })];
+		const result = attributeKernelIo(events, traceLog({ records }), ROOT);
+
+		assert.equal(result.diagnostics.identityKeysWithoutTrace, 1);
+		// Everything a row-walking check could see says "complete": the one
+		// process present was observed from its start and nothing was orphaned.
+		assert.equal(result.diagnostics.coverage.processesWithUnobservedPrefix, 0);
+		assert.equal(result.diagnostics.unattributedShare, "N/A");
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(result.diagnostics.coverage.complete, false);
 	});
 
 	it("does not call an empty account complete", () => {

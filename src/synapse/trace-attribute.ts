@@ -210,7 +210,18 @@ export type AttributedProcessIo = {
 };
 
 export type KernelIoCoverage = {
-	/** True only when every attributed process was observed from its start. */
+	/**
+	 * True only when the account demonstrably holds the whole run: something was
+	 * attributed, every attributed process was observed from its start, and no
+	 * bound identity is missing from the trace entirely.
+	 *
+	 * That last condition is not redundant. A process that did all its I/O before
+	 * the collector started emits no trace line at all, so it has no row and no
+	 * per-process coverage to be false — it is invisible to any check that walks
+	 * only what the trace contains. Without it, the most complete-looking result
+	 * this module can produce is also one of the emptiest, which is precisely the
+	 * reading `complete` exists to make impossible.
+	 */
 	complete: boolean;
 	/** Earliest boot-based reading in the whole trace; `"N/A"` with no trace, `unavailable` when no line carried one. */
 	observedFromNsecs: number | Unavailable | NotApplicable;
@@ -221,7 +232,7 @@ export type KernelIoCoverage = {
 export type TraceLineErrorCounts = Record<TraceLineErrorReason, number>;
 
 /** Why an account that exists may not be reported. All applicable reasons are given, never just the first. */
-export type KernelIoUnavailableReason = "collector-reported-loss" | "unattributed-over-threshold" | "unreadable-lines";
+export type KernelIoUnavailableReason = "collector-reported-loss" | "unattributed-over-threshold" | "unreadable-lines" | "unusable-storage-root";
 
 /**
  * Everything the judgement was made from, reported whether or not it went
@@ -241,7 +252,7 @@ export type KernelIoDiagnostics = {
 	clockInconsistentIdentityEvents: number;
 	coverage: KernelIoCoverage;
 	identityKeys: number;
-	/** Keys that bound an identity but produced no observed I/O at all. */
+	/** Keys that bound an identity but produced no observed I/O at all. Any of these denies `coverage.complete`. */
 	identityKeysWithoutTrace: number;
 	/** Seen and deliberately not attributed, straight from the classifier. */
 	ignored: { excluded: TraceIoBucket; outsideRoot: TraceIoBucket };
@@ -298,27 +309,54 @@ function emptyErrorCounts() {
 	return { malformed: 0, "too-long": 0, truncated: 0 } satisfies TraceLineErrorCounts;
 }
 
+/** Diagnostics for an outcome reached before any classification happened: every quantity absent, none of them zero by pretence. */
+function unclassifiedDiagnostics(threshold: number, observedFromNsecs: number | Unavailable | NotApplicable, trace: TraceLog | null): KernelIoDiagnostics {
+	const errors = emptyErrorCounts();
+	for (const error of trace?.errors ?? []) errors[error.reason] += 1;
+	return {
+		ambiguousProcesses: 0,
+		attributedBytes: 0,
+		clockInconsistentIdentityEvents: 0,
+		coverage: { complete: false, observedFromNsecs, processesWithUnobservedPrefix: 0 },
+		identityKeys: 0,
+		identityKeysWithoutTrace: 0,
+		ignored: { excluded: emptyBucket(), outsideRoot: emptyBucket() },
+		lossReports: trace?.losses.length ?? 0,
+		lostEventsHighWater: 0,
+		traceLines: { errors, losses: trace?.losses.length ?? 0, records: trace?.records.length ?? 0 },
+		unattributedBytes: 0,
+		unattributedProcesses: [],
+		unattributedShare: "N/A",
+		unattributedShareThreshold: threshold,
+	};
+}
+
 /** The `"N/A"` outcome: no trace input, so nothing was collected and nothing may be inferred. */
 function notCollected(threshold: number): KernelIoAttribution {
+	return { attributed: "N/A", diagnostics: unclassifiedDiagnostics(threshold, "N/A", null), unavailableReasons: [] };
+}
+
+/**
+ * The caller handed a storage root no path can be placed against.
+ *
+ * `classifyTracePath` rejects a relative or empty root for a reason (see commit
+ * 344ad1e one layer down): segments alone cannot tell `/var/synapse/x` from
+ * `var/synapse/x`, and an empty root is a prefix of everything. Rejected there,
+ * every path in the trace becomes `outside-root` — which lands the run's entire
+ * I/O in `ignored`, a bucket no judgement here reads. The account then comes
+ * back empty, with no orphans, a `"N/A"` share and no reasons: a total loss of
+ * attribution wearing the face of a clean pass.
+ *
+ * So the root is checked *before* classification, and a bad one refuses the
+ * whole result. The test is `startsWith("/")` and nothing more: trace paths are
+ * kernel paths from a Linux collector, parsed as POSIX text on whatever host
+ * runs this, so a Windows-shaped root is exactly as unusable as a relative one.
+ */
+function unusableStorageRoot(threshold: number, trace: TraceLog): KernelIoAttribution {
 	return {
-		attributed: "N/A",
-		diagnostics: {
-			ambiguousProcesses: 0,
-			attributedBytes: 0,
-			clockInconsistentIdentityEvents: 0,
-			coverage: { complete: false, observedFromNsecs: "N/A", processesWithUnobservedPrefix: 0 },
-			identityKeys: 0,
-			identityKeysWithoutTrace: 0,
-			ignored: { excluded: emptyBucket(), outsideRoot: emptyBucket() },
-			lossReports: 0,
-			lostEventsHighWater: 0,
-			traceLines: { errors: emptyErrorCounts(), losses: 0, records: 0 },
-			unattributedBytes: 0,
-			unattributedProcesses: [],
-			unattributedShare: "N/A",
-			unattributedShareThreshold: threshold,
-		},
-		unavailableReasons: [],
+		attributed: "unavailable",
+		diagnostics: unclassifiedDiagnostics(threshold, "unavailable", trace),
+		unavailableReasons: ["unusable-storage-root"],
 	};
 }
 
@@ -377,12 +415,20 @@ function bindIdentities(events: readonly MeteringEvent[], ticksPerSecond: number
 	return { bindings, clockInconsistentEvents };
 }
 
-/** The earliest boot-based reading anywhere in the trace. Unreadable lines carry none and cannot contribute. */
+/**
+ * The earliest boot-based reading anywhere in the trace. Unreadable lines carry
+ * none and cannot contribute.
+ *
+ * Bounded like every other reading on this timeline: a collector on a host up
+ * for more than ~104 days emits `nsecs` past the exactly-representable range,
+ * and a coverage answer computed from a rounded reading would look every bit as
+ * decided as a real one.
+ */
 function earliestObservation(trace: TraceLog): number | Unavailable {
 	let earliest: number | null = null;
 	for (const record of trace.records) earliest = earliest === null ? record.nsecs : Math.min(earliest, record.nsecs);
 	for (const loss of trace.losses) earliest = earliest === null ? loss.nsecs : Math.min(earliest, loss.nsecs);
-	return earliest === null ? "unavailable" : earliest;
+	return earliest === null ? "unavailable" : boundedNsecs(earliest);
 }
 
 /**
@@ -412,6 +458,13 @@ function coverageOf(io: TraceProcessIo, observedFromNsecs: number | Unavailable,
  * trace file with nothing in it, are the same fact — no collection happened —
  * and both give `"N/A"`, never a zero-byte account that would read as "this run
  * did no I/O".
+ *
+ * `storageRoot` must be absolute whenever there is a trace to place against it;
+ * see `unusableStorageRoot`. The check is gated on the trace existing, and not
+ * hoisted above it, because a host that collects nothing also has no paths to
+ * classify — on Windows the storage root is never POSIX-absolute, and refusing
+ * there would turn "this deployment does not collect" into "this run's
+ * measurement failed" on every single run.
  */
 export function attributeKernelIo(
 	events: readonly MeteringEvent[],
@@ -421,6 +474,7 @@ export function attributeKernelIo(
 ): KernelIoAttribution {
 	const threshold = options.unattributedShareThreshold ?? UNATTRIBUTED_SHARE_THRESHOLD;
 	const ticksPerSecond = options.ticksPerSecond ?? LINUX_CLOCK_TICKS_PER_SECOND;
+	if (trace !== null && !storageRoot.startsWith("/")) return unusableStorageRoot(threshold, trace);
 	if (trace === null || (trace.records.length === 0 && trace.losses.length === 0 && trace.errors.length === 0)) {
 		return notCollected(threshold);
 	}
@@ -480,6 +534,8 @@ export function attributeKernelIo(
 	if (trace.errors.length > 0) unavailableReasons.push("unreadable-lines");
 	if (unattributedShare !== "N/A" && unattributedShare > threshold) unavailableReasons.push("unattributed-over-threshold");
 
+	const identityKeysWithoutTrace = bindings.size - usedKeys.size;
+
 	return {
 		attributed: unavailableReasons.length > 0 ? "unavailable" : attributed,
 		diagnostics: {
@@ -487,12 +543,17 @@ export function attributeKernelIo(
 			attributedBytes,
 			clockInconsistentIdentityEvents: clockInconsistentEvents,
 			coverage: {
-				complete: attributed.length > 0 && processesWithUnobservedPrefix === 0,
+				// A bound process that emitted no trace line at all has no row here
+				// and so no per-process coverage that could be false. Walking only
+				// what the trace contains would call that the most complete result
+				// this module can produce, which is the reading `complete` exists to
+				// prevent — so a key with no trace denies completeness outright.
+				complete: attributed.length > 0 && processesWithUnobservedPrefix === 0 && identityKeysWithoutTrace === 0,
 				observedFromNsecs,
 				processesWithUnobservedPrefix,
 			},
 			identityKeys: bindings.size,
-			identityKeysWithoutTrace: bindings.size - usedKeys.size,
+			identityKeysWithoutTrace,
 			ignored: classification.ignored,
 			lossReports: trace.losses.length,
 			lostEventsHighWater,
