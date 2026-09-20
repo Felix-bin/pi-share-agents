@@ -133,7 +133,6 @@ function sessionContext(sessionId: string | null) {
 async function deliveredState() {
 	const synapse = synapseContract();
 	const opened = await openChildDelegationWithState({
-		childTools: CONSUMING_TOOLS,
 		cwd: worktree,
 		message: QUERY,
 		receiverSessionId: "sess-child",

@@ -24,6 +24,20 @@ const MUTATING_TOOLS = new Set(["bash", "edit", "powershell", "write"]);
 
 export type SynapseChildContract = {
 	agent: string;
+	/**
+	 * Every tool this child will actually have: what its role declared plus what
+	 * the extension registers. The extension's tools reach the child through
+	 * `permittedRuntimeTools`, a different channel from the role's declared
+	 * tools, so a capability derived from the declared list alone would say the
+	 * child cannot consume state while the child is in fact able to — which is
+	 * how the whole state plane came to be unreachable.
+	 *
+	 * One launch derives this once and both planes negotiate from it: the
+	 * delegated envelope and the state envelope freeze their snapshots from the
+	 * same capability, so a list that moved for one and not the other would make
+	 * the receiver reject every launch.
+	 */
+	capabilityTools: string[];
 	/** Budget for the recalled memory section the child is handed at launch. */
 	contextBudgetBytes: number;
 	contract: LaunchContract;
@@ -42,6 +56,8 @@ export type SynapseChildContract = {
 export type ResolveChildContractInput = {
 	agentName: string;
 	childTools: readonly string[];
+	/** What the extension registers for the child, when it is on. */
+	extensionTools?: readonly string[];
 	cwd: string;
 	extensionConfig: UnvalidatedJson;
 	/** Overrides the resolved Pi agent directory; tests supply their own. */
@@ -97,6 +113,9 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 	const sessionId = input.sessionId.trim().length > 0 ? input.sessionId : "unattributed-session";
 	const agent = input.agentName.trim().length > 0 ? input.agentName : "unattributed-agent";
 	const representationId = representationIdOf(config);
+	// The capability is what the child can actually do, so the extension's tools
+	// belong in it. With the extension off this is the declared list unchanged.
+	const capabilityTools = [...input.childTools, ...(input.extensionTools ?? [])];
 	return {
 		agent,
 		contextBudgetBytes: config.contextBudgetBytes,
@@ -106,7 +125,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			// from configuration: an experiment pins the snapshot id a build-corpus
 			// run produced, and without one the stable "unset" placeholder keeps the
 			// vector path disabled.
-			capabilityId: capabilityForAgent({ agent, childTools: input.childTools, representationId }).capabilityId,
+			capabilityId: capabilityForAgent({ agent, childTools: capabilityTools, representationId }).capabilityId,
 			corpusSnapshotId: config.corpusSnapshotId ?? "unset",
 			memoryRefs: [],
 			mode: config.mode,
@@ -115,6 +134,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			scope: { pathPrefixes: [""], write: childMayWrite(input.childTools) },
 			storageRoot: resolved.root,
 		}),
+		capabilityTools,
 		embedding: config.embedding,
 		runId,
 		sessionId,

@@ -39,6 +39,7 @@ function childContract(): SynapseChildContract {
 			scope: { pathPrefixes: [""], write: true },
 			storageRoot: store,
 		}),
+		capabilityTools: ["read", "grep"],
 		embedding: null,
 		runId: "run-7",
 		sessionId: "sess-parent",
@@ -64,7 +65,6 @@ function runtime(synapse: SynapseChildContract | undefined): ChildRuntimeConfig 
 
 function openFor(synapse: SynapseChildContract | undefined, message: string) {
 	return openChildDelegation({
-		childTools: ["read", "grep"],
 		cwd: worktree,
 		message,
 		receiverSessionId: "sess-child",

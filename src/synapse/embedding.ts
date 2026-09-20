@@ -4,6 +4,8 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
+import { getAgentDir } from "../shared/utils.ts";
+import { resolveEmbeddingKey, SYNAPSE_KEY_ENV } from "./credentials.ts";
 import type { SynapseEmbeddingConfig } from "./config.ts";
 import { createContentStore, type ContentStore } from "./content-store.ts";
 import type { MeteringIdentity, MeteringLog } from "./metering.ts";
@@ -269,10 +271,33 @@ function createPersistentCache(storageRoot: string, representationId: string, di
  * The key comes from the environment only, never from a key file, and a missing
  * key degrades to keyword ranking rather than failing the caller.
  */
+/**
+ * The key the configured provider is called with: the named environment
+ * variable first, then the one `/synapse-setup key` stored.
+ *
+ * The stored key is consulted only when the configuration names the
+ * provider's own variable. That guard is what keeps a stored credential out
+ * of every other caller: `resolveEmbeddingKey` matches the canonical name on
+ * its own, so a differently-named variable would skip the environment branch
+ * entirely and fall through to the user's credentials file — which is
+ * exactly what a test naming its own variable must never do.
+ *
+ * Without this fallback the plugin's own guidance is a trap: a key stored
+ * with `/synapse-setup key` makes the status line report a configured
+ * fingerprint while every embedder built from configuration stays absent, so
+ * semantic retrieval and the whole state plane go quietly unused.
+ */
+function resolveEmbeddingKeyFor(embedding: SynapseEmbeddingConfig): string | undefined {
+	const fromEnv = process.env[embedding.keyEnv];
+	if (fromEnv !== undefined && fromEnv.trim().length > 0) return fromEnv;
+	if (embedding.keyEnv !== SYNAPSE_KEY_ENV) return undefined;
+	return resolveEmbeddingKey({ agentDir: getAgentDir(), env: process.env }).key ?? undefined;
+}
+
 export function resolveConfiguredEmbedder(embedding: SynapseEmbeddingConfig | null, storageRoot: string): Embedder | undefined {
 	if (embedding === null) return undefined;
-	const key = process.env[embedding.keyEnv];
-	if (key === undefined || key.length === 0) return undefined;
+	const key = resolveEmbeddingKeyFor(embedding);
+	if (key === undefined) return undefined;
 	try {
 		// The persistent cache lives in its own subtree, so embedding-cache object
 		// writes never mix into the memory store's object-io accounting.

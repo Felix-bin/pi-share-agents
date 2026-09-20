@@ -1425,7 +1425,6 @@ async function runSingleAttempt(
 				// The task plane always, the state plane when this child can consume one;
 				// the second delivery is metered by the send side that produced it.
 				const opened = await openChildDelegationWithState({
-					childTools: toolPlan.declaredBuiltinTools,
 					cwd: options.cwd ?? runtimeCwd,
 					message,
 					receiverSessionId: created.sessionId,

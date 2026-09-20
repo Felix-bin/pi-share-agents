@@ -697,7 +697,6 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				// The task plane always, the state plane when this child can consume one;
 				// the second delivery is metered by the send side that produced it.
 				const opened = await openChildDelegationWithState({
-					childTools: input.launch.toolPlan.declaredBuiltinTools,
 					cwd: createInput.cwd,
 					message: input.prompt,
 					receiverSessionId: created.sessionId,

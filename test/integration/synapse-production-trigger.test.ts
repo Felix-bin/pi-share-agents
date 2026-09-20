@@ -11,6 +11,7 @@ import { createSiliconFlowEmbedder, type Embedder } from "../../src/synapse/embe
 import { envelopeInboxPath, readDeliveredEnvelope, stateEnvelopePath, verifyEnvelopeAgainstContract } from "../../src/synapse/envelope-inbox.ts";
 import { createMeteringLog, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
+import { resolvePiLaunchToolPlan } from "../../src/runs/shared/child-tool-plan.ts";
 import { openChildDelegationWithState } from "../../src/runs/shared/synapse-delegation.ts";
 import { startEmbeddingStub, type StubEmbeddingServer } from "../support/embedding-stub-server.ts";
 
@@ -84,13 +85,19 @@ function extensionConfig(): Record<string, CanonicalValue> {
  * with the contract the child holds — the two-sided property this seam exists
  * to guarantee, and one this file must therefore exercise instead of assume.
  */
-function synapseContract(childTools: readonly string[] = CONSUMING_TOOLS, config: Record<string, CanonicalValue> = extensionConfig()): SynapseChildContract {
+function synapseContract(
+	childTools: readonly string[] = CONSUMING_TOOLS,
+	config: Record<string, CanonicalValue> = extensionConfig(),
+	/** What the extension registers, which reaches the child by a different channel. */
+	extensionTools: readonly string[] = [],
+): SynapseChildContract {
 	const synapse = resolveSynapseChildContract({
 		agentDir: storageRoot,
 		agentName: "retriever",
 		childTools,
 		cwd: worktree,
 		extensionConfig: config,
+		extensionTools,
 		runId: RUN_ID,
 		sessionId: "sess-parent",
 	});
@@ -110,9 +117,12 @@ function logPath(): string {
 	return path.join(storageRoot, "metering", `${RUN_ID}.jsonl`);
 }
 
-function trigger(synapse: SynapseChildContract | undefined, childTools: readonly string[] = CONSUMING_TOOLS) {
+/**
+ * One launch through the seam. No tool list is passed: a launch's capability
+ * comes from the contract, which is what the execution paths do too.
+ */
+function trigger(synapse: SynapseChildContract | undefined) {
 	return openChildDelegationWithState({
-		childTools,
 		cwd: worktree,
 		message: QUERY,
 		receiverSessionId: "sess-child",
@@ -198,7 +208,7 @@ describe("synapse production trigger", () => {
 	});
 
 	it("leaves the run byte-identical when a child cannot consume state", async () => {
-		const opened = await trigger(synapseContract(["read", "grep"]), ["read", "grep"]);
+		const opened = await trigger(synapseContract(["read", "grep"]));
 
 		assert.ok(opened.delegation, "the task plane is unaffected");
 		assert.equal(opened.state, null, "a child without a state-consuming tool must not be offered state");
@@ -272,7 +282,7 @@ describe("synapse production trigger", () => {
 		// housekeeping: the launch must survive not being able to do it.
 		fs.mkdirSync(stateInbox(), { recursive: true });
 		try {
-			const opened = await trigger(synapse, ["read", "grep"]);
+			const opened = await trigger(synapseContract(["read", "grep"]));
 			assert.equal(opened.state, null, "no state is sent, and the clear's failure is not the caller's problem");
 			assert.notEqual(opened.delegation, null, "the task plane is untouched by a state-plane housekeeping failure");
 		} finally {
@@ -304,7 +314,7 @@ describe("synapse production trigger", () => {
 		// the child has no contract. The state half must not touch it at all — this
 		// is the path a guard deletion would break for every delegation, and it had
 		// no test.
-		const opened = await trigger(undefined, ["read", "grep"]);
+		const opened = await trigger(undefined);
 
 		assert.equal(opened.delegation, null, "no contract means no delegation seam either");
 		assert.equal(opened.state, null);
@@ -350,6 +360,35 @@ describe("synapse production trigger", () => {
 			worktreeRoot: worktree,
 		});
 		assert.equal(outcome.kind, "consumed", "an unattributed parent must not refuse a correct delivery");
+	});
+
+	it("reaches the state plane from a factory role definition, not from a hand-written tool list", async () => {
+		// The whole point of the seam is that a role as the repository ships it reaches the
+		// state plane. Feeding childTools by hand tests a shape no launch produces: the
+		// extension adds its tools through permittedRuntimeTools, which is a different
+		// channel from the role's declared tools, and an earlier version of this file
+		// passed for exactly that reason while nothing in production could ever fire.
+		const declared = /^tools:\s*(.+)$/m.exec(fs.readFileSync("agents/retriever.md", "utf-8"))?.[1] ?? "";
+		const plan = resolvePiLaunchToolPlan({
+			permittedRuntimeTools: ["synapse_read", "synapse_write"],
+			tools: declared.split(",").map((tool) => tool.trim()).filter(Boolean),
+		});
+		assert.ok(!plan.declaredBuiltinTools.includes("synapse_read"), "the role itself declares no memory tool; that is the point");
+
+		// The contract is built the way a launch builds it: the role's declared tools
+		// plus the extension's, which arrive by a different channel.
+		const synapse = synapseContract(plan.declaredBuiltinTools, extensionConfig(), ["synapse_read", "synapse_write"]);
+		const opened = await trigger(synapse);
+		assert.equal(opened.state?.kind, "state", "a launch from the factory role must still deliver state");
+		assert.ok(fs.existsSync(stateInbox()), "and the envelope must be on disk for the child to find");
+
+		// The delegated plane must stay verifiable against the same contract: both
+		// planes freeze their snapshot from the receiver's capability, so a capability
+		// that moves for one and not the other would reject every launch.
+		const delegated = readDeliveredEnvelope(delegationInbox());
+		assert.equal(delegated.status, "ready");
+		if (delegated.status !== "ready") return;
+		assert.equal(verifyEnvelopeAgainstContract({ contract: synapse.contract, wire: delegated.wire }), null);
 	});
 
 	it("clears a previous delivery's state envelope when this one cannot send state", async () => {

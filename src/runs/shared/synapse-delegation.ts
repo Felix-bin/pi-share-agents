@@ -28,8 +28,6 @@ import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
  */
 
 export type OpenChildDelegationInput = {
-	/** The builtin tools the child was granted, as the tool plan resolved them. */
-	childTools: readonly string[];
 	cwd: string;
 	message: string;
 	receiverSessionId: string;
@@ -54,7 +52,10 @@ export function openChildDelegation(input: OpenChildDelegationInput): OpenDelega
 				// as a second delivery rather than as a duplicate of the first.
 				attempt: 1,
 				childIndex: input.runtime.childIndex,
-				childTools: input.childTools,
+				// The contract's own list: the receiver verifies the delegated envelope
+				// against the capability it was launched with, so both planes negotiate
+				// from that list rather than from whatever the caller declared.
+				childTools: synapse.capabilityTools,
 				receiverSessionId: input.receiverSessionId,
 				requestId: `${synapse.runId}-${input.runtime.childIndex}-${randomUUID().slice(0, 8)}`,
 				runId: synapse.runId,
@@ -102,7 +103,10 @@ export async function openChildRetrieveDelegation(input: OpenChildRetrieveInput)
 				agent: synapse.agent,
 				attempt: 1,
 				childIndex: input.runtime.childIndex,
-				childTools: input.childTools,
+				// The contract's own list: the receiver verifies the envelope against the
+				// capability it was launched with, so the sender negotiates with that same
+				// list rather than with whatever the caller happened to declare.
+				childTools: synapse.capabilityTools,
 				receiverSessionId: input.receiverSessionId,
 				requestId: `${synapse.runId}-${input.runtime.childIndex}-${randomUUID().slice(0, 8)}`,
 				runId: synapse.runId,
@@ -149,11 +153,13 @@ async function openChildStateDelegation(input: OpenChildDelegationInput): Promis
 	};
 	if (synapse.contract.mode !== "synapse") return publishNothing();
 	if (synapse.contract.corpusSnapshotId === "unset") return publishNothing();
-	if (!childConsumesState(input.childTools)) return publishNothing();
+	// The gate reads the same list the contract froze: the child's real tools,
+	// the extension's included.
+	if (!childConsumesState(synapse.capabilityTools)) return publishNothing();
 	const embedder = resolveConfiguredEmbedder(synapse.embedding, synapse.contract.storageRoot);
 	if (embedder === undefined) return publishNothing();
 	const result = await openChildRetrieveDelegation({
-		childTools: input.childTools,
+		childTools: synapse.capabilityTools,
 		cwd: input.cwd,
 		embedder,
 		// The child reads the corpus itself, so the count is the same one the
