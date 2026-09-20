@@ -336,6 +336,44 @@ describe("synapse corpus build", () => {
 		assert.deepEqual(fs.readFileSync(chunksPath), Buffer.alloc(fs.statSync(chunksPath).size, 0x20));
 	});
 
+	it("refuses an idempotent hit under a different embedding space", async () => {
+		// The snapshot id does not depend on the vectors, so a corpus built with the
+		// offline placeholder embedder carries the same id as the real one. Without
+		// this refusal a later real build reports "already present" and the store is
+		// left ranking stub vectors while every run claims to rank semantically —
+		// and the published byte count would have matched, so nothing else notices.
+		const corpusRoot = path.join(workRoot, "corpus-space");
+		const storageRoot = path.join(workRoot, "space-storage");
+		seedCorpus(corpusRoot);
+		const placeholder = {
+			async embedBatch(texts: readonly string[]) {
+				return texts.map(() => ({ cached: false, latencyMs: 0, promptTokens: null, vector: new Float32Array(8) }));
+			},
+			async embedQuery() {
+				return { cached: false, latencyMs: 0, promptTokens: null, vector: new Float32Array(8) };
+			},
+			representationId: "deterministic-test/sha256/v1",
+		};
+		const first = await buildCorpus({ allowlist: [".md"], corpusRoot, embedder: placeholder, sourceCommit: "frozen1", storageRoot });
+		assert.equal(first.alreadyPresent, false);
+		// A different space: the same id, the same chunk set, the same byte count —
+		// only the space differs, which is exactly what nothing else would catch.
+		const realSpace = createDeterministicEmbedder(8, "siliconflow/BAAI/bge-m3/1024");
+		await assert.rejects(
+			buildCorpus({ allowlist: [".md"], corpusRoot, embedder: realSpace, sourceCommit: "frozen1", storageRoot }),
+			/was published under representation deterministic-test\/sha256\/v1/,
+		);
+		// Re-embedding in the same space stays a no-op: the refusal is about the
+		// space, not about the provider promising bit-identical output.
+		assert.equal(
+			(await buildCorpus({ allowlist: [".md"], corpusRoot, embedder: placeholder, sourceCommit: "frozen1", storageRoot })).alreadyPresent,
+			true,
+		);
+		// And a distinct space gets its own directory rather than colliding.
+		const elsewhere = await buildCorpus({ allowlist: [".md"], corpusRoot, embedder: realSpace, sourceCommit: "frozen1", storageRoot: path.join(workRoot, "space-storage-fresh") });
+		assert.equal(elsewhere.corpusSnapshotId, first.corpusSnapshotId, "the id is the corpus, not the vectors");
+	});
+
 	it("refuses to rebuild the same id over different chunk content", async () => {
 		const corpusRoot = path.join(workRoot, "corpus-mutated");
 		const storageRoot = path.join(workRoot, "mutated-storage");

@@ -296,6 +296,25 @@ export async function buildCorpus(options: BuildCorpusOptions): Promise<CorpusBu
 				`integrity: corpus snapshot ${corpusSnapshotId} already exists with different chunk content; a changed corpus needs a new source commit, not a rebuild under the same id`,
 			);
 		}
+		// The snapshot id is a function of the source and the chunking, not of the
+		// vectors — which is what makes it authoritative, and also what makes this
+		// the one idempotent hit that must not be taken silently: a snapshot built
+		// with the offline placeholder embedder carries the same id as a real one, so
+		// a later real build would report "already present" and leave a corpus of
+		// stub vectors in a store that then claims to rank semantically.
+		//
+		// This is not the exemption above. Re-embedding with the same provider may
+		// differ bit for bit and is allowed; embedding under a different
+		// representation is a different space, and its vectors are not comparable
+		// with anything the run ranks against them.
+		// A meta without a representation id is not evidence of another space — it is
+		// a corrupt or legacy file, and the checks around this one already refuse
+		// those. Only a stated, different space is refused here.
+		if (stored.representationId !== undefined && stored.representationId !== options.embedder.representationId) {
+			throw new Error(
+				`integrity: corpus snapshot ${corpusSnapshotId} was published under representation ${stored.representationId}, this build embeds with ${options.embedder.representationId}; an idempotent hit here would leave the store ranking vectors from another space — publish to a fresh storage root`,
+			);
+		}
 		// meta.json is written last, so it existing means the snapshot was
 		// published; vectors missing alongside it is corruption, not an idempotent hit.
 		let publishedBytes: number;
