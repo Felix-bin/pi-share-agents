@@ -64,6 +64,33 @@ describe("status", () => {
 		assert.match(sent[0] ?? "", /1 memories/);
 	});
 
+	it("reports semantic availability from the same resolution a run uses", () => {
+		// Off: no provider configured.
+		assert.deepEqual(collectSynapseStatus(deps()).semantic, { available: false, reason: "no embedding provider is configured" });
+
+		// Configured but the key is nowhere: the report must say so, because that is
+		// exactly the state in which a run silently degrades to keyword ranking.
+		raw = {
+			embedding: { dim: 8, endpoint: "http://127.0.0.1:1/v1/embeddings", keyEnv: "SYNAPSE_SETUP_MISSING_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
+			memory: "project",
+			mode: "synapse",
+		};
+		const unbuildable = collectSynapseStatus(deps()).semantic;
+		assert.equal(unbuildable.available, false);
+		assert.match(unbuildable.available ? "" : unbuildable.reason, /SYNAPSE_SETUP_MISSING_KEY/);
+
+		// With the key visible, the same call the run makes returns an embedder — so
+		// the status cannot claim availability the run would not have.
+		process.env.SYNAPSE_SETUP_MISSING_KEY = "sk-test-key-not-a-real-one";
+		try {
+			const available = collectSynapseStatus(deps()).semantic;
+			assert.equal(available.available, true);
+			assert.equal(available.available ? available.representationId : null, "siliconflow/BAAI/bge-m3/8");
+		} finally {
+			delete process.env.SYNAPSE_SETUP_MISSING_KEY;
+		}
+	});
+
 	it("does not report zero for a store that was never created", async () => {
 		raw = { mode: "synapse" };
 		await runSetupCommand("", deps());

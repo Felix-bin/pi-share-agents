@@ -21,6 +21,7 @@ function status(overrides: Partial<SynapseStatus> = {}): SynapseStatus {
 		configPath: overrides.configPath ?? "/home/dev/.pi/agent/extensions/subagent/config.json",
 		key: overrides.key ?? key(),
 		recordCount: overrides.recordCount ?? 0,
+		semantic: overrides.semantic ?? { available: false, reason: "no embedding provider is configured" },
 		storageRoot: overrides.storageRoot === undefined ? "/home/dev/.pi/agent/synapse/0123456789abcdef" : overrides.storageRoot,
 		storeExists: overrides.storeExists ?? true,
 	};
@@ -109,6 +110,17 @@ describe("status rendering", () => {
 		const text = renderSynapseStatus(status());
 		assert.match(text, /semantic/i);
 		assert.match(text, /unavailable/i);
+		assert.match(text, /no embedding provider is configured/, "and says which of the two reasons it is");
+	});
+
+	it("reports semantic retrieval as available, with the space, when an embedder can be built", () => {
+		// The line used to be a constant. A user who had just configured a provider
+		// and a working key read "unavailable" and had no way to tell a correct
+		// setup from a broken one — the single question this command exists to
+		// answer. This pins the other half of the pair.
+		const text = renderSynapseStatus(status({ semantic: { available: true, representationId: "siliconflow/BAAI/bge-m3/1024" } }));
+		assert.match(text, /semantic: +available — siliconflow\/BAAI\/bge-m3\/1024/);
+		assert.doesNotMatch(text, /unavailable/);
 	});
 
 	it("shows how many memories the store holds", () => {

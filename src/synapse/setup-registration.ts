@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CanonicalValue } from "./canonical-json.ts";
-import { resolveSynapseConfig, type SynapseMode } from "./config.ts";
+import { resolveSynapseConfig, representationIdOf, type SynapseConfig, type SynapseMode } from "./config.ts";
+import { resolveConfiguredEmbedder } from "./embedding.ts";
 import { resolveStorageRoot } from "./namespace.ts";
 import { clearStoredKey, credentialsPath, fingerprintKey, resolveEmbeddingKey, parseEnteredKey, writeStoredKey, SYNAPSE_KEY_ENV } from "./credentials.ts";
 import {
@@ -13,6 +14,7 @@ import {
 	renderSynapseStatus,
 	synapseModePatch,
 	type SynapseConfigBlock,
+	type SynapseSemanticStatus,
 	type SynapseStatus,
 } from "./setup-command.ts";
 
@@ -78,11 +80,38 @@ function countRecords(storageRoot: string): number | "unavailable" {
 	}
 }
 
+/**
+ * Whether a run would get an embedder, asked through the same call the run makes.
+ *
+ * Building the embedder here is what keeps the report honest: if this function
+ * can build one, so can the delegation seam, because it is the same function
+ * over the same configuration. No network call is made — the client is
+ * constructed, not exercised.
+ */
+function semanticStatus(config: SynapseConfig, storageRoot: string | null): SynapseSemanticStatus {
+	if (config.embedding === null) return { available: false, reason: "no embedding provider is configured" };
+	if (storageRoot === null) return { available: false, reason: "no storage root is resolved, so no embedder can be built" };
+	const embedder = resolveConfiguredEmbedder(config.embedding, storageRoot);
+	if (embedder !== undefined) return { available: true, representationId: embedder.representationId };
+	return {
+		available: false,
+		reason: `configured (${representationIdOf(config)}), but the embedder could not be built — the ${config.embedding.keyEnv} key is not readable from the environment or the stored credentials`,
+	};
+}
+
 export function collectSynapseStatus(deps: SetupCommandDeps): SynapseStatus {
 	const config = resolveSynapseConfig(deps.loadRawConfig());
 	const configPath = path.join(deps.agentDir(), "extensions", "subagent", "config.json");
 	if (config.mode === "off") {
-		return { config, configPath, key: resolveEmbeddingKey({ agentDir: deps.agentDir(), env: deps.env }), recordCount: "unavailable", storageRoot: null, storeExists: false };
+		return {
+			config,
+			configPath,
+			key: resolveEmbeddingKey({ agentDir: deps.agentDir(), env: deps.env }),
+			recordCount: "unavailable",
+			semantic: semanticStatus(config, null),
+			storageRoot: null,
+			storeExists: false,
+		};
 	}
 	const resolved = resolveStorageRoot({
 		agentDir: deps.agentDir(),
@@ -95,6 +124,7 @@ export function collectSynapseStatus(deps: SetupCommandDeps): SynapseStatus {
 		configPath,
 		key: resolveEmbeddingKey({ agentDir: deps.agentDir(), env: deps.env }),
 		recordCount: storeExists ? countRecords(resolved.root) : "unavailable",
+		semantic: semanticStatus(config, resolved.root),
 		storageRoot: resolved.root,
 		storeExists,
 	};
