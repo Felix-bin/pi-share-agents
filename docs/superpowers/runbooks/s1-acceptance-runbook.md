@@ -56,6 +56,16 @@ node --experimental-strip-types scripts/synapse/judge-s1-report.ts <报告路径
 
 `incomplete` 不是"基本通过"。没跑与跑了没过会把人送去不同的地方：一个去机器上，一个去代码里。
 
+**预期的最好结果是 `incomplete`，而不是 `pass`。** 第 5 条（`s3-fd-premise`）恒为
+`unavailable`：它要回答的是 S3 的 `unknownDescriptor` 字节构成有没有变，而那需要 S3 的采集器
+同时在跑，本脚本做不到。脚本只测量"父进程打开的 fd 在容器内是否还够得着"，并把结果写在 detail 里。
+
+所以判读方式是：
+
+- `failed` 为空，且 `not run` 只有 `s3-fd-premise` → 这是本脚本能给出的最好结果；
+- **`blocksS2: false` 是放行 S2 的信号**，不是 `verdict: pass`；
+- `s3-fd-premise` 的 detail 原样带给 S3，由 S3 自己重跑那条断言。
+
 ## 归档
 
 报告连同引擎与内核版本一起提交到 `docs/superpowers/reports/`，文件名带日期。

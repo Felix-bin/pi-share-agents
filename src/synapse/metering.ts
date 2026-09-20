@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { canonicalDigest } from "./canonical-json.ts";
 import type { SynapseMode } from "./config.ts";
 import type { SynapseErrorClassification } from "./errors.ts";
-import { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_TOPOLOGY_ENV } from "../shared/launch-topology.ts";
+import { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_STORAGE_ROOT_ENV, LAUNCH_TOPOLOGY_ENV } from "../shared/launch-topology.ts";
 
 /**
  * Append-only measurement log and its aggregation.
@@ -57,7 +57,7 @@ export type MeteringPayload =
 	| { bytes: number; direction: "read" | "write"; kind: "object-io" }
 	| { kind: "task-span"; phase: "start" | "end"; taskId: string }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" }
-	| { cgroupId: string | null; degradedReason?: string; kind: "process-identity"; pid: number; startTicks: number; topology: "process" | "container"; uptimeAtRecordSeconds: number };
+	| { cgroupPath: string | null; declaredStorageRoot?: string; degradedReason?: string; kind: "process-identity"; pid: number; startTicks: number; topology: "process" | "container"; uptimeAtRecordSeconds: number };
 
 export type MeteringEvent = MeteringIdentity &
 	MeteringPayload & {
@@ -98,7 +98,14 @@ export function createMeteringLog(logPath: string, options: MeteringLogOptions =
 }
 
 export type ProcessIdentitySnapshot = {
-	cgroupId: string | null;
+	cgroupPath: string | null;
+	/**
+	 * The storage root the launch was told to align, when it was containerised.
+	 * The launch path cannot see the real one, so recording the declaration is what
+	 * makes a wrong declaration checkable after the fact instead of silently
+	 * producing bytes outside every root anybody classifies (S1 design §4.1).
+	 */
+	declaredStorageRoot?: string;
 	degradedReason?: string;
 	pid: number;
 	startTicks: number;
@@ -148,23 +155,34 @@ function parseUptimeSeconds(uptime: string): number | null {
  *
  * S1 makes this *available*; it does not yet key attribution on it. The swap
  * from `(pid, startTicks)` to a cgroup id (S1 design §4.2) requires S3's trace
- * wire protocol to carry the same id on the kernel side, which is a change to an
- * already-reviewed contract. Recording it here first means that when the swap
- * happens, the run side of the join already has the field, and the change is
- * `attributionKeyOf` plus the collector — not another pass over this file.
+ * wire protocol to carry the same identifier on the kernel side, which is a change
+ * to an already-reviewed contract.
+ *
+ * Note what this is and is not: a cgroup *path*, which is what userspace can read
+ * without a syscall, not the numeric id `bpf_get_current_cgroup_id()` returns. The
+ * two are related but not interchangeable, so the swap will need the id as well —
+ * this field shortens that work, it does not finish it.
  *
  * Unreadable is null, never "": a process outside any cgroup and a read that
  * failed are different facts, and an empty string would join against nothing
  * while looking like a value.
  */
-function readCgroupId(readFile: (filePath: string) => string): string | null {
+function readCgroupPath(readFile: (filePath: string) => string): string | null {
+	let v1Fallback: string | null = null;
 	try {
 		for (const line of readFile("/proc/self/cgroup").split("\n")) {
-			// cgroup v2 writes a single "0::<path>" line; v1 writes one line per controller.
-			const cgroupPath = line.trim().split(":").slice(2).join(":");
-			if (cgroupPath) return cgroupPath;
+			const fields = line.trim().split(":");
+			if (fields.length < 3) continue;
+			const cgroupPath = fields.slice(2).join(":");
+			if (!cgroupPath) continue;
+			// "0::<path>" is the unified hierarchy. Take it whenever it exists: on a
+			// hybrid host the v1 controller lines disagree with each other and with the
+			// unified one, and returning whichever came first would key this on a
+			// different hierarchy than the I/O collector reads.
+			if (fields[0] === "0" && fields[1] === "") return cgroupPath;
+			v1Fallback ??= cgroupPath;
 		}
-		return null;
+		return v1Fallback;
 	} catch {
 		return null;
 	}
@@ -187,8 +205,10 @@ export function readProcessIdentity(options: ProcessIdentityOptions = {}): Proce
 		const uptimeAtRecordSeconds = parseUptimeSeconds(readFile("/proc/uptime"));
 		if (startTicks === null || uptimeAtRecordSeconds === null) return null;
 		const degradedReason = env[LAUNCH_DEGRADED_REASON_ENV]?.trim();
+		const declaredStorageRoot = env[LAUNCH_STORAGE_ROOT_ENV]?.trim();
 		return {
-			cgroupId: readCgroupId(readFile),
+			cgroupPath: readCgroupPath(readFile),
+			...(declaredStorageRoot ? { declaredStorageRoot } : {}),
 			...(degradedReason ? { degradedReason } : {}),
 			pid,
 			startTicks,

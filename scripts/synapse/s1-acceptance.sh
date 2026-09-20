@@ -97,10 +97,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# NOTE: deliberately no `-v /dev/shm:/dev/shm`. A bind mount there would override
+# the tmpfs the shared IPC namespace supplies, and both probe containers would then
+# read the same *host* file whether or not `--ipc container:<anchor>` did anything.
+# The one check S1 exists to pass would become incapable of failing.
 run_in() { # run_in <name> <ipc-arg> <command...>
 	_name=$1; _ipc=$2; shift 2
 	"$ENGINE_ID" run --rm --name "$_name" --ipc "$_ipc" \
-		-v "$STORAGE_ROOT:$STORAGE_ROOT" -v "/dev/shm:/dev/shm" \
+		-v "$STORAGE_ROOT:$STORAGE_ROOT" \
 		"$IMAGE" /bin/sh -c "$*"
 }
 
@@ -126,8 +130,13 @@ fi
 PROBE="/dev/shm/${RUN_ID}.probe"
 if run_in "${RUN_ID}-a" "container:$ANCHOR_ID" "dd if=/dev/urandom of=$PROBE bs=4096 count=1 status=none && sha256sum $PROBE | cut -d' ' -f1" >"$WORK/a.sum" 2>"$WORK/a.err" \
 	&& run_in "${RUN_ID}-b" "container:$ANCHOR_ID" "sha256sum $PROBE | cut -d' ' -f1" >"$WORK/b.sum" 2>"$WORK/b.err"; then
-	if [ -s "$WORK/a.sum" ] && [ "$(cat "$WORK/a.sum")" = "$(cat "$WORK/b.sum")" ]; then
-		add_check ipc-sharing pass 4096 "$PROBE" "B read A's shared-memory object with an identical digest"
+	# Negative control. A container with a private IPC namespace gets its own
+	# /dev/shm and must NOT see the object. Without this, a check that passes proves
+	# only that two containers agreed — not that the shared namespace is why.
+	if run_in "${RUN_ID}-c" "private" "test -f $PROBE" >/dev/null 2>"$WORK/c.err"; then
+		add_check ipc-sharing fail 4096 "$PROBE" "control failed: a container with a PRIVATE ipc namespace also saw the object, so this check cannot distinguish sharing from a bind mount"
+	elif [ -s "$WORK/a.sum" ] && [ "$(cat "$WORK/a.sum")" = "$(cat "$WORK/b.sum")" ]; then
+		add_check ipc-sharing pass 4096 "$PROBE" "B read A's shared-memory object with an identical digest, and a private-namespace container could not see it"
 	else
 		add_check ipc-sharing fail 4096 "$PROBE" "digests differ: A=$(cat "$WORK/a.sum" 2>/dev/null) B=$(cat "$WORK/b.sum" 2>/dev/null)"
 	fi
@@ -156,8 +165,12 @@ fi
 
 # ---- 3. degradation is visible -------------------------------------------
 # Exercises the real seam with every engine hidden, and asserts the run says so.
-if [ -n "$REPO" ] && command -v node >/dev/null 2>&1; then
-	if PATH=/nonexistent node --experimental-strip-types -e "
+NODE_BIN=$(command -v node 2>/dev/null || true)
+if [ -n "$REPO" ] && [ -n "$NODE_BIN" ]; then
+	# The absolute path matters: `PATH=/nonexistent node …` makes the shell look for
+	# `node` under /nonexistent too, so the check would fail on every host where it
+	# actually runs — and record `fail` for a degradation path that worked.
+	if PATH=/nonexistent "$NODE_BIN" --experimental-strip-types -e "
 		import('file://$REPO/src/runs/shared/container-launch.ts').then((m) => {
 			const r = m.resolveSubagentLaunch({
 				launch: { command: '/opt/pi/bin/node', args: [], cwd: '/srv/pi/worktree' },
@@ -178,22 +191,38 @@ fi
 
 # ---- 4. lifecycle leaves nothing behind -----------------------------------
 sh "$SCRIPT_DIR/anchor.sh" stop "$ENGINE_ID" "$ANCHOR_NAME" >/dev/null 2>&1 || true
-LEAKED=$("$ENGINE_ID" ps -a --format '{{.Names}}' 2>/dev/null | grep -c "^${RUN_ID}" || true)
-if [ "${LEAKED:-0}" -eq 0 ]; then
-	add_check lifecycle-no-leak pass 0 "" "no container named ${RUN_ID}* survived the anchor teardown"
+# Ask first whether we can look at all. `ps` failing and `ps` returning nothing are
+# different facts, and a discarded stderr turns the first into a clean bill of health.
+if "$ENGINE_ID" ps -a --format '{{.Names}}' >"$WORK/ps.txt" 2>"$WORK/ps.err"; then
+	LEAKED=$(grep -c "^${RUN_ID}" "$WORK/ps.txt" || true)
+	if [ "${LEAKED:-0}" -eq 0 ]; then
+		add_check lifecycle-no-leak pass 0 "" "no container named ${RUN_ID}* survived the anchor teardown"
+	else
+		add_check lifecycle-no-leak fail 0 "" "$LEAKED container(s) named ${RUN_ID}* are still present after teardown"
+	fi
 else
-	add_check lifecycle-no-leak fail 0 "" "$LEAKED container(s) named ${RUN_ID}* are still present after teardown"
+	add_check lifecycle-no-leak unavailable 0 "" "could not list containers, so nothing was checked: $(head -c 200 "$WORK/ps.err" 2>/dev/null)"
 fi
 
 # ---- 5. S3's inherited-fd premise -----------------------------------------
-# S1 changes how logs are captured: the parent can no longer hand a file
-# descriptor across a container boundary. S3 assumed writes on an inherited fd
-# always exist. This records what is actually true now; it does not guess.
-if "$ENGINE_ID" run --rm --name "${RUN_ID}-fd" "$IMAGE" /bin/sh -c 'ls -l /proc/self/fd | wc -l' >"$WORK/fd.txt" 2>"$WORK/fd.err"; then
-	FD_COUNT=$(tr -dc '0-9' <"$WORK/fd.txt" || echo 0)
-	add_check s3-fd-premise pass 0 "/proc/self/fd" "container process sees ${FD_COUNT:-0} descriptors; none is inherited from the parent session, so S3 must re-verify its unknownDescriptor composition against engine-captured logs"
+# S1 changes how logs are captured: the parent can no longer hand a file descriptor
+# across a container boundary, and S3 assumed writes on an inherited fd always exist.
+#
+# This check measures ONE thing and claims nothing else: whether a descriptor the
+# parent opened is still reachable inside the container. It cannot observe S3's
+# `unknownDescriptor` composition — that needs S3's collector running — so the
+# outcome is `unavailable` with the measurement in the detail, not `pass`. A `pass`
+# would feed an overall verdict and assert more than was looked at.
+MARKER="$STORAGE_ROOT/fd-marker.txt"
+echo "written by the parent" >"$MARKER"
+exec 9>>"$MARKER"
+if "$ENGINE_ID" run --rm --name "${RUN_ID}-fd" -v "$STORAGE_ROOT:$STORAGE_ROOT" "$IMAGE" \
+	/bin/sh -c 'if [ -e /proc/self/fd/9 ]; then echo inherited; else echo not-inherited; fi' >"$WORK/fd.txt" 2>"$WORK/fd.err"; then
+	FD_STATE=$(tr -d '[:space:]' <"$WORK/fd.txt" || echo unknown)
+	add_check s3-fd-premise unavailable 0 "$MARKER" "parent-opened fd 9 is '${FD_STATE:-unknown}' inside the container; S3's unknownDescriptor composition must be re-verified with S3's collector running, which this script cannot do"
 else
-	add_check s3-fd-premise unavailable 0 "/proc/self/fd" "could not inspect descriptors inside a container: $(head -c 200 "$WORK/fd.err" 2>/dev/null)"
+	add_check s3-fd-premise unavailable 0 "$MARKER" "could not inspect descriptors inside a container: $(head -c 200 "$WORK/fd.err" 2>/dev/null)"
 fi
+exec 9>&-
 
 emit

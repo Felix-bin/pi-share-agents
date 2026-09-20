@@ -170,3 +170,19 @@ describe("acceptance exit code", () => {
 		assert.notEqual(s1AcceptanceExitCode({ ok: false }), 0);
 	});
 });
+
+describe("report schema version", () => {
+	it("rejects a version it was not written to read", () => {
+		const parsed = parseS1AcceptanceReport(report({ schemaVersion: 2 }));
+
+		assert.equal(parsed.ok, false);
+		// A later script revision could narrow what `pass` means on a check; grading
+		// it under v1 semantics would print a confident verdict computed from the
+		// wrong rules.
+		assert.match(parsed.ok ? "" : parsed.error, /schemaVersion/);
+	});
+
+	it("still accepts the version it knows", () => {
+		assert.equal(parseS1AcceptanceReport(report({ schemaVersion: 1 })).ok, true);
+	});
+});

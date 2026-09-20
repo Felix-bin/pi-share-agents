@@ -14,6 +14,7 @@ import {
 	CONTAINER_STORAGE_ROOT_ENV,
 	LAUNCH_TOPOLOGY_ENV,
 	LAUNCH_DEGRADED_REASON_ENV,
+	LAUNCH_STORAGE_ROOT_ENV,
 	type ContainerEngineId,
 	type ContainerEngineProbe,
 } from "../../src/runs/shared/container-launch.ts";
@@ -268,8 +269,10 @@ describe("subagent launch topology", () => {
 
 		assert.equal(resolved.topology, "container", resolved.degradedReason);
 		assert.equal(resolved.command, "isula");
-		assert.equal(resolved.env[LAUNCH_TOPOLOGY_ENV], "container");
 		assert.ok(resolved.args.includes("container:anchor-7"));
+		// The topology marker crosses the boundary as an argument, not in the engine
+		// client's own environment — the client's env never reaches the container.
+		assert.ok(resolved.args.includes(`${LAUNCH_TOPOLOGY_ENV}=container`));
 	});
 
 	it("degrades visibly when no container engine is usable", () => {
@@ -352,5 +355,78 @@ describe("the executable the container must actually exec", () => {
 		});
 
 		assert.equal(resolved.topology, "container", resolved.degradedReason);
+	});
+});
+
+describe("what crosses the container boundary", () => {
+	const childEnv = {
+		PI_SUBAGENT_RUNNER_CONFIG: "/srv/pi/temp/cfg.json",
+		PI_PACKAGE_DIR: "/opt/pi",
+		ANTHROPIC_API_KEY: "sk-test",
+		UNSET_ONE: undefined,
+	};
+
+	it("passes the child's environment into the container, not to the engine client", () => {
+		const resolved = resolveSubagentLaunch({ ...subagentInput(containerEnv), childEnv });
+
+		assert.equal(resolved.topology, "container", resolved.degradedReason);
+		// The engine CLI does not forward its own environment into the container, so
+		// anything the child needs has to be an explicit -e on the command line.
+		for (const [key, value] of Object.entries(childEnv)) {
+			if (value === undefined) continue;
+			const at = resolved.args.indexOf(`${key}=${value}`);
+			assert.notEqual(at, -1, `child env ${key} never reached the container`);
+			assert.equal(resolved.args[at - 1], "-e");
+		}
+	});
+
+	it("tells the containerised child it is containerised", () => {
+		const resolved = resolveSubagentLaunch({ ...subagentInput(containerEnv), childEnv });
+
+		// Without this the child records topology "process" — byte-identical to a
+		// genuine process run, which is exactly the mixing §4.3 exists to prevent.
+		assert.ok(resolved.args.includes(`${LAUNCH_TOPOLOGY_ENV}=container`));
+	});
+
+	it("does not forward host-specific variables that must come from the image", () => {
+		const resolved = resolveSubagentLaunch({
+			...subagentInput(containerEnv),
+			childEnv: { ...childEnv, PATH: "C:\Windows\System32", PWD: "/somewhere/else" },
+		});
+
+		assert.ok(!resolved.args.some((arg) => arg.startsWith("PATH=")));
+		assert.ok(!resolved.args.some((arg) => arg.startsWith("PWD=")));
+	});
+
+	it("omits undefined values rather than passing the string 'undefined'", () => {
+		const resolved = resolveSubagentLaunch({ ...subagentInput(containerEnv), childEnv });
+
+		assert.ok(!resolved.args.some((arg) => arg.startsWith("UNSET_ONE")));
+	});
+
+	it("gives the container a name, so something can still address it after launch", () => {
+		const resolved = resolveSubagentLaunch({
+			...subagentInput(containerEnv),
+			childEnv,
+			containerName: "pi-agent-run-42",
+		});
+
+		const at = resolved.args.indexOf("pi-agent-run-42");
+		assert.notEqual(at, -1);
+		assert.equal(resolved.args[at - 1], "--name");
+	});
+
+	it("still hands the process path a plain environment object to spawn with", () => {
+		const resolved = resolveSubagentLaunch({ ...subagentInput({}), childEnv });
+
+		assert.equal(resolved.topology, "process");
+		assert.equal(resolved.env.PI_SUBAGENT_RUNNER_CONFIG, "/srv/pi/temp/cfg.json");
+		assert.equal(resolved.env[LAUNCH_TOPOLOGY_ENV], "process");
+	});
+
+	it("records the storage root it was told to align, so a wrong one is auditable", () => {
+		const resolved = resolveSubagentLaunch({ ...subagentInput(containerEnv), childEnv });
+
+		assert.ok(resolved.args.includes(`${LAUNCH_STORAGE_ROOT_ENV}=/srv/pi/synapse`));
 	});
 });

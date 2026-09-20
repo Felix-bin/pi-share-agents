@@ -16,4 +16,17 @@ export const LAUNCH_TOPOLOGY_ENV = "PI_SUBAGENT_LAUNCH_TOPOLOGY";
 /** Set only when a container was asked for and declined. Never empty when set. */
 export const LAUNCH_DEGRADED_REASON_ENV = "PI_SUBAGENT_LAUNCH_DEGRADED_REASON";
 
+/**
+ * The storage root the launch was *told* to align, recorded so that a wrong
+ * declaration is auditable.
+ *
+ * The launch path cannot see the real SYNAPSE storage root, so its alignment check
+ * can only compare the declaration against the mount list. A declaration that is
+ * internally consistent but names the wrong directory would pass that check and
+ * then write bytes into a container-local overlay the host collector never sees —
+ * the silent partial misalignment design §4.1 is entirely about. Recording the
+ * declared value turns that from undetectable into checkable after the fact.
+ */
+export const LAUNCH_STORAGE_ROOT_ENV = "PI_SUBAGENT_LAUNCH_STORAGE_ROOT";
+
 export type LaunchTopology = "process" | "container";

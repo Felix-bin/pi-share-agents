@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
-import { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_TOPOLOGY_ENV, type LaunchTopology } from "../../shared/launch-topology.ts";
+import { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_STORAGE_ROOT_ENV, LAUNCH_TOPOLOGY_ENV, type LaunchTopology } from "../../shared/launch-topology.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
 const MAX_PROBE_OUTPUT_BYTES = 8 * 1024;
@@ -63,6 +63,15 @@ export interface ContainerLaunchInput {
 	/** Absolute paths that will be bind-mounted at their own path inside the container. */
 	identicalPathRoots: readonly string[];
 	launch: { command: string; args: readonly string[]; cwd: string };
+	/**
+	 * The environment the *child* needs. It must be written onto the command line
+	 * as `-e KEY=VALUE`: the engine CLI does not forward its own environment into
+	 * the container, so anything merged into the environment of the spawned
+	 * `isula`/`docker` process reaches the client and stops there.
+	 */
+	childEnv?: NodeJS.ProcessEnv;
+	/** Gives the container a handle something can still address it by after launch. */
+	containerName?: string;
 }
 
 export interface ResolvedContainerLaunch {
@@ -104,6 +113,34 @@ function unalignedRoots(
 }
 
 /**
+ * Variables that describe the *host* and must come from the image instead. PATH is
+ * the important one: the container's system utilities are its own, and every
+ * binary this launch needs is referenced by absolute path anyway.
+ */
+const HOST_ONLY_ENV_KEYS = new Set(["PATH", "Path", "PWD", "OLDPWD", "SHLVL", "HOSTNAME", "_"]);
+
+/**
+ * Turns the child's environment into `-e KEY=VALUE` arguments.
+ *
+ * This is not a convenience. `isula run` / `docker run` do not forward the client
+ * process's environment into the container, so an environment merged into the
+ * spawned engine CLI reaches the CLI and stops there. The child would start with
+ * only the image's environment — no runner config, no package roots, no provider
+ * credentials — and, worse, no topology marker either, so it would record itself
+ * as a `process` run indistinguishable from a genuine one. That is the mixing
+ * design §4.3 exists to prevent, arrived at through the mechanism meant to prevent it.
+ */
+function containerEnvArgs(childEnv: NodeJS.ProcessEnv | undefined): string[] {
+	if (!childEnv) return [];
+	const args: string[] = [];
+	for (const [key, value] of Object.entries(childEnv)) {
+		if (value === undefined || HOST_ONLY_ENV_KEYS.has(key)) continue;
+		args.push("-e", `${key}=${value}`);
+	}
+	return args;
+}
+
+/**
  * Rewrites a subagent launch as a container launch, or explains why it did not.
  *
  * Declining is a first-class outcome: a container whose paths do not line up
@@ -136,9 +173,11 @@ export function resolveContainerLaunch(input: ContainerLaunchInput): ResolvedCon
 		args: [
 			"run",
 			"--rm",
+			...(input.containerName ? ["--name", input.containerName] : []),
 			"--ipc", `container:${input.anchorContainerId}`,
 			"-w", input.launch.cwd,
 			...mounts.flatMap((mount) => ["-v", `${mount}:${mount}`]),
+			...containerEnvArgs(input.childEnv),
 			input.image,
 			input.launch.command,
 			...input.launch.args,
@@ -230,7 +269,7 @@ export const CONTAINER_ANCHOR_ENV = "PI_SUBAGENT_CONTAINER_ANCHOR";
 export const CONTAINER_MOUNTS_ENV = "PI_SUBAGENT_CONTAINER_MOUNTS";
 export const CONTAINER_STORAGE_ROOT_ENV = "PI_SUBAGENT_CONTAINER_STORAGE_ROOT";
 
-export { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_TOPOLOGY_ENV, type LaunchTopology };
+export { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_STORAGE_ROOT_ENV, LAUNCH_TOPOLOGY_ENV, type LaunchTopology };
 
 export interface ResolvedSubagentLaunch extends ResolvedContainerLaunch {
 	/** Merged into the child's environment by the caller. */
@@ -253,6 +292,10 @@ export function resolveSubagentLaunch(input: {
 	env: NodeJS.ProcessEnv;
 	tempRoot: string;
 	piInstallRoot: string;
+	/** The environment the child needs, before this function adds the topology markers. */
+	childEnv?: NodeJS.ProcessEnv;
+	/** A handle for the agent container, so it stays addressable after launch. */
+	containerName?: string;
 	selectEngine?: () => ContainerEngineSelection;
 }): ResolvedSubagentLaunch {
 	const asProcess = (degradedReason?: string): ResolvedSubagentLaunch => ({
@@ -261,6 +304,7 @@ export function resolveSubagentLaunch(input: {
 		topology: "process",
 		...(degradedReason ? { degradedReason } : {}),
 		env: {
+			...input.childEnv,
 			[LAUNCH_TOPOLOGY_ENV]: "process",
 			[LAUNCH_DEGRADED_REASON_ENV]: degradedReason,
 		},
@@ -290,6 +334,16 @@ export function resolveSubagentLaunch(input: {
 		engine: selection.engine,
 		anchorContainerId: anchorContainerId!,
 		image: image!,
+		...(input.containerName ? { containerName: input.containerName } : {}),
+		childEnv: {
+			...input.childEnv,
+			[LAUNCH_TOPOLOGY_ENV]: "container",
+			// What the operator *declared* as the storage root. The launch cannot know
+			// the real one, so the guard above can only check the declaration against
+			// the mount list. Recording it makes a wrong declaration auditable after
+			// the fact instead of silently producing bytes nobody classifies.
+			[LAUNCH_STORAGE_ROOT_ENV]: storageRoot!,
+		},
 		requiredPathRoots: {
 			worktree: input.launch.cwd,
 			storageRoot: storageRoot!,
@@ -302,7 +356,12 @@ export function resolveSubagentLaunch(input: {
 	});
 	if (resolved.topology === "process") return asProcess(resolved.degradedReason);
 
-	return { ...resolved, env: { [LAUNCH_TOPOLOGY_ENV]: "container", [LAUNCH_DEGRADED_REASON_ENV]: undefined } };
+	// The env returned here is the *engine client's*, not the child's: the child's
+	// crossed the boundary as `-e` arguments above. The client still needs a working
+	// environment of its own — PATH above all — so it gets the host's, unchanged.
+	// Handing it the child's variables instead would both break it and put the
+	// provider credentials in a process that has no use for them.
+	return { ...resolved, env: { ...input.env, [LAUNCH_DEGRADED_REASON_ENV]: undefined } };
 }
 
 /**

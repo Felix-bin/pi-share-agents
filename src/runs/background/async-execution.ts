@@ -724,26 +724,28 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Om
 			: nativeRunnerSupported
 				? [...preload, "--experimental-strip-types", runner, cfgPath]
 				: [...preload, jitiCliPath!, runner, cfgPath];
+		const childEnv = {
+			...omitExtensionBindingsEnv(process.env),
+			// Unset leaves the inherited parent value in place. See childCacheRetention.
+			...childCacheRetentionEnv(),
+			[PI_CODING_AGENT_PACKAGE_ROOT_ENV]: binaryHost ? undefined : piPackageRoot,
+			// npm must override inherited bundled layouts (#2071); binaries retain release assets.
+			PI_PACKAGE_DIR: binaryHost ? process.env.PI_PACKAGE_DIR : piPackageRoot,
+			[JITI_ALIAS_ENV]: binaryHost ? undefined : JSON.stringify(hostPeerAliases.aliases),
+			PI_ASYNC_NATIVE_RUNNER: !binaryHost && nativeRunnerSupported ? "1" : "0",
+			PI_SUBAGENT_RUNNER_CONFIG: binaryHost ? cfgPath : undefined,
+		};
 		// S1 design §3.1: the whole containerisation decision is this one call; no
-		// branch on topology lives in this file. Default configuration returns the
-		// process launch byte-identical.
-		const launch = resolveSubagentLaunch({ launch: { command, args, cwd }, env: process.env, tempRoot: TEMP_ROOT_DIR, piInstallRoot: subagentPiInstallRoot(binaryHost, piPackageRoot) });
+		// branch on topology lives in this file. Default configuration hands childEnv
+		// straight back and returns the process launch byte-identical. Under the
+		// container topology the child env cannot ride in spawn env -- that reaches the
+		// engine CLI, not the container -- so the seam writes it onto the command line.
+		const launch = resolveSubagentLaunch({ launch: { command, args, cwd }, env: process.env, childEnv, containerName: `pi-subagent-${suffix}`, tempRoot: TEMP_ROOT_DIR, piInstallRoot: subagentPiInstallRoot(binaryHost, piPackageRoot) });
 		const proc = spawn(launch.command, launch.args, {
 			cwd,
 			...backgroundProcessOptions(),
 			stdio: ["ignore", stdoutFd ?? "ignore", stderrFd ?? "ignore"],
-			env: {
-				...omitExtensionBindingsEnv(process.env),
-				...launch.env,
-				// Unset leaves the inherited parent value in place. See childCacheRetention.
-				...childCacheRetentionEnv(),
-				[PI_CODING_AGENT_PACKAGE_ROOT_ENV]: binaryHost ? undefined : piPackageRoot,
-				// npm must override inherited bundled layouts (#2071); binaries retain release assets.
-				PI_PACKAGE_DIR: binaryHost ? process.env.PI_PACKAGE_DIR : piPackageRoot,
-				[JITI_ALIAS_ENV]: binaryHost ? undefined : JSON.stringify(hostPeerAliases.aliases),
-				PI_ASYNC_NATIVE_RUNNER: !binaryHost && nativeRunnerSupported ? "1" : "0",
-				PI_SUBAGENT_RUNNER_CONFIG: binaryHost ? cfgPath : undefined,
-			},
+			env: launch.env,
 		});
 		let observedProcessExit: { exitCode: number | null; signal: NodeJS.Signals | null } | undefined;
 		proc.once("exit", (exitCode, signal) => { observedProcessExit = { exitCode, signal }; });

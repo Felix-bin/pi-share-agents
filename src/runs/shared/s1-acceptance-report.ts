@@ -8,6 +8,9 @@
  * would put the judgement on the one machine nobody can test.
  */
 
+/** The only report shape this judge understands. */
+export const S1_ACCEPTANCE_SCHEMA_VERSION = 1;
+
 /**
  * The five checks of design §6, in the order the script runs them. `ipc-sharing`
  * is first because it is the one S2 cannot start without.
@@ -66,6 +69,12 @@ export function parseS1AcceptanceReport(raw: string): S1AcceptanceParse {
 	}
 	if (!isRecord(parsed)) return { ok: false, error: "Report is not a JSON object." };
 	if (typeof parsed.schemaVersion !== "number") return { ok: false, error: "Report has no numeric schemaVersion." };
+	// Checking only the type would give the field none of its value. A later revision
+	// of the script could narrow what `pass` means on a check; grading that report
+	// under v1 rules would print a confident verdict computed from the wrong ones.
+	if (parsed.schemaVersion !== S1_ACCEPTANCE_SCHEMA_VERSION) {
+		return { ok: false, error: `Report schemaVersion is ${parsed.schemaVersion}; this judge reads ${S1_ACCEPTANCE_SCHEMA_VERSION}.` };
+	}
 	if (!isRecord(parsed.engine) || typeof parsed.engine.id !== "string" || typeof parsed.engine.version !== "string") {
 		return { ok: false, error: "Report has no engine { id, version }." };
 	}

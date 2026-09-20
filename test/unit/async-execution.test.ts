@@ -333,8 +333,12 @@ describe("subagent launch seam", () => {
 		assert.doesNotMatch(source, /const proc = spawn\(command, args,/);
 	});
 
-	it("passes the seam's environment through to the child", () => {
-		assert.match(source, /\.\.\.launch\.env,/);
+	it("spawns with exactly the environment the seam returned, not a merge around it", () => {
+		// Merging extra keys here would put them in the engine CLI's environment on the
+		// container path, where they reach the client and stop — the child would never
+		// see them. The seam is the only thing that knows which side each variable goes.
+		assert.match(source, /env: launch\.env,/);
+		assert.doesNotMatch(source, /\.\.\.launch\.env/);
 	});
 
 	it("keeps every topology decision out of this file", () => {
