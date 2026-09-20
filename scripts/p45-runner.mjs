@@ -519,7 +519,13 @@ async function cmdRun(expDir, options) {
 				const outcome = await runPiRound({
 					agentDir: path.join(expDir, `agent-${arm}`),
 					tempRoot: path.join(expDir, "tmp", `${arm}-${round}-${attempt}`),
-					task: `${AGENT} ${task}`,
+					// [output=false] disables the host's single-output instruction: that
+					// instruction appends a per-run output path (arm name + UUID) to the
+					// task text, which made the two arms embed DIFFERENT query texts in
+					// every round of the n30 run and contaminated ③'s reference (K3
+					// P0-2, preregistration §14). With it disabled the state query is
+					// byte-identical across arms, as the frozen family file claims.
+					task: `${AGENT}[output=false] ${task}`,
 					meteringDir,
 					known,
 					roundLog,
@@ -548,7 +554,10 @@ async function cmdRun(expDir, options) {
 						record.fallbackReason = validation.fallbackReason;
 						const steer = extractSteer(path.join(expDir, "tmp", `${arm}-${round}-${attempt}`), runId);
 						if (steer === null && record.problems.length === 0) record.problems.push("steer message not found in transcript");
-						record.steer = steer === null ? null : { bytes: Buffer.byteLength(steer.text, "utf-8"), top5: steer.text.split("\n").filter((line) => line.startsWith("- ")) };
+						// top5 stores CHUNK IDENTITIES, not the steer lines verbatim: the lines
+						// carry per-arm cosine scores that differ whenever the vectors differ,
+						// and comparing them would disagree with the corrected ③ (§14).
+						record.steer = steer === null ? null : { bytes: Buffer.byteLength(steer.text, "utf-8"), top5: steer.text.split("\n").filter((line) => line.startsWith("- ")).map((line) => line.replace(/^(- .+) \(cosine .*\)$/, "$1")) };
 						const drift = memoryDrift(arm);
 						if (drift.length > 0) {
 							record.problems.push(`base pool diverged: ${drift.join("; ")}`);

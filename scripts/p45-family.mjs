@@ -2,10 +2,20 @@
  * The P4-5 task family and the memory records both arms are seeded with.
  *
  * Frozen BEFORE any P4-5 data is produced: the manifest records the sha-256 of
- * this file, and a change to it after the first round is a new experiment, not a
- * continuation. Tasks are delegation texts for the `retriever` role; the state
- * query each arm embeds is `Task: <task>`, byte-identical across arms because
- * the /run command passes the task text through verbatim.
+ * this file, and a change to it after the first round is a new experiment, not
+ * a continuation. Tasks are delegation texts for the `retriever` role; the state
+ * query each arm embeds is `Task: <task>`.
+ *
+ * Byte-identity across arms is a PROPERTY OF THE RUNNER, not of this file: the
+ * host's /run command appends a single-output instruction carrying a per-run
+ * output path (arm name + UUID) to the task text unless it is disabled, and the
+ * n30 run did not disable it — so its two arms embedded DIFFERENT query texts
+ * every round and ③'s reference was contaminated (K3 P0-2, preregistration
+ * §14). The runner now sends `/run retriever[output=false] <task>`, which
+ * removes the instruction and makes the query byte-identical across arms.
+ * Family v3 = this file plus that runner flag; the n30 numbers belong to the
+ * v2 form (614-char queries with the per-run path tail) and must not be mixed
+ * with v3 results.
  *
  * The seed records are the base pool residual encoding selects from: twelve
  * derived conclusions (no source path, therefore always "current" and readable

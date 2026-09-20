@@ -139,7 +139,10 @@ function metricsOf(events) {
 	for (const event of events) {
 		switch (event.kind) {
 			case "state-send":
-				if (!event.ok) break;
+				// Bytes count on every attempt, failed sends included — the frozen ②
+				// (aggregateMetering) counts a send that reached the wire even when the
+				// publish failed, and this re-derivation must not disagree with it
+				// (K3 P2-1, 2026-09-20: the two implementations of ② diverged on !ok).
 				state.payloadBytes += event.payloadBytes;
 				if (event.restore === undefined) {
 					if (state.encoding === null) {
@@ -301,9 +304,18 @@ const intervals = {
 	delegateEnvelope: bootstrapInterval(diffs.delegateEnvelopeBytes),
 };
 
-// ③ ordered top-5 agreement, with top-1 and set overlap as diagnostics. Lines
-// that do not parse as "- <chunk> (cosine …)" are counted rather than silently
-// treated as identical chunks.
+// ③ ordered top-5 agreement, with top-1 and set overlap as diagnostics. The
+// pre-registered criterion (§3, "沿用 P4-2") is over CHUNK IDENTITIES: the two
+// chunkId lists ordered and element-wise equal — never over the steer lines
+// verbatim, which carry per-arm cosine scores that differ whenever the arms'
+// vectors differ at all. The K3 review (2026-09-20, preregistration §14) caught
+// the original implementation comparing full lines, under which no legitimate
+// round can ever agree. Lines that do not parse as "- <chunk> (cosine …)" are
+// counted rather than silently treated as identical chunks.
+const chunkIdOf = (line) => {
+	const match = line.match(/^- (.+) \(cosine /);
+	return match === null ? line : match[1];
+};
 const agreement = { ordered: 0, top1: 0, jaccardSum: 0, compared: 0, unparsedLines: 0 };
 const chunkPattern = /^- (.+) \(cosine /;
 for (const round of pairRounds) {
@@ -312,14 +324,12 @@ for (const round of pairRounds) {
 	if (!Array.isArray(s2.top5) || !Array.isArray(r1.top5) || s2.top5.length === 0 || r1.top5.length === 0) continue;
 	for (const line of [...s2.top5, ...r1.top5]) if (!chunkPattern.test(line)) agreement.unparsedLines += 1;
 	agreement.compared += 1;
-	if (s2.top5.join("|") === r1.top5.join("|")) agreement.ordered += 1;
-	if (s2.top5[0] === r1.top5[0]) agreement.top1 += 1;
-	const chunkOf = (line) => {
-		const match = line.match(chunkPattern);
-		return match === null ? line : match[1];
-	};
-	const setA = new Set(s2.top5.map(chunkOf));
-	const setB = new Set(r1.top5.map(chunkOf));
+	const s2Chunks = s2.top5.map(chunkIdOf);
+	const r1Chunks = r1.top5.map(chunkIdOf);
+	if (s2Chunks.join("|") === r1Chunks.join("|")) agreement.ordered += 1;
+	if (s2Chunks[0] === r1Chunks[0]) agreement.top1 += 1;
+	const setA = new Set(s2Chunks);
+	const setB = new Set(r1Chunks);
 	let intersection = 0;
 	for (const item of setA) if (setB.has(item)) intersection += 1;
 	agreement.jaccardSum += intersection / new Set([...setA, ...setB]).size;
