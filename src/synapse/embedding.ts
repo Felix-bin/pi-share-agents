@@ -49,6 +49,54 @@ export type Embedder = {
 	readonly representationId: string;
 };
 
+/**
+ * Wraps an embedder so the calls it makes are recorded in the run's ledger.
+ *
+ * The run's embedder is built from configuration alone and never carries an
+ * identity, so nothing it does would otherwise appear as an `embedding-call` —
+ * and an embedding whose cost is invisible is exactly the failure the P4-5
+ * pre-registration names as a silent bias: the account would look complete while
+ * the provider's tokens and latency were dropped on the floor. Wrapping at the
+ * call site that owns the identity keeps the provider itself ignorant of who is
+ * asking.
+ *
+ * A cache hit records nothing, matching the provider's own rule: a hit makes no
+ * network call, so counting it would report a request that never happened.
+ */
+export function meteredEmbedder(embedder: Embedder, identity: MeteringIdentity, log: MeteringLog): Embedder {
+	const record = (ok: boolean, durationMs: number, inputTokens: number | null): void => {
+		log.record(identity, { costUsd: null, durationMs, inputTokens, kind: "embedding-call", ok, requests: 1 });
+	};
+	return {
+		async embedBatch(texts: readonly string[]): Promise<readonly EmbeddingResult[]> {
+			try {
+				const results = await embedder.embedBatch(texts);
+				// One request covers the batch, so it is recorded once rather than per
+				// vector; a fully cached batch records nothing.
+				const measured = results.filter((result) => !result.cached);
+				if (measured.length > 0) {
+					record(true, measured.reduce((total, result) => total + result.latencyMs, 0), measured.reduce((total, result) => total + (result.promptTokens ?? 0), 0));
+				}
+				return results;
+			} catch (error) {
+				record(false, 0, null);
+				throw error;
+			}
+		},
+		async embedQuery(text: string): Promise<EmbeddingResult> {
+			try {
+				const result = await embedder.embedQuery(text);
+				if (!result.cached) record(true, result.latencyMs, result.promptTokens);
+				return result;
+			} catch (error) {
+				record(false, 0, null);
+				throw error;
+			}
+		},
+		representationId: embedder.representationId,
+	};
+}
+
 type EmbedderBaseDeps = {
 	key: string;
 	/** Enables the persistent L2 cache rooted at the project storage directory. */

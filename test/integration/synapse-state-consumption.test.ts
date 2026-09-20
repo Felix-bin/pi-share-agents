@@ -9,7 +9,7 @@ import type { CanonicalValue } from "../../src/synapse/canonical-json.ts";
 import { buildCorpus } from "../../src/synapse/corpus.ts";
 import { createSiliconFlowEmbedder, type Embedder } from "../../src/synapse/embedding.ts";
 import { readDeliveredEnvelope, stateEnvelopePath } from "../../src/synapse/envelope-inbox.ts";
-import { readMeteringLog } from "../../src/synapse/metering.ts";
+import { readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
 import { openChildDelegationWithState } from "../../src/runs/shared/synapse-delegation.ts";
 import registerSubagentPromptRuntime from "../../src/runs/shared/subagent-prompt-runtime.ts";
@@ -60,6 +60,17 @@ function fakePi(steers: string[], onSteer?: (text: string) => void) {
 
 function emit(handlers: RuntimeHandlers, event: string, payload?: unknown, ctx?: unknown): void {
 	for (const handler of handlers.get(event) ?? []) handler(payload, ctx);
+}
+
+type ErrorEvent = Extract<MeteringEvent, { kind: "error" }>;
+
+/**
+ * The refusals this side recorded. A refusal that leaves no trace is
+ * indistinguishable from a path that never ran, which is exactly the difference
+ * these tests exist to keep visible.
+ */
+function errorEvents(): ErrorEvent[] {
+	return readMeteringLog(path.join(storageRoot, "metering", `${RUN_ID}.jsonl`)).filter((event): event is ErrorEvent => event.kind === "error");
 }
 
 let storageRoot = "";
@@ -188,6 +199,9 @@ describe("synapse child state consumption", () => {
 		]);
 		assert.notEqual(message, "", "the runtime must steer the session with the selected chunks");
 		assert.match(message, /src\/b\.md/, "the chunk the sent vector ranks first must be named");
+		// Order, not mere presence: with the three fixture vectors, any legal ranking
+		// contains b.md, so presence alone would pass even if the order were reversed.
+		assert.ok(message.indexOf("src/b.md") < message.indexOf("src/a.md"), "the ranking order must survive into the message");
 		// The consume is metered on the shared per-run log, not a log of its own.
 		const kinds = readMeteringLog(path.join(storageRoot, "metering", `${RUN_ID}.jsonl`)).map((event) => event.kind);
 		assert.ok(kinds.includes("state-consume"), "the consumption must be recorded where the sender's events are");
@@ -248,6 +262,7 @@ describe("synapse child state consumption", () => {
 		await new Promise((settle) => setTimeout(settle, 200));
 
 		assert.deepEqual(steers, [], "an unusable parameter set must not steer the session");
+		assert.equal(errorEvents().length, 1, "the refusal must be auditable, not silent");
 	});
 
 	it("leaves the session alone when no state envelope was delivered", async () => {
@@ -281,6 +296,9 @@ describe("synapse child state consumption", () => {
 		await new Promise((settle) => setTimeout(settle, 200));
 
 		assert.deepEqual(steers, [], "an envelope from another sender must not be consumed");
+		const refusals = errorEvents();
+		assert.equal(refusals.length, 1, "the consumer's own refusal is what the ledger must show");
+		assert.equal(refusals[0]?.category, "permission");
 	});
 
 	it("leaves the session alone when the envelope belongs to another namespace", async () => {
@@ -301,6 +319,47 @@ describe("synapse child state consumption", () => {
 		await new Promise((settle) => setTimeout(settle, 200));
 
 		assert.deepEqual(steers, [], "an envelope frozen against another namespace must not be consumed");
+		assert.equal(errorEvents().length, 1, "the rejection must be recorded here, not only on stderr");
+	});
+
+	it("keeps the consumption metered when the steer channel throws", async () => {
+		const synapse = await deliveredState();
+		const log = readMeteringLog(path.join(storageRoot, "metering", `${RUN_ID}.jsonl`));
+		const before = log.filter((event) => event.kind === "state-consume").length;
+		const { pi, handlers } = fakePi([], () => {
+			throw new Error("the host refused the steering input");
+		});
+
+		registerSubagentPromptRuntime(pi as never, childConfig(synapse));
+		emit(handlers, "session_start", {}, sessionContext("sess-child"));
+		emit(handlers, "agent_start", {});
+		await new Promise((settle) => setTimeout(settle, 200));
+
+		// The payload was consumed whether or not the child could be told about it,
+		// and the delivery of that fact must not take the session down with it.
+		const after = readMeteringLog(path.join(storageRoot, "metering", `${RUN_ID}.jsonl`)).filter((event) => event.kind === "state-consume").length;
+		assert.equal(after, before + 1, "the consume is recorded before the steer is attempted");
+	});
+
+	it("refuses an unreadable state envelope instead of treating it as absent", async () => {
+		const synapse = await deliveredState();
+		const inbox = stateEnvelopePath(storageRoot, RUN_ID, 0);
+		fs.rmSync(inbox, { force: true });
+		// A directory where the envelope should be: reading it fails with something
+		// other than ENOENT, which is a broken store rather than a delivery that
+		// never happened.
+		fs.mkdirSync(inbox);
+
+		const steers: string[] = [];
+		const { pi, handlers } = fakePi(steers);
+		registerSubagentPromptRuntime(pi as never, childConfig(synapse));
+		emit(handlers, "session_start", {}, sessionContext("sess-child"));
+		emit(handlers, "agent_start", {});
+		await new Promise((settle) => setTimeout(settle, 200));
+
+		assert.deepEqual(steers, []);
+		assert.equal(errorEvents().length, 1, "an unreadable envelope is a store problem, and it is recorded");
+		fs.rmSync(inbox, { force: true, recursive: true });
 	});
 
 	it("does not consume a payload the consumer would not have admitted as a retrieve", async () => {
@@ -321,5 +380,6 @@ describe("synapse child state consumption", () => {
 		await new Promise((settle) => setTimeout(settle, 200));
 
 		assert.deepEqual(steers, [], "only a retrieve delivery carries state on this path");
+		assert.equal(errorEvents().length, 1, "a state inbox holding something else is a divergence worth a row");
 	});
 });

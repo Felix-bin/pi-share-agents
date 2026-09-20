@@ -187,10 +187,14 @@ describe("synapse production trigger", () => {
 		assert.equal(outcome.result.hits[0]?.path, "src/b.md", "the ranking must follow the vector the sender embedded");
 
 		const kinds = readMeteringLog(logPath()).map((event) => event.kind);
-		const expected: MeteringEvent["kind"][] = ["state-prepare", "state-send", "state-receive", "state-consume"];
+		const expected: MeteringEvent["kind"][] = ["state-prepare", "state-send", "state-receive", "state-consume", "embedding-call"];
 		for (const kind of expected) {
 			assert.ok(kinds.includes(kind), `${kind} must be recorded on the shared per-run log`);
 		}
+		// The sender's query embedding is a real provider call on the launch path;
+		// the run's embedder is built from configuration and carries no identity, so
+		// without the wrapper around it this cost would be silently absent — the one
+		// failure the pre-registration calls out as a silent bias between arms.
 	});
 
 	it("leaves the run byte-identical when a child cannot consume state", async () => {
@@ -259,6 +263,93 @@ describe("synapse production trigger", () => {
 		const otherSender = await consume(delivered.wire, "sess-not-our-parent");
 		assert.equal(otherSender.kind, "refused");
 		assert.equal(otherSender.kind === "refused" ? otherSender.category : null, "permission");
+	});
+
+	it("does not fail the launch when a stale state envelope cannot be removed", async () => {
+		const synapse = synapseContract();
+		// A directory sits where a stale envelope would be, so removing it fails with
+		// something other than the ENOENT that `force` covers. The clear is
+		// housekeeping: the launch must survive not being able to do it.
+		fs.mkdirSync(stateInbox(), { recursive: true });
+		try {
+			const opened = await trigger(synapse, ["read", "grep"]);
+			assert.equal(opened.state, null, "no state is sent, and the clear's failure is not the caller's problem");
+			assert.notEqual(opened.delegation, null, "the task plane is untouched by a state-plane housekeeping failure");
+		} finally {
+			fs.rmSync(stateInbox(), { force: true, recursive: true });
+		}
+	});
+
+	it("does not claim a delivery it could not publish", async () => {
+		const synapse = synapseContract();
+		// A file where the run's envelope directory belongs: creating the parent
+		// fails, the way a full or read-only store would.
+		fs.mkdirSync(path.join(storageRoot, "envelopes"), { recursive: true });
+		fs.writeFileSync(path.join(storageRoot, "envelopes", RUN_ID), "not a directory");
+		const opened = await trigger(synapse);
+		assert.equal(opened.state?.kind, "state", "the payload is still prepared and the task still runs");
+
+		const events = readMeteringLog(logPath());
+		const sends = events.filter((event) => event.kind === "state-send");
+		assert.equal(sends.length, 1);
+		const send = sends[0];
+		assert.equal(send?.kind === "state-send" ? send.ok : null, false, "a send that never landed is not a successful send");
+		assert.equal(send?.kind === "state-send" ? send.payloadBytes : null, 0, "bytes are what crossed the wire, and none did");
+		assert.equal(events.filter((event) => event.kind === "message-delivered").length, 1, "only the task plane delivered anything");
+		assert.ok(events.some((event) => event.kind === "error"), "the failed publish is recorded as an error");
+	});
+
+	it("leaves a launch with no synapse contract exactly as upstream would have sent it", async () => {
+		// The shape almost every production launch takes: the extension is off, so
+		// the child has no contract. The state half must not touch it at all — this
+		// is the path a guard deletion would break for every delegation, and it had
+		// no test.
+		const opened = await trigger(undefined, ["read", "grep"]);
+
+		assert.equal(opened.delegation, null, "no contract means no delegation seam either");
+		assert.equal(opened.state, null);
+		assert.ok(!fs.existsSync(`${storageRoot}/envelopes`), "no contract means no inbox is created");
+		assert.ok(!fs.existsSync(`${storageRoot}/metering`), "and nothing is metered");
+	});
+
+	it("records no state events when a gate keeps the state plane off", async () => {
+		const textMode = await trigger(synapseContract(CONSUMING_TOOLS, { ...extensionConfig(), mode: "text" }));
+		assert.equal(textMode.state, null);
+		// The delivery is refused further down as well, so "no state envelope" alone
+		// cannot tell a working gate from a negotiation that fell through. The
+		// ledger can: nothing may have been prepared or sent.
+		const kinds = readMeteringLog(logPath()).map((event) => event.kind);
+		assert.ok(!kinds.includes("state-prepare"), "a gated-off pass must not prepare state");
+		assert.ok(!kinds.includes("state-send"), "a gated-off pass must not send state");
+		assert.ok(!fs.existsSync(stateInbox()));
+	});
+
+	it("consumes under an unattributed parent session, the sender binding degrading to a constant", async () => {
+		// `resolveSynapseChildContract` substitutes a placeholder when the launch has
+		// no parent session id, so both sides compare that placeholder and the
+		// conjunct proves nothing. The run id and the recomputed node id still bind
+		// the envelope, which is what this pins: the degradation is survivable, and
+		// it is a fact rather than an accident.
+		const synapse = synapseContract(CONSUMING_TOOLS, { ...extensionConfig() });
+		const unattributed = { ...synapse, sessionId: "unattributed-session" };
+		const opened = await trigger(unattributed);
+		assert.equal(opened.state?.kind, "state");
+		const delivered = readDeliveredEnvelope(stateInbox());
+		assert.equal(delivered.status, "ready");
+		if (delivered.status !== "ready") return;
+		assert.equal(delivered.wire.senderSessionId, "unattributed-session");
+
+		const outcome = await consumeRetrieveState({
+			contract: unattributed.contract,
+			deps: { log: createMeteringLog(logPath()) },
+			envelope: delivered.wire,
+			expectedSenderSessionId: unattributed.sessionId,
+			fallbackQuery: QUERY,
+			identity: { agent: "retriever", attempt: 1, childIndex: 0, runId: RUN_ID, sessionId: "sess-child" },
+			k: K,
+			worktreeRoot: worktree,
+		});
+		assert.equal(outcome.kind, "consumed", "an unattributed parent must not refuse a correct delivery");
 	});
 
 	it("clears a previous delivery's state envelope when this one cannot send state", async () => {

@@ -18,7 +18,7 @@ import {
 	type SendIdentity,
 } from "../../src/synapse/delegation.ts";
 import { createMeteringLog, aggregateMetering, readMeteringLog, type MeteringEvent, type MeteringLog } from "../../src/synapse/metering.ts";
-import { createMemoryService } from "../../src/synapse/memory-service.ts";
+import { createMemoryService, SYNAPSE_MAX_SEARCH_K } from "../../src/synapse/memory-service.ts";
 import { startEmbeddingStub, type StubEmbeddingServer } from "../support/embedding-stub-server.ts";
 
 /**
@@ -152,6 +152,24 @@ afterEach(async () => {
 	fs.rmSync(storageRoot, { force: true, recursive: true });
 	fs.rmSync(corpusRoot, { force: true, recursive: true });
 	fs.rmSync(worktree, { force: true, recursive: true });
+});
+
+it("refuses a k the receiver would refuse, before spending the embedding call", async () => {
+	// The receiver bounds k with SYNAPSE_MAX_SEARCH_K; a sender that accepted a
+	// larger one would publish an envelope that is metered and never consumable.
+	await assert.rejects(
+		openRetrieveDelegation({
+			contract: contracts.parent,
+			deps: sendDeps(),
+			embedder,
+			identity: sendIdentity(["read", "synapse_read"]),
+			k: SYNAPSE_MAX_SEARCH_K + 1,
+			// The k check runs before the embedding call, so the query text never reaches the provider here.
+			query: "unused by this assertion",
+			worktreeRoot: worktree,
+		}),
+		/k-out-of-range/,
+	);
 });
 
 describe("AC-04: two instances hand a float32 state across the delegation seam", () => {

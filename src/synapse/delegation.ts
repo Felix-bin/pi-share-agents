@@ -3,13 +3,13 @@ import * as path from "node:path";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
 import { negotiate, type CapabilityDeclaration, type NegotiationResult, type TextFallbackReason } from "./capability.ts";
 import { createContentStore } from "./content-store.ts";
-import { type Embedder, SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
+import { meteredEmbedder, type Embedder, SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
 import { buildEnvelope, freezeSnapshot, type Envelope, type EnvelopeWire, type StateRef } from "./envelope.ts";
 import { clearStateEnvelope, nodeIdFor, publishEnvelope, publishStateEnvelope, safeComponent } from "./envelope-inbox.ts";
 import { classifySynapseError, type SynapseErrorClassification } from "./errors.ts";
 import { buildReceipt, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
 import type { LaunchContract } from "./lifecycle.ts";
-import { createMemoryService, type MemoryService, type SearchResult } from "./memory-service.ts";
+import { createMemoryService, SYNAPSE_MAX_SEARCH_K, type MemoryService, type SearchResult } from "./memory-service.ts";
 import { createMeteringLog, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
 import { capabilityForAgent, hostCapability, SYNAPSE_CONSUMER_VERSION } from "./roles.ts";
 import type { PredictedBase } from "./predict-base.ts";
@@ -549,6 +549,10 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 		return { envelope, kind: "text", reason: negotiation.reason };
 	}
 
+	// The caller built this embedder from configuration, so it carries no
+	// identity and every call it makes would go unrecorded; the wrapper pairs it
+	// with this seam's own identity and log, which is where the cost belongs.
+	const embedder = meteredEmbedder(input.embedder, meterIdentity, deps.log);
 	if (input.embedder.representationId !== contract.representationId) {
 		throw new Error(
 			`representation-mismatch: the sender's embedder is ${input.embedder.representationId}, the contract pins ${contract.representationId}; refusing to publish a state no corpus can rank`,
@@ -561,12 +565,15 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	if (contract.corpusSnapshotId === "unset") {
 		throw new Error("synapse.corpusSnapshotId is not configured; a retrieve delegation cannot publish a state no corpus can rank");
 	}
-	if (!Number.isInteger(input.k) || input.k < 1) {
-		throw new Error(`k-out-of-range: ${input.k} is not an integer >= 1`);
+	// The bound is the receiver's, taken from the same constant: a k this side
+	// accepted but the receiver's parameter check refuses would be an envelope
+	// that is sent, metered and never consumable.
+	if (!Number.isInteger(input.k) || input.k < 1 || input.k > SYNAPSE_MAX_SEARCH_K) {
+		throw new Error(`k-out-of-range: ${input.k} is not an integer in [1, ${SYNAPSE_MAX_SEARCH_K}]`);
 	}
 	// The provider normalises on its side; normalising again is idempotent and
 	// keeps the invariant true for any embedder, per spec §8.1.
-	const embedded = await input.embedder.embedQuery(input.query);
+	const embedded = await embedder.embedQuery(input.query);
 	const vector = unitVectorOf(embedded.vector, "the retrieve query");
 	// Base selection runs against the sender's own memory, through the injected
 	// seam; a null base is the normal cold-start answer and lands on the full-vector
@@ -598,7 +605,7 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 		dim: vector.length,
 		encoding: choice.encoding,
 		payloadId,
-		representationId: input.embedder.representationId,
+		representationId: embedder.representationId,
 		sha256: payloadId,
 	};
 	// canonicalJson refuses a present-but-undefined value, so the reason key is
@@ -619,19 +626,35 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	// order, and the same reason, as the delegation path above. It lands on the
 	// state-plane sibling path; a failure to publish degrades rather than throws,
 	// because an absent state envelope is not a failure to the receiver.
+	let published = true;
 	try {
 		publishStateEnvelope(contract.storageRoot, identity.runId, identity.childIndex, envelope);
 	} catch (error) {
+		published = false;
 		console.warn(`[pi-subagents] synapse: state envelope delivery skipped for ${identity.agent}: ${error instanceof Error ? error.message : String(error)}`);
 	}
+	// Bytes are what crossed the wire, so an envelope that never landed reports
+	// zero of them. The aggregate counts bytes on every attempt because an
+	// attempt that reached the wire still cost them — this one did not.
 	deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, {
 		...choiceFields,
 		kind: "state-send",
-		ok: true,
-		payloadBytes: payload.byteLength,
+		ok: published,
+		payloadBytes: published ? payload.byteLength : 0,
 		representationId: stateRef.representationId,
 		stateId: payloadId,
 	});
+	if (!published) {
+		// Nothing was delivered, so nothing is recorded as delivered: a
+		// `message-delivered` row here would be the one entry a reconciliation
+		// reads as "the receiver can find this".
+		deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, {
+			category: "object-unavailable",
+			detail: "the state envelope could not be published",
+			kind: "error",
+		});
+		return { envelope, kind: "state", stateRef };
+	}
 	// The envelope is control traffic like any other: its bytes count even when
 	// the payload carries no text at all (spec §10.1 control/metadata row).
 	deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, {
@@ -720,8 +743,9 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 			corpusSnapshotId: input.contract.corpusSnapshotId === "unset" ? null : input.contract.corpusSnapshotId,
 			// The fallback embedder is the receiver's own provider (spec §8.2: the
 			// receiver re-embeds); the metering pair keeps state-consume and
-			// object-io on the same log as the receive and send events above.
-			embedder: input.deps.embedder,
+			// object-io on the same log as the receive and send events above, and the
+			// wrapper is what puts the re-embedding itself on that log too.
+			embedder: input.deps.embedder === undefined ? undefined : meteredEmbedder(input.deps.embedder, meterIdentity, input.deps.log),
 			metering: { identity: meterIdentity, log: input.deps.log },
 			provenance: { agent: input.identity.agent, attempt: input.identity.attempt, runId: input.identity.runId, sessionId: input.identity.sessionId },
 			scope: {

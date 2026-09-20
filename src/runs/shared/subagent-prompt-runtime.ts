@@ -23,8 +23,8 @@ import { registerSynapseChildTools } from "../../synapse/child-contract.ts";
 import { consumeRetrieveState, meteringLogPath } from "../../synapse/delegation.ts";
 import { resolveConfiguredEmbedder } from "../../synapse/embedding.ts";
 import type { EnvelopeWire } from "../../synapse/envelope.ts";
-import { envelopeInboxPath, readDeliveredEnvelope, stateEnvelopePath, verifyEnvelopeAgainstContract } from "../../synapse/envelope-inbox.ts";
-import { createMeteringLog } from "../../synapse/metering.ts";
+import { envelopeInboxPath, nodeIdFor, readDeliveredEnvelope, stateEnvelopePath, verifyEnvelopeAgainstContract } from "../../synapse/envelope-inbox.ts";
+import { createMeteringLog, type MeteringIdentity } from "../../synapse/metering.ts";
 import { SYNAPSE_MAX_SEARCH_K } from "../../synapse/memory-service.ts";
 import type { StateRetrievalHit } from "../../synapse/state-retrieval.ts";
 import { registerWaitTool } from "../background/wait-tool.ts";
@@ -481,18 +481,32 @@ function warnState(stage: string, reason: string): void {
 async function consumeStateEnvelope(config: ChildRuntimeConfig, sessionId: string, sendSteer: ((text: string) => void) | undefined): Promise<void> {
 	const synapse = config.synapse;
 	if (synapse === undefined) return;
-	const delivered = readDeliveredEnvelope(stateEnvelopePath(synapse.contract.storageRoot, synapse.runId, config.childIndex));
-	if (delivered.status === "absent") return;
-	if (delivered.status === "rejected") return warnState("state envelope", delivered.reason);
-	const mismatch = verifyEnvelopeAgainstContract({ contract: synapse.contract, wire: delivered.wire });
-	if (mismatch !== null) return warnState("state envelope", mismatch);
-	const wire = delivered.wire;
-	// Only a retrieve action carries state; anything else in this inbox is not
-	// this path's business and is left for whatever wrote it.
-	if (wire.action !== "retrieve" || wire.stateRef === null) return;
-	const params = retrieveParamsOf(wire);
-	if (params === null) return warnState("state consumption", "the envelope's input parameters are not a retrieve query");
 	const contract = synapse.contract;
+	// The ledger is opened before the first check, the same way the consumer opens
+	// it before its own: a refusal this side makes is still a delivery that will
+	// never be consumed, and an append-only log is the only place that fact can be
+	// read back from. Recording it is what separates "the payload was refused" from
+	// "nothing ever ran" for anyone reconciling sent against consumed.
+	const log = createMeteringLog(meteringLogPath(contract, synapse.runId));
+	const identity: MeteringIdentity = { agent: synapse.agent, attempt: 1, mode: contract.mode, nodeId: nodeIdFor(synapse.runId, config.childIndex), runId: synapse.runId, sessionId, snapshotId: null };
+	const refuse = (reason: string): void => {
+		log.record(identity, { category: "configuration", detail: reason, kind: "error" });
+		warnState("state consumption", reason);
+	};
+	const delivered = readDeliveredEnvelope(stateEnvelopePath(contract.storageRoot, synapse.runId, config.childIndex));
+	if (delivered.status === "absent") return;
+	if (delivered.status === "rejected") return refuse(delivered.reason);
+	const mismatch = verifyEnvelopeAgainstContract({ contract, wire: delivered.wire });
+	if (mismatch !== null) return refuse(mismatch);
+	const wire = delivered.wire;
+	// Only a retrieve action carries state. Nothing this side publishes reaches
+	// the state inbox without one, so an envelope here that carries no state is a
+	// divergence rather than a delivery to ignore, and it is recorded as one.
+	if (wire.action !== "retrieve" || wire.stateRef === null) {
+		return refuse(`the state inbox holds a ${wire.action} envelope with no state payload`);
+	}
+	const params = retrieveParamsOf(wire);
+	if (params === null) return refuse("the envelope's input parameters are not a retrieve query");
 	let outcome: Awaited<ReturnType<typeof consumeRetrieveState>>;
 	try {
 		outcome = await consumeRetrieveState({
@@ -501,7 +515,7 @@ async function consumeStateEnvelope(config: ChildRuntimeConfig, sessionId: strin
 				// The receiver's own provider re-embeds the query if recovery falls
 				// back to text; the payload itself needs no embedder.
 				embedder: resolveConfiguredEmbedder(synapse.embedding, contract.storageRoot),
-				log: createMeteringLog(meteringLogPath(contract, synapse.runId)),
+				log,
 			},
 			envelope: wire,
 			expectedSenderSessionId: synapse.sessionId,
@@ -514,7 +528,7 @@ async function consumeStateEnvelope(config: ChildRuntimeConfig, sessionId: strin
 	} catch (error) {
 		// consumeRetrieveState reports its own failures as outcomes; a throw here
 		// means the seam itself broke, which is still not the child's problem.
-		return warnState("state consumption", error instanceof Error ? error.message : String(error));
+		return refuse(error instanceof Error ? error.message : String(error));
 	}
 	if (outcome.kind === "text-fallback") {
 		// The recovery ran and is metered, but its result is a memory ranking, not

@@ -99,7 +99,17 @@ export function publishStateEnvelope(storageRoot: string, runId: string, childIn
  * consumed as though this delivery had published it.
  */
 export function clearStateEnvelope(storageRoot: string, runId: string, childIndex: number | undefined): void {
-	fs.rmSync(stateEnvelopePath(storageRoot, runId, childIndex), { force: true });
+	try {
+		fs.rmSync(stateEnvelopePath(storageRoot, runId, childIndex), { force: true });
+	} catch (error) {
+		// Housekeeping, never a precondition. `force` already covers the absent
+		// file; anything else (a lock held by an indexer, a tightened ACL) leaves a
+		// stale envelope that the next delivery overwrites — strictly better than
+		// failing the launch that asked for the clear. Swallowed here rather than at
+		// each caller because both callers are on the dispatch path, and neither can
+		// do anything useful with the failure.
+		console.warn(`[pi-subagents] synapse: a stale state envelope could not be removed: ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 export type DeliveredEnvelope =
