@@ -23,7 +23,7 @@ import { formatSubagentModelVerificationError } from "../shared/model-fallback.t
 import { isMutatingTool, resolveCurrentPath } from "../shared/long-running-guard.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, toolTimeoutCallKey } from "../shared/tool-timeout.ts";
 import { createReportedChildSessionInput, type InProcessChildLaunch } from "../shared/child-launch.ts";
-import { closeChildDelegation, openChildDelegation } from "../shared/synapse-delegation.ts";
+import { closeChildDelegation, openChildDelegationWithState } from "../shared/synapse-delegation.ts";
 import type { OpenDelegation } from "../../synapse/delegation.ts";
 import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
@@ -694,14 +694,21 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				});
 				if (interrupted || timedOut || stopped) abortChild();
 				checkContinuation();
-				delegation = openChildDelegation({
-					childTools: input.launch.toolPlan.declaredBuiltinTools,
+				// The task plane always, the state plane when this child can consume one;
+				// the second delivery is metered by the send side that produced it.
+				const opened = await openChildDelegationWithState({
 					cwd: createInput.cwd,
 					message: input.prompt,
 					receiverSessionId: created.sessionId,
 					runtime: createInput.runtime,
 				});
-				await created.prompt(delegation?.prompt ?? input.prompt);
+				delegation = opened.delegation;
+				// A stop that arrived while the state half was embedding must not be
+				// followed by a prompt. The abort above happened before the await, so
+				// without this second look the child is handed a task it was told to
+				// abandon — and the prompt's rejection is what turns a stop into a
+				// failure in the run's own record.
+				if (!interrupted && !timedOut && !stopped) await created.prompt(delegation?.prompt ?? input.prompt);
 				promptSettled = true;
 				closeChildDelegation(delegation, {
 					cancelled: interrupted || stopped,

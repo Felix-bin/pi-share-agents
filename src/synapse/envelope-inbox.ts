@@ -29,6 +29,7 @@ import type { LaunchContract } from "./lifecycle.ts";
 
 const ENVELOPES_DIR = "envelopes";
 const ENVELOPE_SUFFIX = ".json";
+const STATE_ENVELOPE_SUFFIX = ".state.json";
 const UNATTRIBUTED = "unattributed";
 
 /** Keeps a run id or child index usable as a single path component. */
@@ -46,9 +47,33 @@ export function nodeIdFor(runId: string, childIndex: number | undefined): string
 	return `${runId}/${childIndex === undefined ? UNATTRIBUTED : childIndex}`;
 }
 
-export function envelopeInboxPath(storageRoot: string, runId: string, childIndex: number | undefined): string {
+function inboxPathFor(storageRoot: string, runId: string, childIndex: number | undefined, suffix: string): string {
 	const receiver = childIndex === undefined ? UNATTRIBUTED : String(childIndex);
-	return path.join(storageRoot, ENVELOPES_DIR, safeComponent(runId), `${safeComponent(receiver)}${ENVELOPE_SUFFIX}`);
+	return path.join(storageRoot, ENVELOPES_DIR, safeComponent(runId), `${safeComponent(receiver)}${suffix}`);
+}
+
+export function envelopeInboxPath(storageRoot: string, runId: string, childIndex: number | undefined): string {
+	return inboxPathFor(storageRoot, runId, childIndex, ENVELOPE_SUFFIX);
+}
+
+/**
+ * Where the state-plane envelope for one node lands — a sibling of the
+ * delegation inbox rather than the same file.
+ *
+ * The delegation inbox holds one envelope per node and nothing else: the
+ * receiving side reads that exact path to decide whether its launch was
+ * delegated at all, and the delivery it belongs to is already metered with the
+ * prompt's text bytes. Writing a state envelope over it would either erase a
+ * delivery that was counted or make a counted delivery unreadable, so the two
+ * planes address the same node through two names instead.
+ */
+export function stateEnvelopePath(storageRoot: string, runId: string, childIndex: number | undefined): string {
+	return inboxPathFor(storageRoot, runId, childIndex, STATE_ENVELOPE_SUFFIX);
+}
+
+function writeEnvelopeTo(target: string, envelope: Envelope): string {
+	writeAtomicJson(target, envelope.wire);
+	return target;
 }
 
 /**
@@ -59,9 +84,32 @@ export function envelopeInboxPath(storageRoot: string, runId: string, childIndex
  * retry builds a new child session rather than a second copy of the first.
  */
 export function publishEnvelope(storageRoot: string, runId: string, childIndex: number | undefined, envelope: Envelope): string {
-	const target = envelopeInboxPath(storageRoot, runId, childIndex);
-	writeAtomicJson(target, envelope.wire);
-	return target;
+	return writeEnvelopeTo(envelopeInboxPath(storageRoot, runId, childIndex), envelope);
+}
+
+/** The state-plane counterpart of {@link publishEnvelope}; the two never share a path. */
+export function publishStateEnvelope(storageRoot: string, runId: string, childIndex: number | undefined, envelope: Envelope): string {
+	return writeEnvelopeTo(stateEnvelopePath(storageRoot, runId, childIndex), envelope);
+}
+
+/**
+ * Removes any state envelope left for this node. A delivery that carries no
+ * state must not leave a previous delivery's state envelope behind: the
+ * receiving side reads by path, not by request, so a stale file would be
+ * consumed as though this delivery had published it.
+ */
+export function clearStateEnvelope(storageRoot: string, runId: string, childIndex: number | undefined): void {
+	try {
+		fs.rmSync(stateEnvelopePath(storageRoot, runId, childIndex), { force: true });
+	} catch (error) {
+		// Housekeeping, never a precondition. `force` already covers the absent
+		// file; anything else (a lock held by an indexer, a tightened ACL) leaves a
+		// stale envelope that the next delivery overwrites — strictly better than
+		// failing the launch that asked for the clear. Swallowed here rather than at
+		// each caller because both callers are on the dispatch path, and neither can
+		// do anything useful with the failure.
+		console.warn(`[pi-subagents] synapse: a stale state envelope could not be removed: ${error instanceof Error ? error.message : String(error)}`);
+	}
 }
 
 export type DeliveredEnvelope =
@@ -81,6 +129,7 @@ export function readDeliveredEnvelope(inboxPath: string): DeliveredEnvelope {
 	try {
 		raw = fs.readFileSync(inboxPath, "utf-8");
 	} catch (error) {
+		// SAFETY: readFileSync only throws fs errors, whose `code` field is the errno string this compares.
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "absent" };
 		return { reason: `envelope at ${inboxPath} could not be read: ${error instanceof Error ? error.message : String(error)}`, status: "rejected" };
 	}

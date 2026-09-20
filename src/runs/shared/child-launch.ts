@@ -259,6 +259,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		childTools: toolPlan.declaredBuiltinTools,
 		cwd: input.cwd,
 		extensionConfig: synapseConfig,
+		extensionTools: synapseTools,
 		runId: input.runId ?? parentRunId,
 		sessionId: input.parentSessionId ?? "",
 	});

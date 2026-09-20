@@ -27,6 +27,8 @@ describe("synapse error classification", () => {
 		assert.equal(classifySynapseError(new Error("k-out-of-range: 50 is not an integer in 1..20")), "configuration");
 		assert.equal(classifySynapseError(new Error("summary-too-large: 4096 > 2048")), "configuration");
 		assert.equal(classifySynapseError(new Error("namespace-mismatch: /store belongs to /other")), "configuration");
+		assert.equal(classifySynapseError(new Error("query-required: supply exactly one of query or stateId, not both")), "configuration");
+		assert.equal(classifySynapseError(new Error("stateRef-required: a stateId search requires the envelope's stateRef verification material")), "configuration");
 	});
 
 	it("maps a missing representation capability to representation", () => {

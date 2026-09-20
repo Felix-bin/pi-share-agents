@@ -1,4 +1,5 @@
 import { describeCapability, type CapabilityDeclaration, type CapabilityRecord, type SynapseAction, type SynapseEncoding } from "./capability.ts";
+import { STATE_RETRIEVAL_PROBE } from "./capability-probe.ts";
 
 /**
  * The collaboration roles and the capability each one declares.
@@ -29,12 +30,16 @@ export type SynapseRole = (typeof SYNAPSE_ROLES)[number];
 export const SYNAPSE_CONSUMER_VERSION = 1;
 
 /**
- * Tools whose presence means the child can consume a decoded state. Empty in
- * this build: no tool decodes a vector yet, so every declaration reports
- * `consumesState: false` and negotiation falls back to text for a stated
- * reason instead of claiming a vector path.
+ * Tools whose presence means the child session can consume a decoded state.
+ * `synapse_read` is the one: the SYNAPSE extension that registers it also
+ * carries the state-retrieval path (stateId → verified payload → corpus
+ * cosine) the host drives on the child's behalf when a delegated retrieve
+ * arrives carrying a stateRef — the model itself never handles raw vectors.
+ * Staying derived from the granted tools, rather than read from the agent
+ * file, keeps a role that merely claims to understand vectors from making
+ * negotiation report a state path that cannot exist.
  */
-export const SYNAPSE_STATE_CONSUMING_TOOLS: readonly string[] = [];
+export const SYNAPSE_STATE_CONSUMING_TOOLS: readonly string[] = ["synapse_read"];
 
 type RoleSpec = {
 	actions: readonly SynapseAction[];
@@ -74,12 +79,19 @@ export type CapabilityForAgentInput = {
 
 export function capabilityForAgent(input: CapabilityForAgentInput): CapabilityRecord {
 	const spec = isSynapseRole(input.agent) ? ROLE_SPECS[input.agent] : GENERIC_SPEC;
+	const consumes = consumesState(input.childTools);
+	// A role that claims the state path claims the verifiable promise behind it:
+	// its embedder can be constructed and the pinned corpus loads. The promise is
+	// strict — without a probe verdict the negotiation takes text — so the one
+	// production seam always wires the probe.
+	const probeField = consumes && spec.encodings.includes("float32-vector") ? { probe: [STATE_RETRIEVAL_PROBE] } : {};
 	const declaration: CapabilityDeclaration = {
 		actions: spec.actions,
 		agent: input.agent,
-		consumesState: consumesState(input.childTools),
+		consumesState: consumes,
 		consumerVersion: SYNAPSE_CONSUMER_VERSION,
 		encodings: spec.encodings,
+		...probeField,
 		representationId: input.representationId,
 	};
 	return describeCapability(declaration);

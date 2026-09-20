@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { CanonicalValue } from "../../src/synapse/canonical-json.ts";
-import { resolveSynapseConfig, SYNAPSE_MAX_EMBEDDING_DIM } from "../../src/synapse/config.ts";
+import { representationIdOf, resolveSynapseConfig, SYNAPSE_MAX_EMBEDDING_DIM } from "../../src/synapse/config.ts";
 
 const HOME = path.resolve("/home/dev");
 
@@ -26,9 +26,49 @@ describe("synapse config defaults", () => {
 		assert.equal(config.storageRoot, null);
 	});
 
+	it("pins a corpus snapshot id only when an experiment names one", () => {
+		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).corpusSnapshotId, null);
+		const pinned = "b".repeat(64);
+		assert.equal(resolveSynapseConfig({ corpusSnapshotId: pinned, mode: "synapse" }, HOME).corpusSnapshotId, pinned);
+		assert.throws(() => resolveSynapseConfig({ corpusSnapshotId: "", mode: "synapse" }, HOME), /synapse\.corpusSnapshotId/);
+		// The placeholder word and typos must fail loudly, not silently disable the vector path.
+		assert.throws(() => resolveSynapseConfig({ corpusSnapshotId: "unset", mode: "synapse" }, HOME), /synapse\.corpusSnapshotId/);
+	});
+
 	it("turns memory on with synapse mode and leaves the text baseline without it", () => {
 		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).memory, "project");
 		assert.equal(resolveSynapseConfig({ mode: "text" }, HOME).memory, "off");
+	});
+
+	it("leaves residuals off unless an experiment asks for them", () => {
+		// The measured default: the P4-4 full-account replay found the residual
+		// net-negative on all 239 pairs whenever the base was not resident, so a
+		// configuration that says nothing about residuals must not send one. This
+		// is the assertion the integration tests cannot make — an empty store
+		// answers `no-base` whether the switch is on or off, so only the resolved
+		// value itself can pin the default.
+		assert.equal(resolveSynapseConfig({}, HOME).delta, false);
+		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).delta, false);
+		assert.equal(resolveSynapseConfig({ delta: true, mode: "synapse" }, HOME).delta, true);
+	});
+
+	it("leaves the record-vector cache off unless an experiment asks for it", () => {
+		// Off keeps the frozen cold-base convention describing a default run: every
+		// ranking reads every record's vector. On makes those reads one-time, which is
+		// what turns the pre-registered hot row from a derived figure into a measured
+		// one — so the two configurations have to be distinguishable from config alone.
+		assert.equal(resolveSynapseConfig({}, HOME).vectorCache, false);
+		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).vectorCache, false);
+		assert.equal(resolveSynapseConfig({ mode: "synapse", vectorCache: true }, HOME).vectorCache, true);
+	});
+
+	it("leaves the receiver's semantic check off unless an experiment asks for it", () => {
+		// Verification costs the receiver a second embedding call per consumed state, so it
+		// is off by default; the arms of a frozen comparison must both be off or the two
+		// sides stop differing in exactly one thing.
+		assert.equal(resolveSynapseConfig({}, HOME).stateVerify, "off");
+		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).stateVerify, "off");
+		assert.equal(resolveSynapseConfig({ mode: "synapse", stateVerify: "reembed" }, HOME).stateVerify, "reembed");
 	});
 
 	it("lets an experiment state memory explicitly", () => {
@@ -83,6 +123,18 @@ describe("synapse embedding config", () => {
 		const config = resolveSynapseConfig({ embedding: embedding(), mode: "synapse" }, HOME);
 		assert.equal(config.embedding?.model, "BAAI/bge-m3");
 		assert.equal(config.embedding?.dim, 1024);
+	});
+
+	it("accepts a gateway provider, whose wire format differs from the v1 one", () => {
+		// Paratera's GLM-Embedding-3 returns JSON number arrays and ignores
+		// `encoding_format`, so the provider name is what selects the decoder. The
+		// space it names must carry that choice: two providers with the same model
+		// name are not the same representation, and a config that could not say so
+		// would let a corpus from one be ranked by vectors from the other.
+		const config = resolveSynapseConfig({ embedding: embedding({ dim: 2048, model: "GLM-Embedding-3", provider: "paratera" }), mode: "synapse" }, HOME);
+		assert.equal(config.embedding?.provider, "paratera");
+		assert.equal(representationIdOf(config), "paratera/GLM-Embedding-3/2048");
+		assert.notEqual(representationIdOf(config), representationIdOf(resolveSynapseConfig({ embedding: embedding({ dim: 2048, model: "GLM-Embedding-3" }), mode: "synapse" }, HOME)));
 	});
 
 	it("requires every field that enters the representation id", () => {

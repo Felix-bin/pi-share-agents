@@ -55,6 +55,20 @@ describe("child contract resolution", () => {
 		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { mode: "text" } })), null);
 	});
 
+	it("carries the pinned corpus snapshot id, or the unset placeholder without one", () => {
+		assert.equal(resolveSynapseChildContract(input())?.contract.corpusSnapshotId, "unset");
+		const pinned = "a".repeat(64);
+		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { corpusSnapshotId: pinned, mode: "synapse" } }))?.contract.corpusSnapshotId, pinned);
+	});
+
+	it("round-trips a pinned corpus snapshot through child tool registration", () => {
+		const pinned = "c".repeat(64);
+		const contract = resolveSynapseChildContract(input({ extensionConfig: { corpusSnapshotId: pinned, mode: "synapse" } }));
+		assert.ok(contract);
+		const registered = registerSynapseChildTools({ registerTool: () => undefined }, contract, worktree);
+		assert.equal(registered.registered, true);
+	});
+
 	it("names the child's own agent, run and session for provenance", () => {
 		const contract = resolveSynapseChildContract(input({ agentName: "executor" }));
 		assert.equal(contract?.agent, "executor");
@@ -105,6 +119,18 @@ describe("child contract resolution", () => {
 		const foreground = resolveSynapseChildContract(input());
 		const background = resolveSynapseChildContract(input());
 		assert.deepEqual(foreground, background);
+	});
+
+	it("carries the vector-cache switch, off unless the config asks for it", () => {
+		// Off by default so a launch that says nothing about it keeps the frozen
+		// cold-base byte behaviour: a default config must not silently start serving
+		// record vectors from memory, because that would move the measured account
+		// without any experiment having asked for the change.
+		const off = resolveSynapseChildContract(input());
+		assert.equal(off?.vectorCache, false, "a default launch must read vectors from the store");
+
+		const on = resolveSynapseChildContract(input({ extensionConfig: { mode: "synapse", vectorCache: true } }));
+		assert.equal(on?.vectorCache, true, "the switch has to reach the seam that builds the ranking service");
 	});
 
 	it("survives the trip to a separate process", () => {
