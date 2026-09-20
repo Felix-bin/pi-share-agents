@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import { describe, it } from "node:test";
 import {
 	S1_ACCEPTANCE_CHECK_IDS,
@@ -114,5 +115,37 @@ describe("S1 acceptance verdict", () => {
 
 	it("does not block S2 when the shared-memory check passed", () => {
 		assert.equal(judge(report()).blocksS2, false);
+	});
+});
+
+describe("the report the collection script actually emits", () => {
+	// Captured from a real `s1-acceptance.sh` run on a host with no container
+	// engine. It pins the contract between the shell that collects and the
+	// TypeScript that judges — the two halves live in different languages on
+	// different machines, so nothing else would notice them drifting apart.
+	const raw = fs.readFileSync(new URL("../fixtures/s1/no-engine-report.json", import.meta.url), "utf-8");
+
+	it("parses without modification", () => {
+		const parsed = parseS1AcceptanceReport(raw);
+		assert.equal(parsed.ok, true, parsed.ok ? "" : parsed.error);
+	});
+
+	it("is judged incomplete, not passed and not failed", () => {
+		const parsed = parseS1AcceptanceReport(raw);
+		assert.ok(parsed.ok);
+		const verdict = judgeS1AcceptanceReport(parsed.report);
+
+		assert.equal(verdict.verdict, "incomplete");
+		assert.deepEqual(verdict.failed, []);
+		assert.equal(verdict.notRun.length, S1_ACCEPTANCE_CHECK_IDS.length);
+		assert.equal(verdict.blocksS2, true);
+	});
+
+	it("would be rejected if the script ever dropped a check", () => {
+		const shortened = JSON.parse(raw);
+		shortened.checks = shortened.checks.slice(1);
+		const parsed = parseS1AcceptanceReport(JSON.stringify(shortened));
+
+		assert.equal(parsed.ok, false);
 	});
 });

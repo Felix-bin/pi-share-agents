@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "engine": {"id": "none", "version": "unavailable"},
+  "kernel": "MINGW64_NT-10.0-26200 3.6.5-22c95533.x86_64",
+  "checks": [
+    {"id":"ipc-sharing","outcome":"unavailable","evidence":{"bytes":0,"paths":[]},"detail":"no container engine (isula, docker, podman) is on PATH"},
+    {"id":"path-alignment","outcome":"unavailable","evidence":{"bytes":0,"paths":[]},"detail":"no container engine (isula, docker, podman) is on PATH"},
+    {"id":"degradation-visible","outcome":"unavailable","evidence":{"bytes":0,"paths":[]},"detail":"no container engine (isula, docker, podman) is on PATH"},
+    {"id":"lifecycle-no-leak","outcome":"unavailable","evidence":{"bytes":0,"paths":[]},"detail":"no container engine (isula, docker, podman) is on PATH"},
+    {"id":"s3-fd-premise","outcome":"unavailable","evidence":{"bytes":0,"paths":[]},"detail":"no container engine (isula, docker, podman) is on PATH"}
+  ]
+}
