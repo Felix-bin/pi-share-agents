@@ -9,12 +9,14 @@ import {
 	bucketTouched,
 	LINUX_CLOCK_TICKS_PER_SECOND,
 	meteringEpochNsecs,
-	placedBytes,
+	pathlessBytesOf,
+	placedBytesOf,
 	processStartNsecs,
-	traceIoBytes,
+	tracedBytesOf,
 	UNATTRIBUTED_SHARE_THRESHOLD,
 	type AttributedProcessIo,
 	type KernelIoAttribution,
+	type StorageRootEvidence,
 	type TraceCollection,
 } from "../../src/synapse/trace-attribute.ts";
 import type { TraceDescriptorRecord, TraceLineError, TraceLog, TraceLossReport, TracePathRecord, TraceRecord } from "../../src/synapse/trace-log.ts";
@@ -119,6 +121,13 @@ function rowFor(result: KernelIoAttribution, pid: number, startTicks: number): A
 	return row;
 }
 
+/** The root evidence of a result that got as far as classifying something. */
+function rootEvidence(result: KernelIoAttribution): StorageRootEvidence {
+	const evidence = result.diagnostics.storageRootEvidence;
+	assert.ok(evidence !== "N/A", "expected classification to have run and produced storage-root evidence");
+	return evidence;
+}
+
 function onlyIdentity(row: AttributedProcessIo): MeteringIdentity {
 	assert.equal(row.identities.length, 1, "expected exactly one bound identity");
 	const [first] = row.identities;
@@ -146,8 +155,8 @@ describe("synapse kernel I/O attribution: joining trace records to run identitie
 		const row = rowFor(result, 42, 1_000);
 		assert.equal(onlyIdentity(row).runId, "run-1");
 		assert.equal(row.io.categories.envelope.writeBytes, 500);
-		assert.equal(result.diagnostics.attributedBytes, 500);
-		assert.equal(result.diagnostics.unattributedBytes, 0);
+		assert.equal(result.diagnostics.attributedBytes.placed, 500);
+		assert.equal(result.diagnostics.unattributedBytes.placed, 0);
 		assert.deepEqual(result.unavailableReasons, []);
 	});
 
@@ -171,7 +180,7 @@ describe("synapse kernel I/O attribution: joining trace records to run identitie
 		assert.equal(older.io.categories.envelope.writeBytes, 300);
 		assert.equal(newer.io.categories.envelope.writeBytes, 700);
 		assert.notEqual(older.key, newer.key);
-		assert.equal(result.diagnostics.attributedBytes, 1_000);
+		assert.equal(result.diagnostics.attributedBytes.placed, 1_000);
 	});
 
 	it("binds identities only from process-identity events, never from an event that merely shares the run", () => {
@@ -196,7 +205,7 @@ describe("synapse kernel I/O attribution: joining trace records to run identitie
 		assert.equal(result.diagnostics.ambiguousProcesses, 1);
 		// Ambiguity is about which node owns the bytes, not about whether they
 		// were attributed: the run is known, so they are not orphans.
-		assert.equal(result.diagnostics.unattributedBytes, 0);
+		assert.equal(result.diagnostics.unattributedBytes.placed, 0);
 	});
 
 	it("counts a bound identity that produced no observed I/O", () => {
@@ -219,17 +228,20 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 		assert.equal(orphan.startTicks, 4_000);
 		// The orphan is kept whole, not reduced to a number.
 		assert.equal(orphan.categories.envelope.writeBytes, 100);
-		assert.equal(result.diagnostics.unattributedBytes, 100);
-		assert.equal(result.diagnostics.attributedBytes, 900);
+		assert.equal(result.diagnostics.unattributedBytes.placed, 100);
+		assert.equal(result.diagnostics.attributedBytes.placed, 900);
 		// Exactly 10%: over the 1% threshold, so nothing may be reported.
 		assert.equal(result.diagnostics.unattributedShare, 0.1);
 		assert.equal(result.attributed, "unavailable");
 	});
 
-	it("counts unclassified and unknown-descriptor bytes towards the share rather than out of it", () => {
-		// An orphan whose bytes went to an unknown descriptor still displaces a
-		// known share of the account; leaving either side out of the denominator
-		// would make the orphaned share look smaller than it is.
+	it("counts unclassified bytes in the share and keeps pathless ones out of both sides of it", () => {
+		// `unclassified` bytes resolved to a path under the root, so they are
+		// SYNAPSE I/O the join was responsible for placing and they belong in the
+		// share on whichever side they fall. An orphan's `unknownDescriptor` bytes
+		// resolved to no path at all and belong in neither: they are evidence about
+		// nothing, and counting them would make the share partly a measure of how
+		// much unrelated stdout traffic the run happened to produce.
 		const records: TraceRecord[] = [
 			...envelopeWrite(42, 1_000, 50_000),
 			open(`${ROOT}/receipts/req-1.json`, { nsecs: 21_000_000_000, ret: 9 }),
@@ -238,13 +250,22 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 			rw({ bytes: 200, fd: 4, nsecs: 30_000_000_000, pid: 77, ret: 200, startTicks: 4_000 }),
 		];
 		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
-		assert.equal(result.diagnostics.attributedBytes, 100_000);
-		assert.equal(result.diagnostics.unattributedBytes, 200);
-		assert.equal(result.diagnostics.unattributedShare, 200 / 100_200);
+		assert.equal(result.diagnostics.attributedBytes.placed, 100_000);
+		assert.equal(result.diagnostics.unattributedBytes.placed, 0);
+		// The orphaned bytes are not lost — they are reported as volume and as a
+		// whole process, they simply do not get a vote on the judgement.
+		assert.equal(result.diagnostics.unattributedBytes.traced, 200);
+		assert.equal(result.diagnostics.unattributedShare, 0);
+		assert.equal(result.diagnostics.unattributedProcesses.length, 1);
+		assert.equal(rootEvidence(result).pathlessBytes, 200);
+		// And they still deny completeness, which is what keeps this from being a
+		// hole: an orphan made entirely of pathless bytes is still an orphan.
+		assert.equal(result.diagnostics.coverage.complete, false);
 		const row = rowFor(result, 42, 1_000);
 		// `receipts/` is a real storage-root entry that no category owns.
 		assert.equal(row.io.unclassified.writeBytes, 50_000);
-		assert.equal(traceIoBytes(row.io), 100_000);
+		assert.equal(tracedBytesOf(row.io), 100_000);
+		assert.equal(placedBytesOf(row.io), 100_000);
 	});
 
 	it("counts read bytes as well as written ones, on both sides of the share", () => {
@@ -258,14 +279,14 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 			rw({ bytes: 100, fd: 8, nsecs: 30_000_001_000, pid: 77, ret: 100, startTicks: 4_000, syscall: "read" }),
 		];
 		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
-		assert.equal(result.diagnostics.attributedBytes, 900);
-		assert.equal(result.diagnostics.unattributedBytes, 100);
+		assert.equal(result.diagnostics.attributedBytes.placed, 900);
+		assert.equal(result.diagnostics.unattributedBytes.placed, 100);
 		assert.equal(result.diagnostics.unattributedShare, 0.1);
 		const [orphan] = result.diagnostics.unattributedProcesses;
 		assert.ok(orphan !== undefined);
 		assert.equal(orphan.categories.content.readBytes, 100);
 		assert.equal(bucketBytes(orphan.categories.content), 100);
-		assert.equal(traceIoBytes(orphan), 100);
+		assert.equal(tracedBytesOf(orphan), 100);
 	});
 
 	it("leaves deliberately ignored bytes out of the account and still reports them", () => {
@@ -279,8 +300,8 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		// Ignored bytes are neither attributed nor unattributed: including them
 		// in the denominator would dilute the unattributed share.
-		assert.equal(result.diagnostics.attributedBytes, 500);
-		assert.equal(result.diagnostics.unattributedBytes, 0);
+		assert.equal(result.diagnostics.attributedBytes.placed, 500);
+		assert.equal(result.diagnostics.unattributedBytes.placed, 0);
 		assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 4_000);
 		assert.equal(bucketBytes(result.diagnostics.ignored.excluded), 800);
 	});
@@ -299,7 +320,7 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 		assert.equal(result.diagnostics.lostEventsHighWater, 17);
 		// The partial sum is visible as evidence, but it is not the result: the
 		// account itself is refused, so no caller can mistake it for a total.
-		assert.equal(result.diagnostics.attributedBytes, 500);
+		assert.equal(result.diagnostics.attributedBytes.placed, 500);
 		assert.equal(Array.isArray(result.attributed), false, "a refused account must not also be readable as rows");
 	});
 
@@ -330,6 +351,47 @@ describe("synapse kernel I/O attribution: refusing to report", () => {
 		assert.deepEqual(result.unavailableReasons, ["unattributed-over-threshold"]);
 		assert.equal(result.diagnostics.unattributedShare, 0.015);
 		assert.equal(result.diagnostics.unattributedShareThreshold, UNATTRIBUTED_SHARE_THRESHOLD);
+	});
+
+	it("does not let a megabyte of inherited-stdout traffic dilute an orphaned run out of the threshold", () => {
+		// The production shape, and the fourth door the same defect came through.
+		//
+		// `async-execution.ts:709-729` opens the stdout and stderr log files in the
+		// parent and hands those descriptors to every backgrounded agent process as
+		// its stdio. No `openat` by the child ever appears in the trace for them, so
+		// on every real run a bound process carries `unknownDescriptor` bytes — here
+		// a megabyte of ordinary agent chatter on fd 1.
+		//
+		// Meanwhile a second process moved 9,000 bytes of genuine envelope traffic
+		// under the storage root and bound no identity at all: every byte that
+		// actually resolved to SYNAPSE storage was orphaned, a 100% attribution
+		// loss. Against a denominator of all traced bytes that reads
+		// 9_000 / 1_009_000 = 0.89%, under the 1% threshold, so the run came back
+		// with no reasons and an attributed row — the pathless traffic, which is
+		// present on every run that will ever happen, paying for the orphan.
+		const records: TraceRecord[] = [
+			rw({ bytes: 1_000_000, fd: 1, nsecs: 20_000_000_000, ret: 1_000_000 }),
+			...envelopeWrite(99, 7_000, 9_000, 21_000_000_000),
+		];
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
+
+		// Judged on placed bytes, the share is what it always was: all of it.
+		assert.equal(result.diagnostics.unattributedShare, 1);
+		assert.equal(result.attributed, "unavailable");
+		assert.deepEqual(result.unavailableReasons, ["unattributed-over-threshold"]);
+
+		// The two currencies, so the dilution is legible rather than inferred.
+		assert.equal(result.diagnostics.attributedBytes.traced, 1_000_000);
+		assert.equal(result.diagnostics.attributedBytes.placed, 0);
+		assert.equal(result.diagnostics.unattributedBytes.placed, 9_000);
+		assert.equal(result.diagnostics.unattributedBytes.traced, 9_000);
+		// The old denominator, pinned so the regression stays readable.
+		assert.ok(9_000 / (1_000_000 + 9_000) < UNATTRIBUTED_SHARE_THRESHOLD);
+
+		// The root is right and the diagnostics say so: this is an attribution
+		// failure, not a misconfiguration, and the reason set must not suggest one.
+		assert.deepEqual(rootEvidence(result), { pathlessBytes: 1_000_000, pathsOutsideRoot: false, pathsUnderRoot: true });
+		assert.equal(result.diagnostics.coverage.complete, false);
 	});
 
 	it("reports every applicable reason, not just the first one found", () => {
@@ -399,9 +461,13 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 			assert.equal(result.attributed, "unavailable");
 			assert.deepEqual(result.unavailableReasons, ["unusable-storage-root"]);
 			// Nothing was classified, so no byte total is claimed either way.
-			assert.equal(result.diagnostics.attributedBytes, 0);
+			assert.equal(result.diagnostics.attributedBytes.placed, 0);
+			assert.equal(result.diagnostics.attributedBytes.traced, 0);
 			assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 0);
 			assert.equal(result.diagnostics.unattributedShare, "N/A");
+			// No path was classified against any root, so there is nothing to say
+			// about this one. `pathsUnderRoot: false` would be a claim nobody made.
+			assert.equal(result.diagnostics.storageRootEvidence, "N/A");
 			assert.equal(result.diagnostics.coverage.complete, false);
 			// The lines that were there are still counted: the root was unusable,
 			// the collector's output was not.
@@ -416,13 +482,16 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		// inside the container sees container paths.
 		const result = attributeKernelIo([identityEvent()], collected({ records: envelopeWrite(42, 1_000, 50_000) }), "/srv/other-tree");
 		assert.equal(result.attributed, "unavailable");
-		assert.deepEqual(result.unavailableReasons, ["no-io-under-storage-root"]);
-		assert.equal(result.diagnostics.attributedBytes, 0);
-		assert.equal(result.diagnostics.unattributedBytes, 0);
+		assert.deepEqual(result.unavailableReasons, ["no-path-under-storage-root"]);
+		assert.equal(result.diagnostics.attributedBytes.placed, 0);
+		assert.equal(result.diagnostics.unattributedBytes.placed, 0);
 		// The evidence that it was a mismatch and not a quiet run: every byte the
 		// collector saw is sitting outside the root.
 		assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 50_000);
 		assert.equal(result.diagnostics.coverage.complete, false);
+		// And the evidence that it was a wrong root rather than a collector that
+		// attached late: the run moved nothing on a descriptor without a path.
+		assert.deepEqual(rootEvidence(result), { pathlessBytes: 0, pathsOutsideRoot: true, pathsUnderRoot: false });
 	});
 
 	it("refuses a mismatched root that one write to an inherited fd would otherwise excuse", () => {
@@ -445,13 +514,20 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 
 		assert.equal(result.attributed, "unavailable");
-		assert.deepEqual(result.unavailableReasons, ["no-io-under-storage-root"]);
+		assert.deepEqual(result.unavailableReasons, ["no-path-under-storage-root"]);
 		assert.equal(result.diagnostics.coverage.complete, false);
 		// The pre-fix reading, kept visible: bytes were attributed, every one of
 		// them pathless, while the real traffic sits outside the root.
-		assert.equal(result.diagnostics.attributedBytes, 240);
+		assert.equal(result.diagnostics.attributedBytes.traced, 240);
+		assert.equal(result.diagnostics.attributedBytes.placed, 0);
 		assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 1_000_000);
-		assert.equal(result.diagnostics.unattributedShare, 0);
+		// Nothing resolved under the root, on either side, so there is no share to
+		// state. `0` here would read as "nothing was orphaned", which is the
+		// opposite of what happened.
+		assert.equal(result.diagnostics.unattributedShare, "N/A");
+		// 240 pathless bytes against a megabyte outside the root: a wrong root,
+		// not a collector that attached after the descriptors were opened.
+		assert.deepEqual(rootEvidence(result), { pathlessBytes: 240, pathsOutsideRoot: true, pathsUnderRoot: false });
 	});
 
 	it("does not confuse pathless bytes with bytes placed under the root", () => {
@@ -460,13 +536,43 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		const records: TraceRecord[] = [rw({ bytes: 240, fd: 1, nsecs: 5_000_000_000, ret: 240 }), ...envelopeWrite(42, 1_000, 500, 5_000_001_000)];
 		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		const row = rowFor(result, 42, 1_000);
-		// Both totals are right, and they are different quantities: the share's
-		// denominator keeps the inherited-fd bytes, the root check does not.
-		assert.equal(traceIoBytes(row.io), 740);
-		assert.equal(placedBytes(row.io), 500);
+		// Both totals are right and they are different quantities: the reported
+		// volume keeps the inherited-fd bytes, every judgement leaves them out.
+		assert.equal(tracedBytesOf(row.io), 740);
+		assert.equal(placedBytesOf(row.io), 500);
+		assert.equal(pathlessBytesOf(row.io), 240);
 		assert.equal(row.io.unknownDescriptor.writeBytes, 240);
+		assert.equal(result.diagnostics.attributedBytes.traced, 740);
+		assert.equal(result.diagnostics.attributedBytes.placed, 500);
 		assert.deepEqual(result.unavailableReasons, []);
 		assert.equal(result.diagnostics.coverage.complete, true);
+	});
+
+	it("names what it saw rather than blaming a root that is right", () => {
+		// The false positive the activity test introduced, and the reason it used
+		// to report. The root is correct and the run wrote a megabyte of genuine
+		// envelope traffic — but on a descriptor opened before the collector
+		// attached, so no `openat` is in the trace and those bytes carry no path.
+		// The only path the collector did resolve is an unrelated library read.
+		//
+		// Refusing is right: with no path under the root there is nothing to stand
+		// an account on. Blaming the root is not — it would send an operator to
+		// re-check a correct configuration. The reason now states only what was
+		// observed, and the evidence beside it names the real cause.
+		const records: TraceRecord[] = [
+			rw({ bytes: 1_000_000, fd: 7, nsecs: 20_000_000_000, ret: 1_000_000 }),
+			open("/etc/ssl/certs/ca-certificates.crt", { nsecs: 20_000_001_000, ret: 11 }),
+			rw({ bytes: 4_096, fd: 11, nsecs: 20_000_002_000, ret: 4_096, syscall: "read" }),
+		];
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
+
+		assert.equal(result.attributed, "unavailable");
+		assert.deepEqual(result.unavailableReasons, ["no-path-under-storage-root"]);
+		// A megabyte on descriptors nobody could place is the late-attach
+		// signature; the wrong-root case above shows 240 bytes in the same field.
+		assert.deepEqual(rootEvidence(result), { pathlessBytes: 1_000_000, pathsOutsideRoot: true, pathsUnderRoot: false });
+		assert.equal(result.diagnostics.attributedBytes.traced, 1_000_000);
+		assert.equal(result.diagnostics.attributedBytes.placed, 0);
 	});
 
 	it("refuses a mismatched root whose only evidence is calls that failed", () => {
@@ -479,7 +585,7 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 		];
 		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
 		assert.equal(result.attributed, "unavailable");
-		assert.deepEqual(result.unavailableReasons, ["no-io-under-storage-root"]);
+		assert.deepEqual(result.unavailableReasons, ["no-path-under-storage-root"]);
 		assert.equal(bucketBytes(result.diagnostics.ignored.outsideRoot), 0);
 		assert.equal(result.diagnostics.ignored.outsideRoot.failedPathCalls, 1);
 		assert.equal(bucketTouched(result.diagnostics.ignored.outsideRoot), true);
@@ -560,7 +666,7 @@ describe("synapse kernel I/O attribution: an unusable storage root", () => {
 	it("accepts the absolute root the collector actually reports paths against", () => {
 		const result = attributeKernelIo([identityEvent()], collected({ records: envelopeWrite(42, 1_000, 500) }), ROOT);
 		assert.deepEqual(result.unavailableReasons, []);
-		assert.equal(result.diagnostics.attributedBytes, 500);
+		assert.equal(result.diagnostics.attributedBytes.placed, 500);
 	});
 });
 
@@ -571,7 +677,8 @@ describe("synapse kernel I/O attribution: no collection at all", () => {
 		assert.equal(result.diagnostics.unattributedShare, "N/A");
 		assert.equal(result.diagnostics.coverage.observedFromNsecs, "N/A");
 		assert.deepEqual(result.unavailableReasons, []);
-		assert.equal(result.diagnostics.attributedBytes, 0);
+		assert.equal(result.diagnostics.attributedBytes.placed, 0);
+		assert.equal(result.diagnostics.storageRootEvidence, "N/A");
 		assert.equal(result.diagnostics.traceLines.records, 0);
 	});
 
@@ -792,7 +899,7 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		);
 		assert.equal(attributedRows(result).length, 1);
 		assert.equal(rowFor(result, 42, 1_000).coverage.observedFromStart, true);
-		assert.equal(result.diagnostics.attributedBytes, 0);
+		assert.equal(result.diagnostics.attributedBytes.placed, 0);
 		assert.equal(result.diagnostics.coverage.complete, false);
 	});
 

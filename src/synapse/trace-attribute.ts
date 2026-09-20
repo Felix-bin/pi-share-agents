@@ -42,6 +42,11 @@ import type { TraceLineErrorReason, TraceLog } from "./trace-log.ts";
  *    with a missing prefix is precisely the silent under-report this feature
  *    must not produce.
  *
+ * Byte totals come in two types for the same reason — `PlacedBytes` is the only
+ * currency a judgement may be made in, `TracedBytes` is volume to report and
+ * never to judge on. See the currency section below for why that is a type and
+ * not a convention.
+ *
  * Pure throughout: no filesystem, no `process.platform`, no clock of its own.
  */
 
@@ -158,27 +163,6 @@ export function bucketBytes(bucket: TraceIoBucket): number {
 }
 
 /**
- * Bytes whose path the classifier actually resolved to somewhere under the
- * storage root: the three categories plus `unclassified`.
- *
- * This is the *only* evidence that the storage root the caller supplied is the
- * tree the collector reports paths against. `unknownDescriptor` bytes are
- * deliberately not here, and that exclusion is load-bearing rather than
- * fastidious: a read or write on a descriptor no observed `openat` produced has
- * no path at all, so it says nothing about any root. Every backgrounded agent
- * process in this repo writes to an inherited fd — `async-execution.ts` hands
- * the child stdout/stderr log descriptors as its stdio — so on a real run those
- * bytes are always present. A root check that counted them would be satisfied
- * by a single stdout write on every run that ever happens, which is the same as
- * not checking at all.
- */
-export function placedBytes(io: TraceProcessIo): number {
-	let total = bucketBytes(io.unclassified);
-	for (const bucket of Object.values(io.categories)) total += bucketBytes(bucket);
-	return total;
-}
-
-/**
  * Any evidence at all that a bucket's paths were used: bytes that moved, or a
  * call that named them and failed.
  *
@@ -197,23 +181,121 @@ function touchedStorageRoot(io: TraceProcessIo): boolean {
 	return Object.values(io.categories).some((bucket) => bucketTouched(bucket));
 }
 
-/**
- * Every byte one process moved that the join was responsible for placing.
+/*
+ * ─────────────────────────── the two byte currencies ───────────────────────────
  *
- * `unclassified` and `unknownDescriptor` are included on purpose. They are
- * bytes this process really moved, so leaving them out of the share's
- * denominator would change the visible unattributed share for no reason other
- * than that they were harder to classify. `excluded` and `outsideRoot` bytes
- * are *not* here: the classifier keeps them run-level precisely because they
- * were deliberately never attributable to a category.
+ * Everything from here to the end of `sumTraced` exists because four review
+ * rounds found the same defect behind four different scalars. Each round a
+ * judgement about SYNAPSE I/O was being made on a total that included bytes
+ * whose path never resolved anywhere — rows, then all traced bytes, then the
+ * completeness conjunct, then the orphan-share threshold — and each time the
+ * fix converted that one scalar and left the next one waiting.
  *
- * Note what this total may and may not be used for. It is the right
- * denominator for the orphan share — those bytes needed an identity like any
- * other — and the wrong quantity for judging whether the storage root matched,
- * because `unknownDescriptor` carries no path. Use `placedBytes` for that.
+ * Both totals are `number` at runtime and they are *not* interchangeable, so
+ * they are different types:
+ *
+ *  - `PlacedBytes` — bytes whose path the classifier resolved under the storage
+ *    root. **This is the judgement currency.** Every predicate about SYNAPSE
+ *    I/O in this module takes it and nothing else.
+ *  - `TracedBytes` — every byte the join had to place, the pathless ones
+ *    included. **Reporting volume only.** No predicate accepts it.
+ *
+ * Why pathless bytes may never reach a predicate: a read or write on a
+ * descriptor no observed `openat` produced has no path, so it is evidence about
+ * nothing. It is also guaranteed to be present on every real run — the parent
+ * opens the stdout/stderr log files and hands those descriptors to every
+ * backgrounded agent process as its stdio (`async-execution.ts:709-729`) — so a
+ * predicate that admits it is a predicate that can be satisfied on every run
+ * that will ever happen. That is precisely how rounds 2 and 4 failed.
+ *
+ * The rule is enforced by the type checker rather than by care: a `TracedBytes`
+ * is not assignable to a `PlacedBytes`, so `unattributedShareOf`,
+ * `coverage.complete` and every other judgement below physically cannot be
+ * handed the wrong quantity. The casts in this section are the only place
+ * either currency is minted, and `anti-slop/require-safety-comment-for-type-assertion`
+ * makes any new one a reviewable event rather than a quiet edit.
  */
-export function traceIoBytes(io: TraceProcessIo): number {
-	return placedBytes(io) + bucketBytes(io.unknownDescriptor);
+
+declare const PLACED_BYTES: unique symbol;
+declare const TRACED_BYTES: unique symbol;
+
+/**
+ * Bytes whose path the classifier resolved to somewhere under the storage root:
+ * the three categories plus `unclassified`. The only currency a judgement about
+ * SYNAPSE I/O may be made in.
+ */
+export type PlacedBytes = number & { readonly [PLACED_BYTES]: "resolved under the storage root" };
+
+/**
+ * Every byte one process moved that the join was responsible for placing,
+ * whether or not a path was ever resolved for it. Report it as volume; never
+ * judge on it. `excluded` and `outsideRoot` bytes are not here — the classifier
+ * keeps those run-level precisely because they were never attributable.
+ */
+export type TracedBytes = number & { readonly [TRACED_BYTES]: "observed, path resolved or not" };
+
+/** Bytes of this process that reached a path under the storage root. */
+export function placedBytesOf(io: TraceProcessIo): PlacedBytes {
+	let total = bucketBytes(io.unclassified);
+	for (const bucket of Object.values(io.categories)) total += bucketBytes(bucket);
+	// SAFETY: every term is a bucket the classifier filled only after the path
+	// resolved under the storage root — the categories and `unclassified` — which
+	// is the definition of `PlacedBytes`. `unknownDescriptor` is not summed here.
+	return total as PlacedBytes;
+}
+
+/** Bytes of this process on descriptors no observed `openat` produced: traced, and by construction never placed. */
+export function pathlessBytesOf(io: TraceProcessIo): TracedBytes {
+	// SAFETY: `unknownDescriptor` is exactly the bucket whose bytes resolved to no
+	// path, so this is a traced quantity and the return type refuses to let it be
+	// read as a placed one.
+	return bucketBytes(io.unknownDescriptor) as TracedBytes;
+}
+
+/** Every byte of this process the join had to place, placed or pathless. */
+export function tracedBytesOf(io: TraceProcessIo): TracedBytes {
+	// SAFETY: the placed bytes plus the pathless ones is by definition every byte
+	// the join saw for this process, which is what `TracedBytes` names.
+	return (placedBytesOf(io) + pathlessBytesOf(io)) as TracedBytes;
+}
+
+/** Adds two volumes. There is deliberately no such adder that will accept a placed and a traced total together. */
+export function sumTraced(left: TracedBytes, right: TracedBytes): TracedBytes {
+	// SAFETY: both parameters are already traced totals and the parameter types
+	// make it impossible to pass a placed one, so the sum is a traced total too.
+	return (left + right) as TracedBytes;
+}
+
+/**
+ * One side of the join's byte totals, in both currencies at once.
+ *
+ * Deliberately not a bare `number` on either side of the join. A reader — or a
+ * future edit — has to name which currency it wants before it can get a number
+ * at all, and naming `.traced` inside a predicate is then a visible choice
+ * rather than the default that four rounds kept landing on.
+ */
+export type ByteLedger = { placed: PlacedBytes; traced: TracedBytes };
+
+/** A ledger with nothing in it. Both totals are genuinely zero, not a stand-in for a quantity nobody looked at. */
+function emptyLedger(): ByteLedger {
+	// SAFETY: zero is a valid total in either currency — no byte has been added to
+	// this ledger yet, in either sense of "added".
+	return { placed: 0 as PlacedBytes, traced: 0 as TracedBytes };
+}
+
+/** The only way a ledger grows: one whole process at a time, each currency summed with its own. */
+function ledgerWith(ledger: ByteLedger, io: TraceProcessIo): ByteLedger {
+	// SAFETY: `placedBytesOf` and `tracedBytesOf` are the only producers of the
+	// two currencies and neither is assignable where the other is expected, so
+	// each sum here stays in the currency both of its terms were already in.
+	return { placed: (ledger.placed + placedBytesOf(io)) as PlacedBytes, traced: (ledger.traced + tracedBytesOf(io)) as TracedBytes };
+}
+
+/** The pathless part of a ledger: bytes it traced whose path never resolved. Volume, never a predicate. */
+export function pathlessBytesIn(ledger: ByteLedger): TracedBytes {
+	// SAFETY: `ledgerWith` maintains `traced = placed + pathless` term by term, so
+	// the difference is the pathless part, and it is a traced quantity.
+	return (ledger.traced - ledger.placed) as TracedBytes;
 }
 
 /**
@@ -254,11 +336,11 @@ export type AttributedProcessIo = {
 
 export type KernelIoCoverage = {
 	/**
-	 * True only when the account demonstrably holds the whole run: some byte was
-	 * both placed under the storage root and attributed to an identity, every
-	 * attributed process was observed from its start, no bound identity is
-	 * missing from the trace entirely, and no observed byte was left
-	 * unattributed.
+	 * True when four conditions hold together, and it claims nothing beyond
+	 * them: some byte was both placed under the storage root and attributed to
+	 * an identity; every attributed process was observed from its start; no
+	 * bound identity is missing from the trace entirely; and no observed byte
+	 * was left unattributed.
 	 *
 	 * Each condition closes a way for an account to look whole while it is not,
 	 * and three of them are about things that have *no row to be false on*:
@@ -269,15 +351,30 @@ export type KernelIoCoverage = {
 	 *  - a row whose bytes never resolved to a path under the root certifies
 	 *    nothing about the root. Counting rows, and then counting bytes that
 	 *    include pathless `unknownDescriptor` traffic, are the two ways this has
-	 *    already been got wrong;
+	 *    already been got wrong, which is why the first conjunct is stated in
+	 *    `PlacedBytes` and cannot be restated in anything else;
 	 *  - orphaned bytes under the 1% threshold are reported rather than refused,
 	 *    but bytes that could not be placed on an identity are still bytes this
 	 *    account does not hold.
 	 *
-	 * It is a deliberately narrow claim, and on real traces it will read `false`
-	 * routinely — one orphan process anywhere in the run is enough. `false`
-	 * therefore means "not proved whole", not "known broken"; the fields beside
-	 * it say which condition failed and by how much.
+	 * Two things it deliberately does **not** promise, because nothing in this
+	 * module tests them:
+	 *
+	 *  - **that the account reaches the end of the run.** Coverage is examined
+	 *    at the front edge only — the collector's earliest observation against
+	 *    each process's start. A collector that died, was detached, or had its
+	 *    trace file truncated part-way through leaves a suffix with no evidence
+	 *    in it and there is no field here that can notice;
+	 *  - **that any particular kind of SYNAPSE I/O was seen.** The first
+	 *    conjunct counts placed bytes without asking which category they landed
+	 *    in, so an account holding nothing but `unclassified` bytes can satisfy
+	 *    it.
+	 *
+	 * So read it as "no front-edge gap and no orphan in what *was* observed",
+	 * not as "this is the whole run". It is a deliberately narrow claim even so,
+	 * and on real traces it will read `false` routinely — one orphan process
+	 * anywhere is enough. `false` therefore means "not proved whole", not "known
+	 * broken"; the fields beside it say which condition failed and by how much.
 	 */
 	complete: boolean;
 	/** Earliest boot-based reading in the whole trace; `"N/A"` with no trace, `unavailable` when no line carried one. */
@@ -293,20 +390,56 @@ export type TraceLineErrorCounts = Record<TraceLineErrorReason, number>;
  * given, never just the first — a reader who fixes the loss should not then
  * discover the threshold.
  *
- * `no-io-under-storage-root` is the one that is not about the collector: it
- * fires when the collector observed I/O outside the storage root and none at
- * all under it. The root was then syntactically usable but named a different
- * tree than the collector reports paths against — the expected first failure
- * once each agent runs in its own iSulad container, where the collector sees
- * host paths and Pi sees container paths. Without it, a total mismatch comes
- * back as an account of zero bytes with nothing to object to.
+ * `no-path-under-storage-root` is the one that is not about the collector, and
+ * it is named for what was *observed* rather than for a cause, on purpose. What
+ * it states is exactly this: every path the collector resolved fell outside the
+ * configured storage root, and not one fell under it. Two different faults
+ * produce that, and this module cannot tell them apart:
+ *
+ *  - the root names a different tree than the collector reports paths against —
+ *    the expected first failure once each agent runs in its own iSulad
+ *    container, where the collector sees host paths and Pi sees container
+ *    paths. Without this reason a total mismatch comes back as an account of
+ *    zero bytes with nothing to object to;
+ *  - the collector attached after the run had already opened its files, so the
+ *    real SYNAPSE traffic arrived on descriptors with no `openat` behind them
+ *    and carries no path to resolve. The root may be perfectly correct.
+ *
+ * `diagnostics.storageRootEvidence` is what separates them: a large
+ * `pathlessBytes` beside `pathsOutsideRoot` says the run was busy on
+ * descriptors nobody could place, which is the late-attach signature, while a
+ * small one beside heavy outside-root traffic says the root is wrong. An
+ * earlier name for this reason blamed the root outright and would have sent an
+ * operator to re-check a correct one.
  */
 export type KernelIoUnavailableReason =
 	| "collector-reported-loss"
-	| "no-io-under-storage-root"
+	| "no-path-under-storage-root"
 	| "unattributed-over-threshold"
 	| "unreadable-lines"
 	| "unusable-storage-root";
+
+/**
+ * What the trace said about the configured storage root, reported whether or
+ * not it produced a refusal.
+ *
+ * `"N/A"` on the two outcomes reached before classification ran: no collection
+ * at all, and a syntactically unusable root. Writing `false`/`false`/`0` there
+ * would be the "I did not look" zero `metering.ts` forbids — it reads exactly
+ * like a collector that watched and saw no path anywhere.
+ */
+export type StorageRootEvidence = {
+	/** Some observed path resolved under the configured root: bytes moved, or a call named it and failed. */
+	pathsUnderRoot: boolean;
+	/** Some observed path resolved, and fell outside the configured root. */
+	pathsOutsideRoot: boolean;
+	/**
+	 * Bytes moved on descriptors no observed `openat` produced, across every
+	 * process. High next to no paths under the root is a collector that attached
+	 * late, not a wrong root.
+	 */
+	pathlessBytes: TracedBytes;
+};
 
 /**
  * Everything the judgement was made from, reported whether or not it went
@@ -319,16 +452,23 @@ export type KernelIoUnavailableReason =
  * refused, and using them as one would defeat the entire point of this module.
  *
  * Two outcomes are reached before any classification runs — no collection, and
- * an unusable storage root — and on those paths `attributedBytes` and
- * `unattributedBytes` read `0` while being typed `number`, which is
- * indistinguishable from a genuine zero except by looking at `attributed` and
- * `unavailableReasons` first. That is the same shape the `"N/A"` path has
- * always had, and it is why neither field may be read before those two.
+ * an unusable storage root — and on those paths both ledgers read `0` in both
+ * currencies, which is indistinguishable from a genuine zero except by looking
+ * at `attributed` and `unavailableReasons` first. That is the same shape the
+ * `"N/A"` path has always had, and it is why neither ledger may be read before
+ * those two. (`storageRootEvidence` does not have that problem: it says
+ * `"N/A"`.)
  */
 export type KernelIoDiagnostics = {
 	/** Keys bound to more than one identity: real bytes, not splittable across nodes. */
 	ambiguousProcesses: number;
-	attributedBytes: number;
+	/**
+	 * Bytes that reached an identity. `.placed` is what the share and
+	 * `coverage.complete` are computed from; `.traced` is the volume to report,
+	 * and can be far larger — every backgrounded agent writes to an inherited
+	 * stdout descriptor that resolves to no path at all.
+	 */
+	attributedBytes: ByteLedger;
 	/** `process-identity` events whose two clock bases contradict each other (see `meteringEpochNsecs`). */
 	clockInconsistentIdentityEvents: number;
 	coverage: KernelIoCoverage;
@@ -340,11 +480,30 @@ export type KernelIoDiagnostics = {
 	lossReports: number;
 	/** Highest `count` any loss report carried. Loss counts are cumulative, so they are not summed. */
 	lostEventsHighWater: number;
+	/** Whether the collector's paths and the configured root describe the same tree; `"N/A"` before classification ran. */
+	storageRootEvidence: StorageRootEvidence | NotApplicable;
 	traceLines: { errors: TraceLineErrorCounts; losses: number; records: number };
-	unattributedBytes: number;
+	/**
+	 * Bytes no identity claimed. `.placed` is the share's numerator;
+	 * `.traced - .placed` is orphaned traffic that resolved to no path, which is
+	 * evidence about nothing and is therefore kept out of every judgement. An
+	 * orphan made entirely of such bytes still denies `coverage.complete` and
+	 * still appears whole in `unattributedProcesses`.
+	 */
+	unattributedBytes: ByteLedger;
 	/** The orphans themselves, never dropped: trace processes no `process-identity` event claimed. */
 	unattributedProcesses: TraceProcessIo[];
-	/** `"N/A"` when no attributable bytes were observed at all — a share of nothing is not a zero share. */
+	/**
+	 * The share of *placed* bytes that no identity claimed —
+	 * `unattributed.placed / (attributed.placed + unattributed.placed)`.
+	 *
+	 * `"N/A"` when no byte resolved to a path under the storage root at all: a
+	 * share of nothing is not a zero share. The denominator is placed bytes and
+	 * not traced bytes because pathless traffic is present on every real run and
+	 * would dilute the ratio until it could not trip — a megabyte written to an
+	 * inherited stdout descriptor once hid a complete attribution loss below the
+	 * 1% threshold.
+	 */
 	unattributedShare: number | NotApplicable;
 	unattributedShareThreshold: number;
 };
@@ -450,7 +609,7 @@ function unclassifiedDiagnostics(threshold: number, observedFromNsecs: number | 
 	for (const error of trace?.errors ?? []) errors[error.reason] += 1;
 	return {
 		ambiguousProcesses: 0,
-		attributedBytes: 0,
+		attributedBytes: emptyLedger(),
 		clockInconsistentIdentityEvents: 0,
 		coverage: { complete: false, observedFromNsecs, processesWithUnobservedPrefix: 0 },
 		identityKeys: 0,
@@ -458,8 +617,13 @@ function unclassifiedDiagnostics(threshold: number, observedFromNsecs: number | 
 		ignored: { excluded: emptyBucket(), outsideRoot: emptyBucket() },
 		lossReports: trace?.losses.length ?? 0,
 		lostEventsHighWater: trace === null ? 0 : lossHighWater(trace),
+		// No path was classified against any root, so there is no evidence about
+		// the root either way. `false` here would read as "the collector watched
+		// and resolved nothing under it", which is a different and much stronger
+		// claim than "nobody looked".
+		storageRootEvidence: "N/A",
 		traceLines: { errors, losses: trace?.losses.length ?? 0, records: trace?.records.length ?? 0 },
-		unattributedBytes: 0,
+		unattributedBytes: emptyLedger(),
 		unattributedProcesses: [],
 		unattributedShare: "N/A",
 		unattributedShareThreshold: threshold,
@@ -489,7 +653,7 @@ function notCollected(threshold: number): KernelIoAttribution {
  *
  * Syntax is all this can catch. A root that is absolute but names a different
  * tree than the collector reports paths against passes here and is caught by
- * `no-io-under-storage-root` after classification instead.
+ * `no-path-under-storage-root` after classification instead.
  *
  * Whatever the collector reported is still reported: a bad root does not make a
  * ring-buffer overflow disappear, so the loss and unreadable-line reasons are
@@ -594,13 +758,53 @@ function coverageOf(io: TraceProcessIo, observedFromNsecs: number | Unavailable,
 }
 
 /**
+ * The share of SYNAPSE bytes that reached no identity — the one check this
+ * module makes on orphaned traffic, and the only quantity design §4.4 puts a
+ * threshold on.
+ *
+ * The parameter types are the whole point. Both sides are `PlacedBytes`, so
+ * nothing that resolved to no path can be handed to this function, by accident
+ * or by a later edit that reaches for the nearest byte total. The ratio then
+ * answers the question it is named for: of the bytes that demonstrably were
+ * SYNAPSE storage I/O, how much of it could not be placed on a run?
+ *
+ * A denominator of pathless bytes instead is not a weaker version of this
+ * check, it is no check at all: every backgrounded agent writes to an inherited
+ * stdout descriptor, so the denominator is always inflated by traffic that is
+ * never orphaned and never SYNAPSE, and the ratio is driven below any threshold
+ * that could be set. One 1,000,000-byte stdout write once excused nine
+ * thousand bytes of wholly unattributed envelope traffic — a 100% attribution
+ * loss reported as 0.89%.
+ *
+ * `"N/A"` when nothing was placed at all: a share of nothing is not a zero
+ * share, the same answer `metering.ts` gives `memory.hitRate` with no queries.
+ */
+function unattributedShareOf(attributed: PlacedBytes, unattributed: PlacedBytes): number | NotApplicable {
+	const placed = attributed + unattributed;
+	return placed === 0 ? "N/A" : unattributed / placed;
+}
+
+/**
+ * Whether any byte at all reached a path under the storage root.
+ *
+ * A function rather than a bare `> 0` in the expression that wants it, because
+ * `> 0` is the one comparison a `TracedBytes` would also satisfy: both
+ * currencies are `number` underneath, so an inequality against a literal
+ * type-checks whichever one is on the left. The parameter type makes the wrong
+ * currency a compile error at the only site that asks this question.
+ */
+function anyPlaced(bytes: PlacedBytes): boolean {
+	return bytes > 0;
+}
+
+/**
  * Joins classified kernel I/O to run identities and decides whether the result
  * may be reported (design §4.4).
  *
  * `collection` says whether a collector ran at all; see `TraceCollection` for
  * why that is a discriminant and not a nullable trace. `storageRoot` must be
  * absolute whenever one did — see `unusableStorageRoot` for what that catches
- * and `no-io-under-storage-root` for what it cannot.
+ * and `no-path-under-storage-root` for what it cannot.
  */
 export function attributeKernelIo(
 	events: readonly MeteringEvent[],
@@ -624,19 +828,20 @@ export function attributeKernelIo(
 	const attributed: AttributedProcessIo[] = [];
 	const unattributedProcesses: TraceProcessIo[] = [];
 	const usedKeys = new Set<AttributionKey>();
-	let attributedBytes = 0;
-	let unattributedBytes = 0;
-	let attributedPlacedBytes = 0;
+	let attributedBytes = emptyLedger();
+	let unattributedBytes = emptyLedger();
 	let ambiguousProcesses = 0;
 	let processesWithUnobservedPrefix = 0;
 	// Evidence that the supplied root is the tree the collector reports paths
 	// against, gathered over every process whether or not it was attributed: a
 	// root either matches the trace or it does not, and which run a path belongs
-	// to has nothing to do with it.
-	let touchedRoot = bucketTouched(classification.ignored.excluded);
+	// to has nothing to do with it. `excluded` activity counts as the root
+	// matching, because `metering/` and `trace/` match only after the root prefix
+	// already matched.
+	let pathsUnderRoot = bucketTouched(classification.ignored.excluded);
 
 	for (const io of classification.processes) {
-		if (touchedStorageRoot(io)) touchedRoot = true;
+		if (touchedStorageRoot(io)) pathsUnderRoot = true;
 		const key = attributionKeyOf(io);
 		const binding = bindings.get(key);
 		if (binding === undefined) {
@@ -645,7 +850,7 @@ export function attributeKernelIo(
 			// plausible identity is exactly the invisible error this module exists
 			// to prevent.
 			unattributedProcesses.push(io);
-			unattributedBytes += traceIoBytes(io);
+			unattributedBytes = ledgerWith(unattributedBytes, io);
 			continue;
 		}
 		usedKeys.add(key);
@@ -653,32 +858,29 @@ export function attributeKernelIo(
 		const coverage = coverageOf(io, observedFromNsecs, binding.clockSuspect, ticksPerSecond);
 		if (!coverage.observedFromStart) processesWithUnobservedPrefix += 1;
 		attributed.push({ coverage, identities: binding.identities, io, key });
-		attributedBytes += traceIoBytes(io);
-		attributedPlacedBytes += placedBytes(io);
+		attributedBytes = ledgerWith(attributedBytes, io);
 	}
 
 	const errors = emptyErrorCounts();
 	for (const error of trace.errors) errors[error.reason] += 1;
 
-	const totalBytes = attributedBytes + unattributedBytes;
-	// A share of no bytes is not a zero share: nothing was observed to be
-	// missing because nothing was observed at all. `metering.ts` answers the
-	// same question the same way for `memory.hitRate` with zero queries.
-	const unattributedShare: number | NotApplicable = totalBytes === 0 ? "N/A" : unattributedBytes / totalBytes;
+	const unattributedShare = unattributedShareOf(attributedBytes.placed, unattributedBytes.placed);
 
 	const unavailableReasons = collectorReasons(trace);
 	if (unattributedShare !== "N/A" && unattributedShare > threshold) unavailableReasons.push("unattributed-over-threshold");
-	// The collector watched I/O happen outside the storage root and none at all
-	// under it. The root is syntactically fine, so it named a different tree than
-	// the collector reports paths against — the expected first failure when each
-	// agent moves into its own iSulad container and the collector, on the host,
-	// sees host paths while Pi sees container paths.
+	// Every path the collector resolved fell outside the storage root, and not
+	// one fell under it. The root is syntactically fine, so either it names a
+	// different tree than the collector reports paths against, or the collector
+	// attached after the run opened its files and the SYNAPSE traffic arrived
+	// with no path to resolve. `storageRootEvidence` carries what separates the
+	// two; this reason states only what was seen, because a name that blamed the
+	// root would send an operator to re-check a correct one.
 	//
-	// Refusing rather than merely denying `complete`, because the alternative
-	// reading — "this run genuinely did no SYNAPSE I/O" — is an account of zero
-	// bytes, which is worth nothing to a caller even when it is true. Trading a
-	// worthless-but-honest result for a defence against a total, invisible
-	// attribution loss is not a close call.
+	// Refusing either way rather than merely denying `complete`, because the
+	// benign reading — "this run genuinely did no SYNAPSE I/O" — is an account of
+	// zero bytes, which is worth nothing to a caller even when it is true.
+	// Trading a worthless-but-honest result for a defence against a total,
+	// invisible attribution loss is not a close call.
 	//
 	// Two things this test is careful about, both learned the hard way:
 	//
@@ -689,10 +891,8 @@ export function attributeKernelIo(
 	//  - a failed call is evidence too. A root that names a tree which is not
 	//    there produces failures and no bytes, and a bytes-only test would find
 	//    nothing to object to.
-	//
-	// `excluded` activity counts as the root matching: `metering/` and `trace/`
-	// match only after the root prefix matched, so seeing any is proof enough.
-	if (!touchedRoot && bucketTouched(classification.ignored.outsideRoot)) unavailableReasons.push("no-io-under-storage-root");
+	const pathsOutsideRoot = bucketTouched(classification.ignored.outsideRoot);
+	if (!pathsUnderRoot && pathsOutsideRoot) unavailableReasons.push("no-path-under-storage-root");
 
 	const identityKeysWithoutTrace = bindings.size - usedKeys.size;
 
@@ -703,15 +903,17 @@ export function attributeKernelIo(
 			attributedBytes,
 			clockInconsistentIdentityEvents: clockInconsistentEvents,
 			coverage: {
-				// Counted in bytes that reached a path under the root — not in rows,
-				// and not in bytes that include pathless `unknownDescriptor` traffic.
-				// Both of those were tried and both certified an account whose every
-				// classified byte had fallen outside the root. A bound process that
-				// emitted no trace line at all has no row here to be false on, and
-				// orphaned bytes deny it too: under the threshold they are reported
-				// rather than refused, but they are still bytes this account lacks.
+				// Stated in placed bytes, and `anyPlaced` is what keeps it unstatable
+				// in anything else — a bare `> 0` would have accepted `.traced` just
+				// as happily. Rows were tried, then traced bytes, and both certified
+				// an account whose every classified byte had fallen outside the root.
+				// A bound process that emitted no trace line at all has no row here to
+				// be false on, and orphaned bytes deny it too: under the threshold
+				// they are reported rather than refused, but they are still bytes this
+				// account lacks — including an orphan whose bytes were all pathless
+				// and so never reached the share at all.
 				complete:
-					attributedPlacedBytes > 0 &&
+					anyPlaced(attributedBytes.placed) &&
 					processesWithUnobservedPrefix === 0 &&
 					identityKeysWithoutTrace === 0 &&
 					unattributedProcesses.length === 0,
@@ -723,6 +925,11 @@ export function attributeKernelIo(
 			ignored: classification.ignored,
 			lossReports: trace.losses.length,
 			lostEventsHighWater: lossHighWater(trace),
+			storageRootEvidence: {
+				pathlessBytes: sumTraced(pathlessBytesIn(attributedBytes), pathlessBytesIn(unattributedBytes)),
+				pathsOutsideRoot,
+				pathsUnderRoot,
+			},
 			traceLines: { errors, losses: trace.losses.length, records: trace.records.length },
 			unattributedBytes,
 			unattributedProcesses,
