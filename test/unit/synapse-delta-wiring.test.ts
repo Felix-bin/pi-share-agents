@@ -110,6 +110,7 @@ function contractFor(): LaunchContract {
 		namespaceId: deriveNamespaceId(worktree),
 		representationId: REPRESENTATION_ID,
 		scope: { pathPrefixes: [""], write: true },
+		stateVerify: "off",
 		storageRoot: store,
 	});
 }

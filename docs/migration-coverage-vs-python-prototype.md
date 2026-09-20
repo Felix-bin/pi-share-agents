@@ -19,7 +19,7 @@
 | M1 | ≥3 Agent、≥3 类角色、多步复杂任务 | ✅ 四个角色 `planner`/`retriever`/`executor`/`summarizer`（覆盖赛题点名的全部四类） | `src/synapse/roles.ts:20`、`roles.ts:54-59`；角色提示词 `agents/{planner,retriever,executor,summarizer}.md` |
 | M2 | 结构化通信（动作/参数/结果/能力）+ 握手/能力发现/协议映射 | 🟡 动作、参数、能力、能力协商齐备；**无运行时能力探测**、无 A2A 协议映射 | `envelope.ts:132-152`（`action`/`inputParamsJson`/`capabilityId`/`stateRef`/`memoryRefs`）、`capability.ts:100-127`（协商）、`roles.ts:79`（能力声明） |
 | M3 | 纯文本 ⊕ 结构化双模式，同条件 A/B | ✅ 三态开关，比原型的两态更细 | `config.ts:19`（`SYNAPSE_MODES = ["off","text","synapse"]`）、`capability.ts:104/118` |
-| M4 | 非文本中间状态传递（生成/传递/接收/使用四环） | ✅ 四环齐备；**语义校验换成了密码学完整性校验**（见 §3） | `embedding.ts`（生成）、`state-payload.ts:89-119`（选档+封装）、`content-store.ts`（存储）、`state-retrieval.ts`（接收+排序）、`envelope.ts:57-66`（`StateRef`） |
+| M4 | 非文本中间状态传递（生成/传递/接收/使用四环） | ✅ 四环齐备；可靠性校验为「密码学完整性（始终）+ 语义校验（`synapse.stateVerify`，默认关）」两层（见 §3） | `embedding.ts`（生成）、`state-payload.ts:89-119`（选档+封装）、`content-store.ts`（存储）、`state-retrieval.ts`（接收+排序）、`envelope.ts:57-66`（`StateRef`） |
 | M5 | 共享记忆单元（ID/来源 Agent/创建时间/任务主题/摘要） | ✅ 五项元数据齐备，另有种类、确信度、标签、来源指纹、取代状态 | `memory-store.ts:64-77`（`MemoryRecord`）、`memory-store.ts:57-62`（`provenance.agent`） |
 | M6 | 关键词/标签/语义检索 + 跨 Agent 跨任务复用 | ✅ 三路检索（0.3/0.2/0.5 语义融合；无向量时如实报 unavailable），跨 Agent 复用计数在计量里 | `retrieval.ts`、`metering.ts:107-108`（`memory-query`/`memory-reuse`） |
 | M7 | ≥2 组关联性连续任务验证 | ❌ **未迁移**：本仓库无任务族定义，也没有 A/B 运行器 | 见 §2「缺口 A」 |
@@ -62,7 +62,7 @@
 
 ## 3. 三处「形似而实异」的机制，必须随数字一起说明
 
-1. **残差可靠性校验的层级不同。** 原型是 VLC：接收方重嵌入比对 `cos(Ŷ, Y_true)`，语义失配才回退全文。
+1. **残差可靠性校验的层级与默认值不同。** 原型是 VLC：接收方重嵌入比对 `cos(Ŷ, Y_true)`，语义失配才回退全文，**常开**。
    本仓库**刻意不重嵌入原查询**（`state-retrieval.ts:13-17` 的设计声明），改为：发送侧准入（残差必须
    小于向量、且不超过其一半，`state-payload.ts:115`）+ 接收侧密码学与结构校验（摘要、维度、表示、
    非零向量、分块数，`state-retrieval.ts:110-188`）。**能防篡改与错位，不能防"语义偏移但字节完好"**。
@@ -117,5 +117,6 @@ node --experimental-strip-types --test test/integration/synapse-*.test.ts
 | **跨进程计量的写者归属** | `metering.ts` 的 `writer` 字段与 `totalMs` 只取父侧读数 | 原型单进程计量，无此问题 |
 | **状态预算与超时语义** | `SYNAPSE_STATE_BUDGET_MS`（2500 ms，超时按"本次未传递状态"放行并记 `error(category="timeout")`） | 原型无预算机制（其超时行为是进程级强制终止） |
 
-**仍未追平原型的两处**（见 §2 缺口 A–H）：接收侧的**语义校验**（原型 VLC：重嵌入比对 `cos(Ŷ,Y_true)`，
-失配回退全文）与**运行期能力探测**（原型 CNR 的 `check_fn` + TTL）。这两项在同一次收口中处理。
+**追平进度（2026-09-20 更新）**：接收侧**语义校验**已落地（`synapse.stateVerify`，重嵌入比对余弦，
+失配走恢复链；默认关——原型 VLC 是常开），见预登记 §12；**运行期能力探测**（原型 CNR 的 `check_fn` + TTL）
+仍未做，属阶段 R-2 剩余项。

@@ -20,6 +20,7 @@ function contractInput(overrides: Partial<LaunchContractInput> = {}): LaunchCont
 		mode: overrides.mode ?? "synapse",
 		namespaceId: overrides.namespaceId ?? "0123456789abcdef",
 		representationId: overrides.representationId ?? "siliconflow/BAAI/bge-m3/1024/l2/f32le",
+		stateVerify: overrides.stateVerify ?? "off",
 		scope: overrides.scope ?? { pathPrefixes: ["src"], write: false },
 		storageRoot: overrides.storageRoot ?? "/store/0123456789abcdef",
 	};
@@ -111,6 +112,24 @@ describe("rehydration after reload or resume (AC-14)", () => {
 		assert.equal(result.status, "refused");
 		if (result.status !== "refused") return;
 		assert.equal(result.category, "integrity");
+	});
+
+	it("covers the receiver's verification setting in the contract's own digest", () => {
+		// The setting changes what a consumed state is allowed to be, so a contract
+		// rehydrated with a different one must not pass as the original: a persisted
+		// contract is the only record of what the receiver was launched to do.
+		const contract = resolveLaunchContract(contractInput({ stateVerify: "reembed" }));
+		const tampered = JSON.stringify({ ...contract, stateVerify: "off" });
+		const result = rehydrateLaunchContract(tampered, checks());
+		assert.equal(result.status, "refused");
+		if (result.status !== "refused") return;
+		assert.equal(result.category, "integrity");
+
+		// And the setting survives an honest round trip.
+		const honest = rehydrateLaunchContract(serialiseLaunchContract(contract), checks());
+		assert.equal(honest.status, "ready");
+		if (honest.status !== "ready") return;
+		assert.equal(honest.contract.stateVerify, "reembed");
 	});
 
 	it("refuses unreadable persisted state instead of starting from defaults", () => {

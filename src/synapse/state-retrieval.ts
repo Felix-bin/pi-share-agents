@@ -37,6 +37,17 @@ export type StateRetrievalHit = {
 
 export type StateRetrievalResult = {
 	corpusSnapshotId: string;
+	/**
+	 * The receiver's own decoded query vector, exposed so the host can check it
+	 * against the query it re-embeds. It is the same vector this call just ranked
+	 * with — handing back the ranking without the vector would leave the only
+	 * semantic check available to the receiver unperformable, and the residual is
+	 * a lossy encoding that nothing else verifies.
+	 *
+	 * It never reaches a model: this module's contract is that the model sees hits,
+	 * not vectors.
+	 */
+	decoded: Float32Array;
 	hits: StateRetrievalHit[];
 	representationId: string;
 };
@@ -193,26 +204,43 @@ export function loadCorpusVectors(storageRoot: string, corpusSnapshotId: string,
 }
 
 /**
+ * Cosine similarity between two vectors of the same width. Extracted so the
+ * ranking and the receiver's semantic check measure the same quantity with the
+ * same code: two implementations of "how close are these" would eventually
+ * disagree, and the disagreement would be invisible.
+ *
+ * A width mismatch is a representation failure rather than an integrity one:
+ * the two vectors come from different spaces, and no amount of re-reading makes
+ * them comparable.
+ */
+export function cosineSimilarity(left: Float32Array, right: Float32Array): number {
+	if (left.length !== right.length) {
+		throw new Error(`representation-mismatch: cosine needs equal widths, got ${left.length} and ${right.length}`);
+	}
+	const leftNorm = normOf(left);
+	if (leftNorm === 0) throw new Error("integrity: left vector is all zeros; cosine against it is undefined");
+	const rightNorm = normOf(right);
+	if (rightNorm === 0) throw new Error("integrity: right vector is all zeros; cosine against it is undefined");
+	let dot = 0;
+	for (let element = 0; element < left.length; element += 1) dot += left[element]! * right[element]!;
+	return dot / (leftNorm * rightNorm);
+}
+
+/**
  * Ranks every chunk of a loaded corpus against one query vector: cosine
  * descending, ties by chunk id ascending. It is the only ranking in the build,
  * so a caller comparing a recovered vector against a true one measures the order
  * the wire path actually produces.
  */
 export function rankCorpusChunks(corpus: CorpusVectors, queryVector: Float32Array, k: number): StateRetrievalHit[] {
-	const queryNorm = normOf(queryVector);
-	if (queryNorm === 0) {
-		throw new Error("integrity: query vector is all zeros; cosine against it is undefined");
-	}
 	const hits: StateRetrievalHit[] = corpus.vectors.map((vector, index) => {
 		// A corpus vector of another width cannot be compared; failing here beats
 		// scoring every later element against `undefined`.
 		if (vector.length !== queryVector.length) {
 			throw new Error(`representation-mismatch: corpus chunk ${corpus.chunkIds[index]} holds ${vector.length} floats, the query vector holds ${queryVector.length}`);
 		}
-		let dot = 0;
-		for (let element = 0; element < vector.length; element += 1) dot += queryVector[element]! * vector[element]!;
 		const meta = corpus.chunkMeta[index]!;
-		return { chunkId: corpus.chunkIds[index]!, cosine: dot / (queryNorm * normOf(vector)), endLine: meta.endLine, path: meta.path, startLine: meta.startLine };
+		return { chunkId: corpus.chunkIds[index]!, cosine: cosineSimilarity(queryVector, vector), endLine: meta.endLine, path: meta.path, startLine: meta.startLine };
 	});
 	hits.sort((left, right) => (left.cosine !== right.cosine ? right.cosine - left.cosine : left.chunkId < right.chunkId ? -1 : 1));
 	return hits.slice(0, k);
@@ -314,5 +342,5 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 		representationId: stateRef.representationId,
 		stateId: stateRef.payloadId,
 	});
-	return { corpusSnapshotId: input.corpusSnapshotId, hits, representationId: stateRef.representationId };
+	return { corpusSnapshotId: input.corpusSnapshotId, decoded: queryVector, hits, representationId: stateRef.representationId };
 }

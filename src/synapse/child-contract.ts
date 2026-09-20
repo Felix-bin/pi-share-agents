@@ -151,6 +151,8 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			namespaceId: deriveNamespaceId(input.cwd),
 			representationId,
 			scope: { pathPrefixes: [""], write: childMayWrite(input.childTools) },
+			// The receiver's own behaviour, so it freezes with the rest of the launch.
+			stateVerify: config.stateVerify,
 			storageRoot: resolved.root,
 		}),
 		capabilityTools,
@@ -181,6 +183,9 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 			memory: "project",
 			mode: contract.contract.mode,
 			stateRecovery: "resend-then-text",
+			// Inert on this path: the child's own tools never consume a transferred
+			// state, so nothing here re-embeds a query to check one.
+			stateVerify: "off",
 			storageRoot: contract.contract.storageRoot,
 			// Not inert, unlike `delta` above: the child's own recall ranks records, so
 			// the launch's choice about keeping their vectors in memory applies here as

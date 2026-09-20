@@ -37,6 +37,7 @@ function childContract(): SynapseChildContract {
 			namespaceId: deriveNamespaceId(worktree),
 			representationId: "unavailable",
 			scope: { pathPrefixes: [""], write: true },
+			stateVerify: "off",
 			storageRoot: store,
 		}),
 		capabilityTools: ["read", "grep"],

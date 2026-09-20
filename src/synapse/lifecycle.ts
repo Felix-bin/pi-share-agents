@@ -1,5 +1,5 @@
 import { canonicalDigest, canonicalJson, type CanonicalValue } from "./canonical-json.ts";
-import type { SynapseMode } from "./config.ts";
+import type { SynapseMode, SynapseStateVerify } from "./config.ts";
 import type { SynapseErrorCategory } from "./errors.ts";
 
 /**
@@ -35,6 +35,7 @@ export type LaunchContractInput = {
 	namespaceId: string;
 	representationId: string;
 	scope: ContractScope;
+	stateVerify: SynapseStateVerify;
 	storageRoot: string;
 };
 
@@ -47,6 +48,12 @@ export type LaunchContract = {
 	namespaceId: string;
 	representationId: string;
 	scope: { pathPrefixes: string[]; write: boolean };
+	/**
+	 * Whether the receiver re-embeds the query to check a decoded state before it
+	 * ranks with it. Frozen into the contract because it is the *receiver's*
+	 * behaviour, and because it changes what a consumed state is allowed to be.
+	 */
+	stateVerify: SynapseStateVerify;
 	storageRoot: string;
 };
 
@@ -98,6 +105,7 @@ function contractBody(input: LaunchContractInput): CanonicalValue {
 		namespaceId: input.namespaceId,
 		representationId: input.representationId,
 		scope: { pathPrefixes: scope.pathPrefixes, write: scope.write },
+		stateVerify: input.stateVerify,
 		storageRoot: input.storageRoot,
 	};
 }
@@ -113,6 +121,7 @@ export function resolveLaunchContract(input: LaunchContractInput): LaunchContrac
 		namespaceId: input.namespaceId,
 		representationId: input.representationId,
 		scope,
+		stateVerify: input.stateVerify,
 		storageRoot: input.storageRoot,
 	};
 }

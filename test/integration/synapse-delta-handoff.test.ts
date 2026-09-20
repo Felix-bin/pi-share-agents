@@ -86,6 +86,7 @@ function contractFor(): LaunchContract {
 		namespaceId: "0123456789abcdef",
 		representationId: embedder.representationId,
 		scope: { pathPrefixes: [""], write: true },
+		stateVerify: "off",
 		storageRoot,
 	});
 }

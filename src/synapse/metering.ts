@@ -104,6 +104,15 @@ export type MeteringPayload =
 			 * because "how often did the state plane need recovering" is a question
 			 * about attempts, not about successes.
 			 */
+			/**
+			 * Why the state plane had to recover: the classification of the failure that
+			 * forced the hop, with `state-verify` split out of `integrity` because the two
+			 * need different remedies — a re-send cannot fix a meaning that drifted — and
+			 * because a recovered run would otherwise leave no trace of the refusal at all
+			 * (the hop says a recovery happened, not what it was for). Absent on events
+			 * written before this field existed.
+			 */
+			cause?: SynapseErrorClassification | "state-verify";
 			hop: "full-vector" | "resend" | "text";
 			kind: "state-restore";
 			ok: boolean;
@@ -340,6 +349,12 @@ export type MeteringTotals = {
 		vectorCacheHits: number;
 		/** Ranking reads that had to go to the store. */
 		vectorCacheMisses: number;
+		/**
+		 * Receiver-side semantic refusals: hops taken because the decoded state no longer
+		 * matched the query. Counted on the hop, so a chain that refuses twice (the first
+		 * attempt and its replacement) is two refusals rather than one.
+		 */
+		verificationRefusals: number;
 	};
 	storage: { readBytes: number; writeBytes: number };
 	text: { handoffBytes: number };
@@ -428,6 +443,7 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			vectorCacheHits: 0,
 			/** Ranking reads that had to go to the store. */
 			vectorCacheMisses: 0,
+			verificationRefusals: 0,
 		},
 		storage: { readBytes: 0, writeBytes: 0 },
 		text: { handoffBytes: 0 },
@@ -480,6 +496,7 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 				break;
 			case "state-restore":
 				totals.state.restoreCount += 1;
+				if (event.cause === "state-verify") totals.state.verificationRefusals += 1;
 				if (event.hop === "resend") hops.resend += 1;
 				else if (event.hop === "full-vector") hops.fullVector += 1;
 				else hops.text += 1;

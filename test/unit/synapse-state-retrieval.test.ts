@@ -12,7 +12,7 @@ import { createMemoryService, type MemoryService } from "../../src/synapse/memor
 import { createMeteringLog, readMeteringLog, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
 import type { PredictedBase } from "../../src/synapse/predict-base.ts";
 import { chooseStatePayload } from "../../src/synapse/state-payload.ts";
-import { retrieveWithState, type StateRetrievalDeps } from "../../src/synapse/state-retrieval.ts";
+import { cosineSimilarity, retrieveWithState, type StateRetrievalDeps } from "../../src/synapse/state-retrieval.ts";
 import { createDeterministicEmbedder } from "../support/deterministic-embedder.ts";
 
 /**
@@ -119,6 +119,17 @@ afterEach(() => {
 	fs.rmSync(storageRoot, { force: true, recursive: true });
 	fs.rmSync(corpusRoot, { force: true, recursive: true });
 	fs.rmSync(worktree, { force: true, recursive: true });
+});
+
+describe("cosineSimilarity", () => {
+	it("measures agreement, and refuses to compare two widths", () => {
+		assert.equal(cosineSimilarity(new Float32Array([1, 0]), new Float32Array([1, 0])), 1);
+		assert.equal(cosineSimilarity(new Float32Array([1, 0]), new Float32Array([0, 1])), 0);
+		// Two spaces are not comparable element-wise: a number produced anyway would be
+		// read as agreement between vectors that never shared a coordinate system.
+		assert.throws(() => cosineSimilarity(new Float32Array([1, 0]), new Float32Array([1, 0, 0])), /representation-mismatch/);
+		assert.throws(() => cosineSimilarity(new Float32Array([0, 0]), new Float32Array([1, 0])), /integrity/);
+	});
 });
 
 describe("state retrieval over a published corpus (P3-4)", () => {

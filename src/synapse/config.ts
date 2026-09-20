@@ -69,6 +69,30 @@ export const SYNAPSE_DEFAULT_DELTA = false;
  */
 export const SYNAPSE_DEFAULT_VECTOR_CACHE = false;
 
+export const SYNAPSE_STATE_VERIFY_MODES = ["off", "reembed"] as const;
+export type SynapseStateVerify = (typeof SYNAPSE_STATE_VERIFY_MODES)[number];
+
+/**
+ * The cosine below which a decoded state is refused.
+ *
+ * The residual is a lossy encoding: it is admitted on the sender's side only when
+ * the payload is small, and the calibration that froze its grid measured an
+ * ordered top-5 agreement well below 1 (the negative result this repository
+ * reports in full). What was missing was a check *per message*: the receiver
+ * rebuilt the vector and ranked with it without ever asking whether it still
+ * meant the query. 0.99 is the same threshold the encoder's stop condition uses,
+ * so a payload the sender considered "done" is a payload the receiver accepts —
+ * one number, used on both sides of the wire, rather than two that drift.
+ *
+ * It is not 1.0: the quantised round trip cannot reproduce the original exactly,
+ * and a threshold that no correct payload can meet would turn every message into
+ * a recovery.
+ */
+export const SYNAPSE_STATE_VERIFY_MIN_COSINE = 0.99;
+
+/** Off by default: verification costs the receiver a second embedding call. */
+export const SYNAPSE_DEFAULT_STATE_VERIFY: SynapseStateVerify = "off";
+
 /**
  * A JSON value as it arrives from config.json: parsed by the host, not yet
  * validated by us. Naming it keeps the unvalidated boundary visible.
@@ -101,6 +125,8 @@ export type SynapseConfig = {
 	storageRoot: string | null;
 	/** Whether record vectors stay in memory between rankings; see {@link SYNAPSE_DEFAULT_VECTOR_CACHE}. */
 	vectorCache: boolean;
+	/** Whether the receiver re-embeds the query to check the decoded state; see {@link SYNAPSE_DEFAULT_STATE_VERIFY}. */
+	stateVerify: SynapseStateVerify;
 };
 
 const EmbeddingSchema = Type.Object(
@@ -128,6 +154,11 @@ const RawConfigSchema = Type.Object(
 		stateRecovery: Type.Optional(Type.Union([Type.Literal("resend"), Type.Literal("resend-then-text")])),
 		storageRoot: Type.Optional(Type.String({ minLength: 1 })),
 		vectorCache: Type.Optional(Type.Boolean({ description: "keep record vectors in memory between rankings; off keeps the cold-base convention" })),
+		stateVerify: Type.Optional(
+			Type.Union([Type.Literal("off"), Type.Literal("reembed")], {
+				description: "re-embed the query on the receiving side and refuse a decoded state below the frozen cosine",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -141,6 +172,7 @@ const KNOWN_EMBEDDING_KEYS = new Set(Object.keys(EmbeddingSchema.properties));
 const ALLOWED_VALUES = new Map<string, readonly string[]>([
 	["synapse.memory", SYNAPSE_MEMORY_MODES],
 	["synapse.mode", SYNAPSE_MODES],
+	["synapse.stateVerify", SYNAPSE_STATE_VERIFY_MODES],
 	["synapse.stateRecovery", SYNAPSE_STATE_RECOVERIES],
 ]);
 
@@ -225,5 +257,6 @@ export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = o
 		stateRecovery: raw.stateRecovery ?? "resend-then-text",
 		storageRoot: raw.storageRoot === undefined ? null : resolveSynapseStorageRoot(raw.storageRoot, homeDir),
 		vectorCache: raw.vectorCache ?? SYNAPSE_DEFAULT_VECTOR_CACHE,
+		stateVerify: raw.stateVerify ?? SYNAPSE_DEFAULT_STATE_VERIFY,
 	};
 }

@@ -61,6 +61,7 @@ function contractFor(agentScope: { write: boolean }): LaunchContract {
 		namespaceId: "0123456789abcdef",
 		representationId: embedder.representationId,
 		scope: { pathPrefixes: [""], write: agentScope.write },
+		stateVerify: "off",
 		storageRoot,
 	});
 }

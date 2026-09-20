@@ -10,7 +10,7 @@ import { consumeRetrieveState } from "../../src/synapse/delegation.ts";
 import { createEmbeddingClient, type Embedder } from "../../src/synapse/embedding.ts";
 import { readDeliveredEnvelope, stateEnvelopePath } from "../../src/synapse/envelope-inbox.ts";
 import { createMemoryService, type MemoryService } from "../../src/synapse/memory-service.ts";
-import { createMeteringLog, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
+import { aggregateMetering, createMeteringLog, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
 import { deriveNamespaceId } from "../../src/synapse/namespace.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
 import { openChildDelegationWithState } from "../../src/runs/shared/synapse-delegation.ts";
@@ -58,6 +58,8 @@ let storageRoot = "";
 let corpusRoot = "";
 let worktree = "";
 let stub: StubEmbeddingServer;
+/** When set, the provider answers this vector for the query text instead of the stored one. */
+let reembedOverride: readonly number[] | null = null;
 let embedder: Embedder;
 let corpusSnapshotId = "";
 
@@ -78,25 +80,31 @@ function runtimeFor(synapse: SynapseChildContract | undefined): ChildRuntimeConf
 	return config;
 }
 
-function extensionConfig(delta: boolean, vectorCache = false): Record<string, CanonicalValue> {
+function extensionConfig(delta: boolean, vectorCache = false, stateVerify: "off" | "reembed" = "off"): Record<string, CanonicalValue> {
 	return {
 		corpusSnapshotId,
 		delta,
 		embedding: { dim: DIM, endpoint: `http://127.0.0.1:${stub.port}/v1/embeddings`, keyEnv: "SYNAPSE_TEST_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 		memory: "project",
 		mode: "synapse",
+		stateVerify,
 		storageRoot,
 		vectorCache,
 	};
 }
 
-function synapseContract(delta: boolean, childTools: readonly string[] = ["read", "synapse_read"], vectorCache = false): SynapseChildContract {
+function synapseContract(
+	delta: boolean,
+	childTools: readonly string[] = ["read", "synapse_read"],
+	vectorCache = false,
+	stateVerify: "off" | "reembed" = "off",
+): SynapseChildContract {
 	const synapse = resolveSynapseChildContract({
 		agentDir: storageRoot,
 		agentName: "retriever",
 		childTools,
 		cwd: worktree,
-		extensionConfig: extensionConfig(delta, vectorCache),
+		extensionConfig: extensionConfig(delta, vectorCache, stateVerify),
 		extensionTools: ["synapse_read", "synapse_write"],
 		runId: RUN_ID,
 		sessionId: "sess-parent",
@@ -153,10 +161,17 @@ function trigger(synapse: SynapseChildContract) {
 }
 
 /** The receiver's half, through the same call the child runtime makes. */
-function consume(synapse: SynapseChildContract, wire: Parameters<typeof consumeRetrieveState>[0]["envelope"]) {
+function consume(
+	synapse: SynapseChildContract,
+	wire: Parameters<typeof consumeRetrieveState>[0]["envelope"],
+	/** Passed by the tests that need the receiver to re-embed: without it there is no
+	 * embedder to check a decoded state against, and no text fallback either. */
+	deps: { embedder?: Embedder; stateRecovery?: "resend" | "resend-then-text" } = {},
+) {
 	return consumeRetrieveState({
 		contract: synapse.contract,
-		deps: { log: createMeteringLog(logPath()) },
+		deps: { embedder: deps.embedder, log: createMeteringLog(logPath()) },
+		stateRecovery: deps.stateRecovery ?? "resend",
 		envelope: wire,
 		expectedSenderSessionId: synapse.sessionId,
 		fallbackQuery: QUERY,
@@ -209,7 +224,13 @@ beforeEach(async () => {
 		["# gamma\nresidual quantisation observation three", [0, 0, 1, 0, 0, 0, 0, 0]],
 		[BASE_EMBED_TEXT, BASE_VECTOR],
 	]);
-	stub.respondWithVectorForInput((input) => vectorByText.get(input) ?? vectorByText.get(input.trim()) ?? [0, 0, 0, 1, 0, 0, 0, 0]);
+	reembedOverride = null;
+	stub.respondWithVectorForInput((input) => {
+		// The verification test re-embeds the same query the sender embedded, so the
+		// only way to make the two disagree is to change what the provider answers.
+		if (reembedOverride !== null && input.trim() === QUERY.trim()) return reembedOverride;
+		return vectorByText.get(input) ?? vectorByText.get(input.trim()) ?? [0, 0, 0, 1, 0, 0, 0, 0];
+	});
 	embedder = createEmbeddingClient(
 		{ dim: DIM, endpoint: `http://127.0.0.1:${stub.port}/v1/embeddings`, keyEnv: "SYNAPSE_TEST_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 		{ key: "stub-key" },
@@ -359,6 +380,99 @@ describe("synapse residual path in production", () => {
 		assert.equal(baseSelections().length, 4, "with the cache off each ranking reads each record again");
 		assert.equal(registry.hits, hitsBeforeCold, "off means the cache is not consulted, not that it is consulted and not written");
 		assert.equal(baseOf(stateEnvelopePath(storageRoot, RUN_ID, 0)), firstBase, "and it selects the same base");
+	});
+
+	it("accepts a decoded residual when the receiver's own embedding agrees with it", async () => {
+		// With verification on, the same query is embedded twice — once by the sender and
+		// once by the receiver — and the two must agree, or the state is refused. The
+		// stub answers the same vector both times here, so this is the accepting half.
+		await rememberBase();
+		const synapse = synapseContract(true, ["read", "synapse_read"], false, "reembed");
+		const opened = await trigger(synapse);
+		assert.equal(opened.state?.kind, "state");
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		assert.equal(delivered.status, "ready");
+		if (delivered.status !== "ready") return;
+		const outcome = await consume(synapse, delivered.wire, { embedder });
+		assert.equal(outcome.kind, "consumed", `a residual the receiver can reproduce must be accepted, got ${outcome.kind}`);
+	});
+
+	it("refuses a state whose decoded vector no longer means the query, and recovers", async () => {
+		// The residual is lossy and nothing else checks it per message: this is the check
+		// that does. The provider is made to answer a different vector for the query, so
+		// the decoded state and the receiver's own embedding disagree completely.
+		await rememberBase();
+		const synapse = synapseContract(true, ["read", "synapse_read"], false, "reembed");
+		const opened = await trigger(synapse);
+		assert.equal(opened.state?.kind, "state");
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		assert.equal(delivered.status, "ready");
+		if (delivered.status !== "ready") return;
+
+		reembedOverride = [0, 0, 1, 0, 0, 0, 0, 0];
+		const callsBefore = readMeteringLog(logPath()).filter((event) => event.kind === "embedding-call").length;
+		const outcome = await consume(synapse, delivered.wire, { embedder, stateRecovery: "resend-then-text" });
+		// The check's failure is a recovery input, not a launch failure: the chain runs
+		// and the text path answers.
+		assert.equal(outcome.kind, "text-fallback", `a mismatched state must not be consumed, got ${outcome.kind}`);
+		const events = readMeteringLog(logPath());
+		// The hop says a recovery happened; the cause says what it was for. Without it a
+		// run that recovered would leave no trace of the refusal at all.
+		const textHop = events.find((event) => event.kind === "state-restore" && event.hop === "text");
+		assert.equal(textHop?.kind === "state-restore" ? textHop.cause : null, "state-verify", "the hop must say the state was refused by verification");
+		assert.equal(aggregateMetering(events).state.verificationRefusals, 1, "the refusal is counted, not only the recovery it caused");
+		// And it is metered, exactly once: the receiver's re-embedding is a real provider
+		// call, and a verification that ran unmetered would be a cost the account denies.
+		const embeddingCalls = events.filter((event) => event.kind === "embedding-call").length;
+		assert.equal(embeddingCalls, callsBefore + 1, "the verification's embedding call must be counted, and not more than once");
+	});
+
+	it("fails the consume with the refusal's own category when recovery cannot run", async () => {
+		// No embedder is injected here, so the text fallback cannot run: the refusal then
+		// surfaces as the terminal failure, carrying the prefix that says the digests all
+		// matched and the meaning did not.
+		await rememberBase();
+		const synapse = synapseContract(true);
+		const opened = await trigger(synapse);
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
+
+		reembedOverride = [0, 0, 1, 0, 0, 0, 0, 0];
+		const strict = { ...synapse.contract, stateVerify: "reembed" as const };
+		const outcome = await consumeRetrieveState({
+			contract: strict,
+			deps: { embedder, log: createMeteringLog(logPath()) },
+			envelope: delivered.wire,
+			expectedSenderSessionId: synapse.sessionId,
+			fallbackQuery: QUERY,
+			identity: { agent: "retriever", attempt: 1, childIndex: 0, runId: RUN_ID, sessionId: "sess-child" },
+			k: K,
+			stateRecovery: "resend",
+			worktreeRoot: worktree,
+		});
+		assert.equal(outcome.kind, "failed", `a refused state with no recovery must fail, got ${outcome.kind}`);
+		const events = readMeteringLog(logPath());
+		assert.ok(
+			events.some((event) => event.kind === "error" && event.category === "integrity" && event.detail.startsWith("state-verify:")),
+			"the terminal failure must be recorded under its own prefix, distinguishable from corruption",
+		);
+	});
+
+	it("does not re-embed the query when the launch did not ask for verification", async () => {
+		await rememberBase();
+		const synapse = synapseContract(true);
+		const opened = await trigger(synapse);
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
+		const before = readMeteringLog(logPath()).filter((event) => event.kind === "embedding-call").length;
+		reembedOverride = [0, 0, 1, 0, 0, 0, 0, 0];
+		const outcome = await consume(synapse, delivered.wire);
+		assert.equal(outcome.kind, "consumed", "with verification off a mismatch is not looked for");
+		assert.equal(
+			readMeteringLog(logPath()).filter((event) => event.kind === "embedding-call").length,
+			before,
+			"the default path must not pay for a second embedding",
+		);
 	});
 
 	it("keeps the receiver's contract check satisfied for a residual, not just for a vector", async () => {

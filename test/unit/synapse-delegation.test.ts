@@ -64,6 +64,7 @@ function contractFor(mode: SynapseMode, pathPrefixes: string[] = [""]): LaunchCo
 		namespaceId: deriveNamespaceId(worktree),
 		representationId: "unavailable",
 		scope: { pathPrefixes, write: true },
+		stateVerify: "off",
 		storageRoot: store,
 	});
 }

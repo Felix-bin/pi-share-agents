@@ -62,6 +62,15 @@ describe("synapse config defaults", () => {
 		assert.equal(resolveSynapseConfig({ mode: "synapse", vectorCache: true }, HOME).vectorCache, true);
 	});
 
+	it("leaves the receiver's semantic check off unless an experiment asks for it", () => {
+		// Verification costs the receiver a second embedding call per consumed state, so it
+		// is off by default; the arms of a frozen comparison must both be off or the two
+		// sides stop differing in exactly one thing.
+		assert.equal(resolveSynapseConfig({}, HOME).stateVerify, "off");
+		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).stateVerify, "off");
+		assert.equal(resolveSynapseConfig({ mode: "synapse", stateVerify: "reembed" }, HOME).stateVerify, "reembed");
+	});
+
 	it("lets an experiment state memory explicitly", () => {
 		assert.equal(resolveSynapseConfig({ memory: "project", mode: "text" }, HOME).memory, "project");
 		assert.equal(resolveSynapseConfig({ memory: "off", mode: "synapse" }, HOME).memory, "off");

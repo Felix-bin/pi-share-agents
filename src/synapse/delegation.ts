@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
 import { negotiate, type CapabilityDeclaration, type NegotiationResult, type TextFallbackReason } from "./capability.ts";
+import { SYNAPSE_STATE_VERIFY_MIN_COSINE } from "./config.ts";
 import { createContentStore } from "./content-store.ts";
 import { meteredEmbedder, type Embedder, SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
 import { buildEnvelope, freezeSnapshot, type Envelope, type EnvelopeWire, type StateRef } from "./envelope.ts";
@@ -14,6 +15,7 @@ import { createMeteringLog, type MeteringIdentity, type MeteringLog, type ModelU
 import { capabilityForAgent, hostCapability, SYNAPSE_CONSUMER_VERSION } from "./roles.ts";
 import type { PredictedBase } from "./predict-base.ts";
 import { chooseStatePayload, SYNAPSE_DELTA_MEDIA_TYPE } from "./state-payload.ts";
+import { cosineSimilarity } from "./state-retrieval.ts";
 import type { StateRetrievalResult } from "./state-retrieval.ts";
 
 /**
@@ -780,7 +782,49 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 			return { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
 		}
 	};
-	const first = attemptConsume(stateRef);
+
+	// The receiver's semantic check, when the launch froze it on and the receiver can
+	// re-embed. A residual is a lossy encoding and the calibrated agreement is well
+	// below 1, so without this a decoded vector is ranked with no per-message question
+	// asked about whether it still means the query. Its own embedding call is metered
+	// like every other, and it runs after the ranking: the vector checked is the one
+	// that ranked, and refusing before ranking would mean a second decode path that
+	// could disagree with the first.
+	const verifyQuery = input.fallbackQuery;
+	const stateVerify =
+		input.contract.stateVerify === "reembed" && input.deps.embedder !== undefined && verifyQuery !== undefined && verifyQuery.trim() !== ""
+			? { embedder: meteredEmbedder(input.deps.embedder, meterIdentity, input.deps.log), minCosine: SYNAPSE_STATE_VERIFY_MIN_COSINE, query: verifyQuery }
+			: null;
+
+	/** The classification of the failure that forced a hop, with the semantic refusal split out. */
+	function hopCauseOf(failure: { category: SynapseErrorClassification; reason: string }): SynapseErrorClassification | "state-verify" {
+		return failure.reason.startsWith("state-verify:") ? "state-verify" : failure.category;
+	}
+
+	async function verifiedAttempt(against: StateRef): Promise<ConsumeAttempt> {
+		const consumed = attemptConsume(against);
+		if (consumed.kind !== "ok" || stateVerify === null) return consumed;
+		let cosine: number;
+		try {
+			const reembedded = await stateVerify.embedder.embedQuery(stateVerify.query);
+			cosine = cosineSimilarity(consumed.result.decoded, reembedded.vector);
+		} catch (error) {
+			// A check that could not run is not a state that passed it: the failure takes
+			// the recovery path like any other unusable payload, and the category says
+			// which of the two happened.
+			return { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
+		}
+		if (cosine < stateVerify.minCosine) {
+			// The prefix maps to the same class as a damaged payload — every digest
+			// matched, but the state is unusable — which is what puts it in the recovery
+			// chain rather than failing the launch outright.
+			const reason = `state-verify: decoded state matches the query at cosine ${cosine.toFixed(6)}, below the frozen ${stateVerify.minCosine}`;
+			return { category: classifySynapseError(new Error(reason)), kind: "error", reason };
+		}
+		return consumed;
+	}
+
+	const first = await verifiedAttempt(stateRef);
 	if (first.kind === "ok") return { kind: "consumed", result: first.result };
 
 	// Only object-class problems recover: the bytes may have been lost in
@@ -857,11 +901,16 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 						restore: replacement === null ? "resend" : "full-vector",
 						stateId: resentId,
 					});
-					input.deps.log.record(meterIdentity, { hop: replacement === null ? "resend" : "full-vector", kind: "state-restore", ok: true });
+					input.deps.log.record(meterIdentity, {
+						cause: hopCauseOf(first),
+						hop: replacement === null ? "resend" : "full-vector",
+						kind: "state-restore",
+						ok: true,
+					});
 				} catch (error) {
 					resendFailed = { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
 				}
-				afterResend = resendFailed ?? attemptConsume(against);
+				afterResend = resendFailed ?? (await verifiedAttempt(against));
 				if (afterResend.kind === "ok") return { kind: "consumed", result: afterResend.result };
 			}
 		}
@@ -874,7 +923,7 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 				const result = await service.searchSemantic({ k: input.k, query: input.fallbackQuery });
 				// Recorded as a hop of its own so "how often did the state plane need
 				// recovering" counts this the same way it counts a re-send.
-				input.deps.log.record(meterIdentity, { hop: "text", kind: "state-restore", ok: true });
+				input.deps.log.record(meterIdentity, { cause: hopCauseOf(afterResend), hop: "text", kind: "state-restore", ok: true });
 				return { kind: "text-fallback", result };
 			} catch (error) {
 				const fallbackFailure = { category: classifySynapseError(error), kind: "error" as const, reason: error instanceof Error ? error.message : String(error) };
