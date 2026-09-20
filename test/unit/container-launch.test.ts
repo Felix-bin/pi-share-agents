@@ -330,3 +330,27 @@ describe("pi install root resolution", () => {
 		assert.match(resolved.degradedReason ?? "", /piInstallRoot/);
 	});
 });
+
+describe("the executable the container must actually exec", () => {
+	it("refuses when the launch command itself is not reachable at the same path", () => {
+		// The npm-package path launches node itself, whose host path is covered by
+		// none of the four roots the design names.
+		const resolved = resolveSubagentLaunch({
+			...subagentInput(containerEnv),
+			launch: { ...subagentLaunch, command: "/usr/local/bin/node" },
+		});
+
+		assert.equal(resolved.topology, "process");
+		assert.match(resolved.degradedReason ?? "", /launchCommand/);
+		assert.match(resolved.degradedReason ?? "", /\/usr\/local\/bin/);
+	});
+
+	it("accepts a launch command that lives under a declared mount", () => {
+		const resolved = resolveSubagentLaunch({
+			...subagentInput({ ...containerEnv, [CONTAINER_MOUNTS_ENV]: "/srv/pi,/opt/pi,/usr/local/bin" }),
+			launch: { ...subagentLaunch, command: "/usr/local/bin/node" },
+		});
+
+		assert.equal(resolved.topology, "container", resolved.degradedReason);
+	});
+});

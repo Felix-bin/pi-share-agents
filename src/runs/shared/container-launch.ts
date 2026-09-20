@@ -42,6 +42,16 @@ export interface RequiredPathRoots {
 	tempRoot: string;
 	/** Where the Pi host or npm package lives; its path travels in the child's argv. */
 	piInstallRoot: string;
+	/**
+	 * The directory holding the binary the container will actually exec.
+	 *
+	 * The design names four roots, but `async-execution.ts` launches
+	 * `binaryHost ?? nodeExecutable` — so on the npm-package path the thing being
+	 * exec'd is Node itself, at a host path that none of the four cover. A
+	 * container that cannot exec its own command fails at startup with a message
+	 * about a missing file, which is a long way from "a path root was not aligned".
+	 */
+	launchCommand: string;
 }
 
 export interface ContainerLaunchInput {
@@ -285,6 +295,7 @@ export function resolveSubagentLaunch(input: {
 			storageRoot: storageRoot!,
 			tempRoot: input.tempRoot,
 			piInstallRoot: input.piInstallRoot,
+			launchCommand: path.posix.dirname(input.launch.command),
 		},
 		identicalPathRoots,
 		launch: input.launch,
