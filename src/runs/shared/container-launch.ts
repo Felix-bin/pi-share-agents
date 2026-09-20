@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
+import { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_TOPOLOGY_ENV, type LaunchTopology } from "../../shared/launch-topology.ts";
 
 const PROBE_TIMEOUT_MS = 5_000;
 const MAX_PROBE_OUTPUT_BYTES = 8 * 1024;
@@ -42,8 +43,6 @@ export interface RequiredPathRoots {
 	/** Where the Pi host or npm package lives; its path travels in the child's argv. */
 	piInstallRoot: string;
 }
-
-export type LaunchTopology = "process" | "container";
 
 export interface ContainerLaunchInput {
 	topology: LaunchTopology;
@@ -211,4 +210,104 @@ export function selectContainerEngine(input: {
 		selected: false,
 		unavailableReason: `No container engine is usable: ${rejections.join(", ")}.`,
 	};
+}
+
+/** Opt in to the container topology. Anything but `container` keeps today's process model. */
+export const CONTAINER_TOPOLOGY_ENV = "PI_SUBAGENT_CONTAINER_TOPOLOGY";
+export const CONTAINER_IMAGE_ENV = "PI_SUBAGENT_CONTAINER_IMAGE";
+export const CONTAINER_ANCHOR_ENV = "PI_SUBAGENT_CONTAINER_ANCHOR";
+/** Comma-separated absolute paths bind-mounted at their own path inside the container. */
+export const CONTAINER_MOUNTS_ENV = "PI_SUBAGENT_CONTAINER_MOUNTS";
+export const CONTAINER_STORAGE_ROOT_ENV = "PI_SUBAGENT_CONTAINER_STORAGE_ROOT";
+
+export { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_TOPOLOGY_ENV, type LaunchTopology };
+
+export interface ResolvedSubagentLaunch extends ResolvedContainerLaunch {
+	/** Merged into the child's environment by the caller. */
+	env: Record<string, string | undefined>;
+}
+
+function splitMounts(raw: string | undefined): string[] {
+	return (raw ?? "").split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+}
+
+/**
+ * The whole of S1's launch-path decision, as one pure function: read the
+ * configuration, pick an engine, check the path roots, and either rewrite the
+ * launch or say why it stayed a process. `async-execution.ts` calls this and
+ * passes the result to `spawn` — it holds none of the branching itself, which is
+ * the constraint design §3.1 puts on that file.
+ */
+export function resolveSubagentLaunch(input: {
+	launch: { command: string; args: readonly string[]; cwd: string };
+	env: NodeJS.ProcessEnv;
+	tempRoot: string;
+	piInstallRoot: string;
+	selectEngine?: () => ContainerEngineSelection;
+}): ResolvedSubagentLaunch {
+	const asProcess = (degradedReason?: string): ResolvedSubagentLaunch => ({
+		command: input.launch.command,
+		args: [...input.launch.args],
+		topology: "process",
+		...(degradedReason ? { degradedReason } : {}),
+		env: {
+			[LAUNCH_TOPOLOGY_ENV]: "process",
+			[LAUNCH_DEGRADED_REASON_ENV]: degradedReason,
+		},
+	});
+
+	if (input.env[CONTAINER_TOPOLOGY_ENV] !== "container") return asProcess();
+
+	const image = input.env[CONTAINER_IMAGE_ENV]?.trim();
+	const anchorContainerId = input.env[CONTAINER_ANCHOR_ENV]?.trim();
+	const storageRoot = input.env[CONTAINER_STORAGE_ROOT_ENV]?.trim();
+	const identicalPathRoots = splitMounts(input.env[CONTAINER_MOUNTS_ENV]);
+	const missing = [
+		[CONTAINER_IMAGE_ENV, image],
+		[CONTAINER_ANCHOR_ENV, anchorContainerId],
+		[CONTAINER_STORAGE_ROOT_ENV, storageRoot],
+		[CONTAINER_MOUNTS_ENV, identicalPathRoots.length > 0 ? "set" : undefined],
+	].filter(([, value]) => !value).map(([name]) => name);
+	if (missing.length > 0) {
+		return asProcess(`Container topology declined: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set.`);
+	}
+
+	const selection = (input.selectEngine ?? (() => selectContainerEngine({})))();
+	if (!selection.selected) return asProcess(selection.unavailableReason);
+
+	const resolved = resolveContainerLaunch({
+		topology: "container",
+		engine: selection.engine,
+		anchorContainerId: anchorContainerId!,
+		image: image!,
+		requiredPathRoots: {
+			worktree: input.launch.cwd,
+			storageRoot: storageRoot!,
+			tempRoot: input.tempRoot,
+			piInstallRoot: input.piInstallRoot,
+		},
+		identicalPathRoots,
+		launch: input.launch,
+	});
+	if (resolved.topology === "process") return asProcess(resolved.degradedReason);
+
+	return { ...resolved, env: { [LAUNCH_TOPOLOGY_ENV]: "container", [LAUNCH_DEGRADED_REASON_ENV]: undefined } };
+}
+
+/**
+ * Which directory must hold Pi at the same absolute path inside the container.
+ *
+ * The child's argv carries host paths — the runner source, the bootstrap, the
+ * config — so whichever install the parent launched from has to be reachable at
+ * that same path on the other side. Knowing neither yields an empty root, which
+ * fails the alignment check in `resolveSubagentLaunch` and degrades visibly:
+ * that is the point, because a container launched without Pi where its argv says
+ * Pi is would fail in a way nobody could attribute.
+ *
+ * It lives here rather than at the call site so that `async-execution.ts` holds
+ * no conditional of its own (design §3.1).
+ */
+export function subagentPiInstallRoot(binaryHost: string | undefined, piPackageRoot: string | undefined): string {
+	if (binaryHost) return path.dirname(binaryHost);
+	return piPackageRoot ?? "";
 }

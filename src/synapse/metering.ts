@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { canonicalDigest } from "./canonical-json.ts";
 import type { SynapseMode } from "./config.ts";
 import type { SynapseErrorClassification } from "./errors.ts";
+import { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_TOPOLOGY_ENV } from "../shared/launch-topology.ts";
 
 /**
  * Append-only measurement log and its aggregation.
@@ -56,7 +57,7 @@ export type MeteringPayload =
 	| { bytes: number; direction: "read" | "write"; kind: "object-io" }
 	| { kind: "task-span"; phase: "start" | "end"; taskId: string }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" }
-	| { kind: "process-identity"; pid: number; startTicks: number; uptimeAtRecordSeconds: number };
+	| { cgroupId: string | null; degradedReason?: string; kind: "process-identity"; pid: number; startTicks: number; topology: "process" | "container"; uptimeAtRecordSeconds: number };
 
 export type MeteringEvent = MeteringIdentity &
 	MeteringPayload & {
@@ -96,11 +97,25 @@ export function createMeteringLog(logPath: string, options: MeteringLogOptions =
 	};
 }
 
-export type ProcessIdentitySnapshot = { pid: number; startTicks: number; uptimeAtRecordSeconds: number };
+export type ProcessIdentitySnapshot = {
+	cgroupId: string | null;
+	degradedReason?: string;
+	pid: number;
+	startTicks: number;
+	/**
+	 * Which launch topology this process actually got — not which one was
+	 * configured. S1 design §4.3: an S2 experiment that silently mixes a
+	 * containerised run with one that fell back to the process model produces a
+	 * number nobody can interpret, and nothing in the data would say so.
+	 */
+	topology: "process" | "container";
+	uptimeAtRecordSeconds: number;
+};
 
 export type ProcessIdentityOptions = {
 	pid?: number;
 	readFile?: (filePath: string) => string;
+	env?: NodeJS.ProcessEnv;
 };
 
 /**
@@ -129,6 +144,33 @@ function parseUptimeSeconds(uptime: string): number | null {
 }
 
 /**
+ * The cgroup path from /proc/self/cgroup, or null when it could not be read.
+ *
+ * S1 makes this *available*; it does not yet key attribution on it. The swap
+ * from `(pid, startTicks)` to a cgroup id (S1 design §4.2) requires S3's trace
+ * wire protocol to carry the same id on the kernel side, which is a change to an
+ * already-reviewed contract. Recording it here first means that when the swap
+ * happens, the run side of the join already has the field, and the change is
+ * `attributionKeyOf` plus the collector — not another pass over this file.
+ *
+ * Unreadable is null, never "": a process outside any cgroup and a read that
+ * failed are different facts, and an empty string would join against nothing
+ * while looking like a value.
+ */
+function readCgroupId(readFile: (filePath: string) => string): string | null {
+	try {
+		for (const line of readFile("/proc/self/cgroup").split("\n")) {
+			// cgroup v2 writes a single "0::<path>" line; v1 writes one line per controller.
+			const cgroupPath = line.trim().split(":").slice(2).join(":");
+			if (cgroupPath) return cgroupPath;
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Reads this process's OS identity from /proc, when it exists. A platform
  * without /proc — and any read that fails for another reason — has nothing to
  * bind, so the caller gets null rather than a guess. The file reader is
@@ -139,11 +181,20 @@ function parseUptimeSeconds(uptime: string): number | null {
 export function readProcessIdentity(options: ProcessIdentityOptions = {}): ProcessIdentitySnapshot | null {
 	const pid = options.pid ?? process.pid;
 	const readFile = options.readFile ?? ((filePath: string) => fs.readFileSync(filePath, "utf-8"));
+	const env = options.env ?? process.env;
 	try {
 		const startTicks = parseStartTicks(readFile("/proc/self/stat"));
 		const uptimeAtRecordSeconds = parseUptimeSeconds(readFile("/proc/uptime"));
 		if (startTicks === null || uptimeAtRecordSeconds === null) return null;
-		return { pid, startTicks, uptimeAtRecordSeconds };
+		const degradedReason = env[LAUNCH_DEGRADED_REASON_ENV]?.trim();
+		return {
+			cgroupId: readCgroupId(readFile),
+			...(degradedReason ? { degradedReason } : {}),
+			pid,
+			startTicks,
+			topology: env[LAUNCH_TOPOLOGY_ENV] === "container" ? "container" : "process",
+			uptimeAtRecordSeconds,
+		};
 	} catch {
 		return null;
 	}

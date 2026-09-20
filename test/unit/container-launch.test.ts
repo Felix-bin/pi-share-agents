@@ -5,6 +5,15 @@ import {
 	containerEngineSpec,
 	resolveContainerLaunch,
 	selectContainerEngine,
+	resolveSubagentLaunch,
+	subagentPiInstallRoot,
+	CONTAINER_TOPOLOGY_ENV,
+	CONTAINER_IMAGE_ENV,
+	CONTAINER_ANCHOR_ENV,
+	CONTAINER_MOUNTS_ENV,
+	CONTAINER_STORAGE_ROOT_ENV,
+	LAUNCH_TOPOLOGY_ENV,
+	LAUNCH_DEGRADED_REASON_ENV,
 	type ContainerEngineId,
 	type ContainerEngineProbe,
 } from "../../src/runs/shared/container-launch.ts";
@@ -207,3 +216,117 @@ describe("container engine selection", () => {
 		assert.deepEqual(probed, [...CONTAINER_ENGINE_IDS]);
 	});
 })
+;
+
+const subagentLaunch = {
+	command: "/opt/pi/bin/node",
+	args: ["--experimental-strip-types", "/opt/pi/runner.ts", "/srv/pi/temp/cfg.json"],
+	cwd: "/srv/pi/worktree",
+};
+
+const containerEnv = {
+	[CONTAINER_TOPOLOGY_ENV]: "container",
+	[CONTAINER_IMAGE_ENV]: "pi-subagent:node24",
+	[CONTAINER_ANCHOR_ENV]: "anchor-7",
+	[CONTAINER_MOUNTS_ENV]: "/srv/pi,/opt/pi",
+	[CONTAINER_STORAGE_ROOT_ENV]: "/srv/pi/synapse",
+};
+
+function subagentInput(env: NodeJS.ProcessEnv) {
+	return {
+		launch: subagentLaunch,
+		env,
+		tempRoot: "/srv/pi/temp",
+		piInstallRoot: "/opt/pi",
+		selectEngine: () => ({
+			selected: true as const,
+			engine: containerEngineSpec("isula"),
+			version: "Version 2.1.5",
+		}),
+	};
+}
+
+describe("subagent launch topology", () => {
+	it("leaves the launch byte-identical when containerisation is not switched on", () => {
+		const resolved = resolveSubagentLaunch(subagentInput({}));
+
+		assert.equal(resolved.topology, "process");
+		assert.equal(resolved.command, subagentLaunch.command);
+		assert.deepEqual(resolved.args, subagentLaunch.args);
+		assert.equal(resolved.degradedReason, undefined);
+	});
+
+	it("tells the child which topology it was launched under, even in the default case", () => {
+		const resolved = resolveSubagentLaunch(subagentInput({}));
+
+		assert.equal(resolved.env[LAUNCH_TOPOLOGY_ENV], "process");
+		assert.equal(resolved.env[LAUNCH_DEGRADED_REASON_ENV], undefined);
+	});
+
+	it("wraps the launch when containerisation is switched on and everything lines up", () => {
+		const resolved = resolveSubagentLaunch(subagentInput(containerEnv));
+
+		assert.equal(resolved.topology, "container", resolved.degradedReason);
+		assert.equal(resolved.command, "isula");
+		assert.equal(resolved.env[LAUNCH_TOPOLOGY_ENV], "container");
+		assert.ok(resolved.args.includes("container:anchor-7"));
+	});
+
+	it("degrades visibly when no container engine is usable", () => {
+		const resolved = resolveSubagentLaunch({
+			...subagentInput(containerEnv),
+			selectEngine: () => ({ selected: false as const, unavailableReason: "No container engine is usable: isula (not found on PATH)." }),
+		});
+
+		assert.equal(resolved.topology, "process");
+		assert.deepEqual(resolved.args, subagentLaunch.args);
+		assert.equal(resolved.env[LAUNCH_TOPOLOGY_ENV], "process");
+		assert.match(resolved.env[LAUNCH_DEGRADED_REASON_ENV] ?? "", /not found on PATH/);
+	});
+
+	it("degrades visibly, naming the setting, when a required container setting is missing", () => {
+		const { [CONTAINER_IMAGE_ENV]: _image, ...withoutImage } = containerEnv;
+		const resolved = resolveSubagentLaunch(subagentInput(withoutImage));
+
+		assert.equal(resolved.topology, "process");
+		assert.match(resolved.degradedReason ?? "", new RegExp(CONTAINER_IMAGE_ENV));
+	});
+
+	it("degrades visibly when a path root is not covered by the declared mounts", () => {
+		const resolved = resolveSubagentLaunch(subagentInput({
+			...containerEnv,
+			[CONTAINER_MOUNTS_ENV]: "/srv/pi",
+		}));
+
+		assert.equal(resolved.topology, "process");
+		assert.match(resolved.degradedReason ?? "", /piInstallRoot/);
+		assert.match(resolved.env[LAUNCH_DEGRADED_REASON_ENV] ?? "", /piInstallRoot/);
+	});
+
+	it("never reports a container topology together with a degraded reason", () => {
+		for (const env of [{}, containerEnv, { ...containerEnv, [CONTAINER_MOUNTS_ENV]: "/srv/pi" }]) {
+			const resolved = resolveSubagentLaunch(subagentInput(env));
+			if (resolved.topology === "container") assert.equal(resolved.degradedReason, undefined);
+			else if (env !== containerEnv && Object.keys(env).length > 0) assert.ok(resolved.degradedReason);
+		}
+	});
+});
+
+describe("pi install root resolution", () => {
+	it("uses the directory holding the compiled host when one is in play", () => {
+		assert.equal(subagentPiInstallRoot("/opt/pi/bin/pi", "/usr/lib/node_modules/pi"), "/opt/pi/bin");
+	});
+
+	it("falls back to the npm package root when there is no compiled host", () => {
+		assert.equal(subagentPiInstallRoot(undefined, "/usr/lib/node_modules/pi"), "/usr/lib/node_modules/pi");
+	});
+
+	it("returns an empty root when neither is known, so alignment fails visibly", () => {
+		const root = subagentPiInstallRoot(undefined, undefined);
+		assert.equal(root, "");
+
+		const resolved = resolveSubagentLaunch({ ...subagentInput(containerEnv), piInstallRoot: root });
+		assert.equal(resolved.topology, "process");
+		assert.match(resolved.degradedReason ?? "", /piInstallRoot/);
+	});
+});

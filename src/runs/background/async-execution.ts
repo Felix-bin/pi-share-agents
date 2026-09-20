@@ -16,6 +16,7 @@ import { buildEffectiveSystemPrompt } from "../shared/effective-system-prompt.ts
 import { currentCompletionOwnerId } from "../../shared/completion-owner.ts";
 import { planChildLaunch, resolveEffectiveOutputSchema, resolveStepBehavior, suppressProgressForReadOnlyTask, type ResolvedStepBehavior } from "../shared/child-launch-plan.ts";
 import { formatHerdrMachineRunnerUnsupported, resolveHerdrMachinePlacement } from "../shared/herdr-machine.ts";
+import { resolveSubagentLaunch, subagentPiInstallRoot } from "../shared/container-launch.ts";
 import { applyThinkingSuffix, getHostBuiltinToolNames, projectLaunchResolvedChildExtensions, resolvePiLaunchToolPlan } from "../shared/child-tool-plan.ts";
 import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { applyWatchdogLaunchRules, sendRuleViolationWarning } from "../../watchdog/rules.ts";
@@ -723,12 +724,17 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Om
 			: nativeRunnerSupported
 				? [...preload, "--experimental-strip-types", runner, cfgPath]
 				: [...preload, jitiCliPath!, runner, cfgPath];
-		const proc = spawn(command, args, {
+		// S1 design §3.1: the whole containerisation decision is this one call; no
+		// branch on topology lives in this file. Default configuration returns the
+		// process launch byte-identical.
+		const launch = resolveSubagentLaunch({ launch: { command, args, cwd }, env: process.env, tempRoot: TEMP_ROOT_DIR, piInstallRoot: subagentPiInstallRoot(binaryHost, piPackageRoot) });
+		const proc = spawn(launch.command, launch.args, {
 			cwd,
 			...backgroundProcessOptions(),
 			stdio: ["ignore", stdoutFd ?? "ignore", stderrFd ?? "ignore"],
 			env: {
 				...omitExtensionBindingsEnv(process.env),
+				...launch.env,
 				// Unset leaves the inherited parent value in place. See childCacheRetention.
 				...childCacheRetentionEnv(),
 				[PI_CODING_AGENT_PACKAGE_ROOT_ENV]: binaryHost ? undefined : piPackageRoot,
