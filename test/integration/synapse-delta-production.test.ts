@@ -77,7 +77,7 @@ function runtimeFor(synapse: SynapseChildContract | undefined): ChildRuntimeConf
 	return config;
 }
 
-function extensionConfig(delta: boolean): Record<string, CanonicalValue> {
+function extensionConfig(delta: boolean, vectorCache = false): Record<string, CanonicalValue> {
 	return {
 		corpusSnapshotId,
 		delta,
@@ -85,16 +85,17 @@ function extensionConfig(delta: boolean): Record<string, CanonicalValue> {
 		memory: "project",
 		mode: "synapse",
 		storageRoot,
+		vectorCache,
 	};
 }
 
-function synapseContract(delta: boolean, childTools: readonly string[] = ["read", "synapse_read"]): SynapseChildContract {
+function synapseContract(delta: boolean, childTools: readonly string[] = ["read", "synapse_read"], vectorCache = false): SynapseChildContract {
 	const synapse = resolveSynapseChildContract({
 		agentDir: storageRoot,
 		agentName: "retriever",
 		childTools,
 		cwd: worktree,
-		extensionConfig: extensionConfig(delta),
+		extensionConfig: extensionConfig(delta, vectorCache),
 		extensionTools: ["synapse_read", "synapse_write"],
 		runId: RUN_ID,
 		sessionId: "sess-parent",
@@ -303,6 +304,37 @@ describe("synapse residual path in production", () => {
 		const opened = await trigger(synapseContract(false));
 		assert.equal(opened.state?.kind, "state");
 		assert.equal(baseSelections().length, 0, "the control arm must not read a base");
+	});
+
+	it("reads each record's vector once per process when the cache is on, and every time when it is off", async () => {
+		await rememberBase();
+		// A second record so a ranking has more than one vector to fetch: with a single
+		// record, a cache that never worked would look exactly like one that did.
+		const second = createMemoryService({
+			corpusSnapshotId: null,
+			embedder,
+			provenance: { agent: "retriever", attempt: 1, runId: RUN_ID, sessionId: "sess-parent" },
+			scope: { agent: "retriever", namespaceId: deriveNamespaceId(worktree), pathPrefixes: [""], write: true },
+			storeRoot: storageRoot,
+			worktreeRoot: worktree,
+		});
+		await second.remember({ content: "unrelated", kind: "evidence", operationId: "op-base-2", summary: "an unrelated observation", tags: ["base"], topic: "unrelated topic" });
+
+		const warm = synapseContract(true, ["read", "synapse_read"], true);
+		await trigger(warm);
+		// The first send pays for both records: it is the ranking that fills the cache.
+		assert.equal(baseSelections().length, 2, "the first ranking reads every record it ranks");
+
+		const again = await trigger(warm);
+		assert.ok(again.delegation, "the second send must really run, or this test proves nothing");
+		const sends = readMeteringLog(logPath()).filter((event) => event.kind === "state-send" && event.ok);
+		assert.equal(sends.length, 2, "two sends crossed, and the second one ranked the same records");
+		assert.equal(baseSelections().length, 2, "the second ranking must be served from memory, not from the store");
+
+		// The cold configuration, on the same store in the same process, still pays for
+		// every ranking: the difference between the two rows is the cache and nothing else.
+		await trigger(synapseContract(true));
+		assert.equal(baseSelections().length, 4, "with the cache off each ranking reads each record again");
 	});
 
 	it("keeps the receiver's contract check satisfied for a residual, not just for a vector", async () => {

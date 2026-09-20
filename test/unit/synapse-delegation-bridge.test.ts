@@ -44,6 +44,7 @@ function childContract(): SynapseChildContract {
 		embedding: null,
 		runId: "run-7",
 		sessionId: "sess-parent",
+		vectorCache: false,
 	};
 }
 

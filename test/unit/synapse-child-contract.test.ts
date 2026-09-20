@@ -121,6 +121,18 @@ describe("child contract resolution", () => {
 		assert.deepEqual(foreground, background);
 	});
 
+	it("carries the vector-cache switch, off unless the config asks for it", () => {
+		// Off by default so a launch that says nothing about it keeps the frozen
+		// cold-base byte behaviour: a default config must not silently start serving
+		// record vectors from memory, because that would move the measured account
+		// without any experiment having asked for the change.
+		const off = resolveSynapseChildContract(input());
+		assert.equal(off?.vectorCache, false, "a default launch must read vectors from the store");
+
+		const on = resolveSynapseChildContract(input({ extensionConfig: { mode: "synapse", vectorCache: true } }));
+		assert.equal(on?.vectorCache, true, "the switch has to reach the seam that builds the ranking service");
+	});
+
 	it("survives the trip to a separate process", () => {
 		const contract = resolveSynapseChildContract(input());
 		assert.ok(contract);

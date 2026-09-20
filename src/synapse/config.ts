@@ -54,6 +54,22 @@ export const SYNAPSE_MAX_EMBEDDING_DIM = 8192;
 export const SYNAPSE_DEFAULT_DELTA = false;
 
 /**
+ * Whether a process keeps memory-record vectors in memory between rankings.
+ *
+ * Off by default, so the frozen `cold base` full-account convention still describes
+ * the default configuration: with the cache off, every ranking reads every record's
+ * vector from the store — the cost the P4-4 replay measured at 476 KiB per round.
+ * Turning it on makes those reads happen once per process, which is exactly the
+ * difference between the cold row and the hot row of the pre-registered table, and
+ * turns the hot row from a derived figure into a measured one.
+ *
+ * It changes where the bytes come from, never which bytes are compared: a run with
+ * the cache on and one with it off must rank identically, and a difference in
+ * ranking between the two settings is a defect rather than a tuning result.
+ */
+export const SYNAPSE_DEFAULT_VECTOR_CACHE = false;
+
+/**
  * A JSON value as it arrives from config.json: parsed by the host, not yet
  * validated by us. Naming it keeps the unvalidated boundary visible.
  */
@@ -83,6 +99,8 @@ export type SynapseConfig = {
 	mode: SynapseMode;
 	stateRecovery: SynapseStateRecovery;
 	storageRoot: string | null;
+	/** Whether record vectors stay in memory between rankings; see {@link SYNAPSE_DEFAULT_VECTOR_CACHE}. */
+	vectorCache: boolean;
 };
 
 const EmbeddingSchema = Type.Object(
@@ -109,6 +127,7 @@ const RawConfigSchema = Type.Object(
 		mode: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("text"), Type.Literal("synapse")])),
 		stateRecovery: Type.Optional(Type.Union([Type.Literal("resend"), Type.Literal("resend-then-text")])),
 		storageRoot: Type.Optional(Type.String({ minLength: 1 })),
+		vectorCache: Type.Optional(Type.Boolean({ description: "keep record vectors in memory between rankings; off keeps the cold-base convention" })),
 	},
 	{ additionalProperties: false },
 );
@@ -205,5 +224,6 @@ export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = o
 		mode,
 		stateRecovery: raw.stateRecovery ?? "resend-then-text",
 		storageRoot: raw.storageRoot === undefined ? null : resolveSynapseStorageRoot(raw.storageRoot, homeDir),
+		vectorCache: raw.vectorCache ?? SYNAPSE_DEFAULT_VECTOR_CACHE,
 	};
 }

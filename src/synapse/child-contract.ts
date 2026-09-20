@@ -60,6 +60,16 @@ export type SynapseChildContract = {
 	embedding: SynapseEmbeddingConfig | null;
 	runId: string;
 	sessionId: string;
+	/**
+	 * Whether memory-record vectors stay in memory in whichever process ranks them.
+	 *
+	 * Carried beside `delta` for the same reason it is: both reach the same seam, and
+	 * only the launch knows them. Off by default so the frozen cold-base convention
+	 * still describes a default run; on, the reads happen once per process instead of
+	 * once per ranking. It changes where the bytes come from, never which vectors are
+	 * compared — the same launch must rank identically either way.
+	 */
+	vectorCache: boolean;
 };
 
 export type ResolveChildContractInput = {
@@ -148,6 +158,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 		embedding: config.embedding,
 		runId,
 		sessionId,
+		vectorCache: config.vectorCache,
 	};
 }
 
@@ -171,6 +182,10 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 			mode: contract.contract.mode,
 			stateRecovery: "resend-then-text",
 			storageRoot: contract.contract.storageRoot,
+			// Not inert, unlike `delta` above: the child's own recall ranks records, so
+			// the launch's choice about keeping their vectors in memory applies here as
+			// much as it does on the sender's base selection.
+			vectorCache: contract.vectorCache,
 		},
 		agentDir: getAgentDir(),
 		nextOperationId: () => `${contract.runId}/${contract.agent}/${(operations += 1)}`,

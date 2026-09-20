@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isPathInScope, isReadable, requireWritable, type AccessScope } from "./access.ts";
-import type { Embedder } from "./embedding.ts";
-import { SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
+import type { MemoryVectorCache } from "./vector-cache.ts";
+import { SYNAPSE_VECTOR_MEDIA_TYPE, type Embedder } from "./embedding.ts";
 import { createContentStore, type ContentStore } from "./content-store.ts";
 import {
 	createMemoryStore,
@@ -52,6 +52,13 @@ export type MemoryServiceOptions = {
 	provenance: MemoryProvenance;
 	scope: AccessScope;
 	storeRoot: string;
+	/**
+	 * Where record vectors are kept between calls. Omitted means every ranking reads
+	 * them from the store again, which is what the frozen full-account convention
+	 * ("cold base") describes; a process cache makes those reads happen once, and the
+	 * difference is a measured difference rather than a derived one.
+	 */
+	vectorCache?: MemoryVectorCache;
 	worktreeRoot: string;
 };
 
@@ -199,6 +206,11 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 		if (embedding === null) {
 			throw new Error(`integrity: memory ${record.memoryId} has no stored vector`);
 		}
+		// A hit is a read that does not happen, so it is also a read that is not
+		// metered: the account stays a record of I/O actually performed, and the
+		// one-time cost of filling the cache stays attributed to the call that paid it.
+		const cached = options.vectorCache?.get(embedding.objectId);
+		if (cached !== null && cached !== undefined) return cached;
 		let bytes: Uint8Array;
 		try {
 			bytes = contentStore.read(embedding.objectId);
@@ -225,6 +237,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 			}
 		}
 		options.metering?.log.record(options.metering.identity, { bytes: bytes.byteLength, direction: "read", kind: "object-io", purpose });
+		options.vectorCache?.put(embedding.objectId, vector);
 		return vector;
 	}
 

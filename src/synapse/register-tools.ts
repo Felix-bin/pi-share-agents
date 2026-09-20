@@ -8,6 +8,7 @@ import { resolveConfiguredEmbedder, type Embedder } from "./embedding.ts";
 import { createMemoryService, SYNAPSE_DEFAULT_SEARCH_K, SYNAPSE_MAX_SEARCH_K, type MemoryService } from "./memory-service.ts";
 import type { MemoryProvenance } from "./memory-store.ts";
 import { ensureNamespace, resolveStorageRoot } from "./namespace.ts";
+import { memoryVectorCacheFor } from "./vector-cache.ts";
 
 /**
  * Registration of the model-visible SYNAPSE tools.
@@ -190,14 +191,19 @@ export function createSynapseService(config: SynapseConfig, agentDir: string, co
 		worktreePath: context.worktreeRoot,
 	});
 	ensureNamespace(resolved);
+	const resolvedEmbedder = resolveEmbedder(config, resolved.root);
 	return {
 		service: createMemoryService({
 			corpusSnapshotId: config.corpusSnapshotId,
-			embedder: resolveEmbedder(config, resolved.root),
+			embedder: resolvedEmbedder,
 			maxObjectBytes: config.maxObjectBytes,
 			provenance: context.provenance,
 			scope: { ...context.scope, namespaceId: resolved.namespaceId },
 			storeRoot: resolved.root,
+			// Recall ranks every record this agent may read. Keeping the vectors in this
+			// process turns that from a read per record per call into a read per record
+			// per process; off, nothing changes.
+			vectorCache: config.vectorCache && resolvedEmbedder !== undefined ? memoryVectorCacheFor(resolved.root, resolvedEmbedder) : undefined,
 			worktreeRoot: context.worktreeRoot,
 		}),
 		storageRoot: resolved.root,

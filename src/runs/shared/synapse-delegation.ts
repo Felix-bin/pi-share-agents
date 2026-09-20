@@ -9,6 +9,7 @@ import { createMemoryService } from "../../synapse/memory-service.ts";
 import { meteredEmbedder, resolveConfiguredEmbedder, type Embedder } from "../../synapse/embedding.ts";
 import type { ReceiptOutcome } from "../../synapse/handoff.ts";
 import { SYNAPSE_DEFAULT_SEARCH_K } from "../../synapse/memory-service.ts";
+import { memoryVectorCacheFor } from "../../synapse/vector-cache.ts";
 import type { Usage } from "../../shared/types.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 
@@ -176,6 +177,11 @@ function senderBaseSelector(synapse: SynapseChildContract, childIndex: number | 
 			write: synapse.contract.scope.write,
 		},
 		storeRoot: synapse.contract.storageRoot,
+		// Base selection ranks every record the sender holds, every time it sends.
+		// With the cache on, those vectors are read once per process instead — the
+		// difference between the pre-registered cold row (this default) and its hot
+		// row, which stops being a derived figure the moment this switch exists.
+		vectorCache: synapse.vectorCache ? memoryVectorCacheFor(synapse.contract.storageRoot, embedder) : undefined,
 		worktreeRoot: cwd,
 	});
 	return {

@@ -52,6 +52,16 @@ describe("synapse config defaults", () => {
 		assert.equal(resolveSynapseConfig({ delta: true, mode: "synapse" }, HOME).delta, true);
 	});
 
+	it("leaves the record-vector cache off unless an experiment asks for it", () => {
+		// Off keeps the frozen cold-base convention describing a default run: every
+		// ranking reads every record's vector. On makes those reads one-time, which is
+		// what turns the pre-registered hot row from a derived figure into a measured
+		// one — so the two configurations have to be distinguishable from config alone.
+		assert.equal(resolveSynapseConfig({}, HOME).vectorCache, false);
+		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).vectorCache, false);
+		assert.equal(resolveSynapseConfig({ mode: "synapse", vectorCache: true }, HOME).vectorCache, true);
+	});
+
 	it("lets an experiment state memory explicitly", () => {
 		assert.equal(resolveSynapseConfig({ memory: "project", mode: "text" }, HOME).memory, "project");
 		assert.equal(resolveSynapseConfig({ memory: "off", mode: "synapse" }, HOME).memory, "off");
