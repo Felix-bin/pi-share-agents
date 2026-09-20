@@ -38,13 +38,24 @@ import { SYNAPSE_IO_CATEGORIES, type SynapseIoCategory, type TraceIoBucket } fro
  *    bytes would be a category error. It becomes a real number when a later
  *    phase replaces file delivery with a socket, and not before.
  *  - **Coverage cannot be read past.** The kernel side is a discriminated
- *    union, and the two variants that carry bytes are distinguished by
- *    *coverage*, not merely by success: a caller has to write
- *    `"reported-with-gaps"` in its own source before it can reach a byte total
- *    that has a front-edge gap or an orphan behind it. Design §4.4 allows a
+ *    union whose two byte-carrying variants are distinguished by *coverage*,
+ *    not merely by success — and, load-bearingly, **no byte-bearing property
+ *    is common to them**. The totals sit behind `noGapFound` on one and
+ *    `withKnownGaps` on the other, so every path to a byte number goes through
+ *    a symbol that states which of the two it is. Design §4.4 allows a
  *    late-attached collector to be reported rather than refused only on the
- *    condition that the caller cannot overlook it, and a sibling `coverage`
+ *    condition that the caller cannot overlook that, and a sibling `coverage`
  *    field beside a `bytes` field is exactly the shape that gets overlooked.
+ *
+ *    A shared `bytes` field would have been that shape in disguise: with the
+ *    same property on both variants, `if (k.kind === "not-collected" ||
+ *    k.kind === "refused") return 0;` — or `"bytes" in k` — type-checks and
+ *    reads a gapped total without the word "gap" appearing anywhere in the
+ *    caller. Three such consumers are compiled as a negative test in
+ *    `synapse-metering-kernel-io.test.ts`; they must not type-check, and the
+ *    `@ts-expect-error` on each fails the build if this shape ever lets one in
+ *    again. The discriminant alone does not close this: only the absence of a
+ *    common byte-bearing property does.
  *  - **A withheld account is withheld here too.** The `refused` and
  *    `not-collected` variants carry no byte quantity at all — not the
  *    attributed ledger, not the unattributed one, not the pathless volume.
@@ -187,13 +198,35 @@ export type KernelIoGaps = {
 export type KernelTraceLines = { errors: TraceLineErrorCounts; losses: number; records: number };
 
 /**
- * The kernel side of the result: four outcomes, and bytes on exactly two of
- * them.
+ * Everything an account that may be reported carries: the totals, the §5.1
+ * columns, and the per-process rows.
  *
- * The discriminant is the whole design. A caller cannot reach a byte total
- * without first naming, in its own source, whether the account it is reading
- * was proved gap-free — and cannot reach one at all on the two outcomes where
- * the layer below declined to produce one.
+ * It is a type of its own rather than three fields on each variant so that the
+ * two reporting variants can carry it under *different property names*. That
+ * is the whole mechanism: `noGapFound` and `withKnownGaps` are the only routes
+ * to a byte number in this module, and each names the coverage state of what
+ * it holds. Flattening this back onto both variants would restore a common
+ * `bytes` property, and with it the exclusion-form consumer — "not
+ * `not-collected`, not `refused`, therefore `.bytes`" — that reads a gapped
+ * total without ever mentioning a gap.
+ */
+export type KernelIoReport = {
+	bytes: KernelIoBytes;
+	envelope: EnvelopeBytesSideBySide;
+	/** The per-process rows, each with its own `coverage` and the identities it was bound to. A row with more than one identity is not divisible between them. */
+	processes: readonly AttributedProcessIo[];
+};
+
+/**
+ * The kernel side of the result: four outcomes, and bytes on exactly two of
+ * them, under two different names.
+ *
+ * A caller cannot reach a byte total without naming, in its own source, either
+ * `noGapFound` or `withKnownGaps` — and cannot reach one at all on the two
+ * outcomes where the layer below declined to produce one. Narrowing by
+ * exclusion does not get there: with no `bytes` property on any variant,
+ * `"bytes" in account` yields `unknown` and `account.bytes` after ruling out
+ * the two non-reporting kinds does not type-check.
  */
 export type KernelIoAccount =
 	/**
@@ -219,21 +252,26 @@ export type KernelIoAccount =
 	 */
 	| { kind: "refused"; reasons: readonly KernelIoUnavailableReason[]; traceLines: KernelTraceLines }
 	/**
-	 * An account with no front-edge gap and no orphan in what was observed.
+	 * An account with no front-edge gap and no orphan in what was observed. Its
+	 * totals are behind `noGapFound`, which is the claim being made about them.
 	 *
 	 * Named for what was tested, not for wholeness: coverage is examined at the
 	 * front edge only, so a collector that died mid-run leaves a suffix with no
 	 * evidence in it and nothing here can notice. Read it as "no gap was
 	 * found", never as "this is the whole run".
 	 */
-	| { bytes: KernelIoBytes; envelope: EnvelopeBytesSideBySide; kind: "reported-no-gap-found"; processes: readonly AttributedProcessIo[] }
+	| { kind: "reported-no-gap-found"; noGapFound: KernelIoReport }
 	/**
 	 * An account that is reportable and known to be missing something: see
 	 * `gaps`. On real traces this is the ordinary outcome — one orphan process
 	 * anywhere is enough — which is why it carries the bytes rather than
 	 * refusing them.
+	 *
+	 * Its totals are behind `withKnownGaps`, so a caller cannot spend them
+	 * without having written that word; `gaps` beside it says which condition
+	 * failed and by how much.
 	 */
-	| { bytes: KernelIoBytes; envelope: EnvelopeBytesSideBySide; gaps: KernelIoGaps; kind: "reported-with-gaps"; processes: readonly AttributedProcessIo[] };
+	| { gaps: KernelIoGaps; kind: "reported-with-gaps"; withKnownGaps: KernelIoReport };
 
 /**
  * The two columns. `application` is byte-for-byte what `aggregateMetering`
@@ -323,9 +361,9 @@ function accountOf(application: MeteringTotals, attribution: KernelIoAttribution
 	if (attributed === "unavailable") return { kind: "refused", reasons: unavailableReasons, traceLines: diagnostics.traceLines };
 
 	const bytes = totalKernelBytes(attributed);
-	const envelope = envelopeSideBySide(application, bytes);
-	if (diagnostics.coverage.complete) return { bytes, envelope, kind: "reported-no-gap-found", processes: attributed };
-	return { bytes, envelope, gaps: gapsOf(diagnostics, bytes), kind: "reported-with-gaps", processes: attributed };
+	const report: KernelIoReport = { bytes, envelope: envelopeSideBySide(application, bytes), processes: attributed };
+	if (diagnostics.coverage.complete) return { kind: "reported-no-gap-found", noGapFound: report };
+	return { gaps: gapsOf(diagnostics, bytes), kind: "reported-with-gaps", withKnownGaps: report };
 }
 
 /**
