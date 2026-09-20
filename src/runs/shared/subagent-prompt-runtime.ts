@@ -459,6 +459,24 @@ function warnState(stage: string, reason: string): void {
 }
 
 /**
+ * Whether a consumed ranking is worth a steer message.
+ *
+ * A ranking that selected nothing has nothing for the child to act on, and the
+ * message's whole content is the list — so steering it would spend context on
+ * every later turn of that session to say "a vector arrived and selected
+ * nothing", which reads as evidence where there is none. The fact is not lost:
+ * the consume is metered whether or not a steer follows, so an experiment counts
+ * empty rankings from the ledger rather than from the child's prompt.
+ *
+ * Exported because the choice is otherwise unpinnable: `buildCorpus` refuses an
+ * empty corpus and the ranking applies no score floor, so no fixture can make a
+ * real consumption return zero hits (review item §7.4, 2026-09-20).
+ */
+export function shouldSteerHits(hits: readonly StateRetrievalHit[]): boolean {
+	return hits.length > 0;
+}
+
+/**
  * Consumes the state-plane envelope addressed to this child and steers the
  * session with what the ranking selected.
  *
@@ -540,6 +558,7 @@ async function consumeStateEnvelope(config: ChildRuntimeConfig, sessionId: strin
 	}
 	if (outcome.kind !== "consumed") return warnState("state consumption", outcome.reason);
 	if (sendSteer === undefined) return;
+	if (!shouldSteerHits(outcome.result.hits)) return;
 	try {
 		sendSteer(stateHitsMessage(outcome.result));
 	} catch (error) {

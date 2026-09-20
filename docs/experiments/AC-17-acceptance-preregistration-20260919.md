@@ -23,8 +23,13 @@ delta（残差）的净收益符号是本次决赛的**结论性问题**：它�
 
 | 臂 | 发送侧 | 接收侧 | 说明 |
 |---|---|---|---|
-| **S2**（对照） | 嵌入查询 → 单位化 → float32 向量（4096 B, dim=1024）→ CAS → `stateRef.encoding="float32-vector"` | 校验 sha-256/维度/表示 → 对固定语料余弦 top-k | 现网唯一可达路径 |
-| **R1**（处理） | 同上，但按率失真选档改发 `encoding="delta"` + `baseMemoryId` | 校验 → 按 `baseMemoryId` 从**自己**记忆库取基 → 解码 → 反量化 → 对同一固定语料余弦 top-k | P4-4 本卡实现 |
+| **S2**（对照） | 嵌入查询 → 单位化 → float32 向量（4096 B, dim=1024）→ CAS → `stateRef.encoding="float32-vector"` | 校验 sha-256/维度/表示 → 对固定语料余弦 top-k | `synapse.delta = false`（**默认**） |
+| **R1**（处理） | 同上，但按率失真选档改发 `encoding="delta"` + `baseMemoryId` | 校验 → 按 `baseMemoryId` 从**自己**记忆库取基 → 解码 → 反量化 → 对同一固定语料余弦 top-k | `synapse.delta = true`（P4-4b-β 接线） |
+
+**两臂之间唯一的差异就是开关 `synapse.delta`**，它只决定"是否在发送侧注入基选择（`predictedBase`）"；
+`SYNAPSE_DELTA_PARAMS`（grid 127 / threshold 0.99 / int8 stride 3）在两臂完全相同，且**不得**随开关改动。
+开关默认 `false`：未写该键的配置与 P4-4b-β 之前的字节行为一致（发送完整向量、`state-prepare.fallbackReason = "no-base"`）。
+开关关闭时发送侧**不会读任何基**（`object-io(purpose="base-selection")` 零条），因此对照臂不承担残差路径的成本。
 
 其余条件两臂**必须完全一致**并写入 manifest：冻结语料快照 `c4b1279d…`、`representationId`、
 嵌入 provider 与模型（SiliconFlow `BAAI/bge-m3`, dim 1024）、温度（若涉及）、序列与轮次、`k`、seed、
@@ -38,6 +43,10 @@ delta（残差）的净收益符号是本次决赛的**结论性问题**：它�
 2. **嵌入缓存状态**：两级缓存持久化在 `storageRoot` 内，缓存命中不产生 `embedding-call` 事件。
    冷/热缓存下的嵌入成本不可比，须在 manifest 声明并在两臂间保持一致。
 3. **`deltaPayloadBytes` 口径**：发送侧单计（见上文），读取该字段时不得再与 receive/consume 相加。
+4. **状态预算 `SYNAPSE_STATE_BUDGET_MS`**（P4-4b-β 新增，默认 2500 ms）：发送侧的状态面等待上限，
+   超过即按"本次未传递状态"放行，并写一条 `error(category="timeout", detail="state budget expired…")`。
+   **该常量必须写进 manifest 并两臂一致**：预算若在某一臂上频繁触发，该臂的 `state-send` 会明显少于另一臂——
+   这不是"省了字节"，是"没传成"。聚合前先按 `state-prepare` 与 `state-send` 的条数对齐，条数不等即判该轮无效。
 
 ---
 
@@ -152,7 +161,9 @@ P4-4 落地时必须给出**归因规则**并把规则写进证据包；本预�
 ## 8. 未覆盖面（本预登记**不**覆盖）
 
 - 未覆盖真实 provider 端的端到端验证（插件代码内的发送/接收/消费路径至今只经本地 HTTP stub 验证）。
-- 未覆盖生产触发点接线（发送侧 `openChildRetrieveDelegation` 与接收侧 `consumeRetrieveState` 目前
-  **无生产调用方**，真实 Pi 会话中状态平面不可达）——见计划 §11.4 第 7 条（P4-4b）。
+- ~~未覆盖生产触发点接线~~ **（2026-09-20 更新）** 生产触发点已接线并经集成测试覆盖：状态平面经
+  `openChildDelegationWithState` 接上前后台两条执行路径，能力协商已按"角色声明的工具 + 扩展注册的工具"
+  计算（此前只按前者，导致出厂角色下信封一封也不会发出）。**仍未覆盖**的是**真实 Pi 进程内**的端到端
+  跑通——那需要真实 provider 密钥，属 P4-5 前的最后一道前置。
 - 未覆盖 openEuler SP3（AC-15 为已知欠债，一律标"未验证"）。
 - 未覆盖 CodeAct（spec v1.1 明确不实施）。

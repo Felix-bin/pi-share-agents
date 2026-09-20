@@ -42,6 +42,15 @@ export type SynapseChildContract = {
 	contextBudgetBytes: number;
 	contract: LaunchContract;
 	/**
+	 * Whether this launch may send a residual rather than the full vector.
+	 *
+	 * Carried beside `embedding` because it reaches the same decision at the same
+	 * seam: only the launch knows both the configuration and the child index the
+	 * sender-side base selection has to meter itself against. Defaults to false,
+	 * so a config that predates this field keeps sending full vectors.
+	 */
+	delta: boolean;
+	/**
 	 * The configured embedding provider, carried so both halves of a state
 	 * handover can be built from the contract alone: the host embeds the query
 	 * it is about to send, and the receiver re-embeds that query if its
@@ -135,6 +144,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			storageRoot: resolved.root,
 		}),
 		capabilityTools,
+		delta: config.delta,
 		embedding: config.embedding,
 		runId,
 		sessionId,
@@ -151,6 +161,10 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 		config: {
 			contextBudgetBytes: contract.contextBudgetBytes,
 			corpusSnapshotId: contract.contract.corpusSnapshotId === "unset" ? null : contract.contract.corpusSnapshotId,
+			// Inert on this path rather than copied: the child's own tools never
+			// select a base, so the parent's residual switch has nothing to act on
+			// here. False states that instead of repeating a value that does nothing.
+			delta: false,
 			embedding: null,
 			maxObjectBytes: 1024 * 1024,
 			memory: "project",

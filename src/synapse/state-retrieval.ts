@@ -240,6 +240,13 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 		if (detail.startsWith("integrity:")) throw new Error(detail);
 		throw new Error(`object-unavailable: state payload ${stateRef.payloadId} cannot be read: ${detail}`);
 	}
+	// The bytes crossed the disk boundary just as the sender's write did, so the
+	// read is storage traffic and is metered as such — the same rule the send side
+	// already follows for its `object-io` write (P4 group review X-5), applied to
+	// the half that was missing it (item §7.2). No purpose: this is an ordinary
+	// content read, and labelling it as one of the residual path's own reads would
+	// move it into a column that means something else.
+	deps.metering?.log.record(deps.metering.identity, { bytes: payload.byteLength, direction: "read", kind: "object-io" });
 	if (sha256Hex(payload) !== stateRef.sha256) {
 		throw new Error(`integrity: state payload ${stateRef.payloadId} does not match the envelope's sha256 ${stateRef.sha256}`);
 	}

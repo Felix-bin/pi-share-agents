@@ -12,7 +12,7 @@ import { envelopeInboxPath, readDeliveredEnvelope, stateEnvelopePath, verifyEnve
 import { createMeteringLog, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
 import { resolvePiLaunchToolPlan } from "../../src/runs/shared/child-tool-plan.ts";
-import { openChildDelegationWithState } from "../../src/runs/shared/synapse-delegation.ts";
+import { openChildDelegationWithState, SYNAPSE_STATE_BUDGET_MS } from "../../src/runs/shared/synapse-delegation.ts";
 import { startEmbeddingStub, type StubEmbeddingServer } from "../support/embedding-stub-server.ts";
 
 /**
@@ -205,6 +205,17 @@ describe("synapse production trigger", () => {
 		// the run's embedder is built from configuration and carries no identity, so
 		// without the wrapper around it this cost would be silently absent — the one
 		// failure the pre-registration calls out as a silent bias between arms.
+		//
+		// The receiver's read of those same payload bytes is the other half of the
+		// storage column: the sender counts a write, so a receiver that counted
+		// nothing would make the round trip look like it stored data for free.
+		const payloadReads = readMeteringLog(logPath()).filter(
+			(event): event is Extract<MeteringEvent, { kind: "object-io" }> => event.kind === "object-io" && event.direction === "read" && event.purpose === undefined,
+		);
+		assert.ok(
+			payloadReads.some((event) => event.bytes === (opened.state?.kind === "state" ? opened.state.stateRef.byteLength : -1)),
+			"the receiver's read of the state payload must be metered as an ordinary object read",
+		);
 	});
 
 	it("leaves the run byte-identical when a child cannot consume state", async () => {
@@ -391,6 +402,33 @@ describe("synapse production trigger", () => {
 		assert.equal(verifyEnvelopeAgainstContract({ contract: synapse.contract, wire: delegated.wire }), null);
 	});
 
+	it("does not hold up the launch when the provider never answers, and records that it did not", async () => {
+		// A provider that accepts the connection and never replies: the launch must
+		// not be held hostage to it, and the resulting absence of state must be an
+		// explicit row rather than a silence — "no state crossed" and "the sender was
+		// still thinking when the child started" are different facts, and the
+		// pre-registration forbids conflating them.
+		stub.setHandler(() => undefined);
+		const started = Date.now();
+		const opened = await trigger(synapseContract());
+		const elapsed = Date.now() - started;
+
+		assert.equal(opened.state, null, "past the budget the launch proceeds with no state");
+		assert.ok(opened.delegation, "the task plane is not held hostage to the state plane");
+		assert.ok(elapsed >= SYNAPSE_STATE_BUDGET_MS, `the wait must not end before the budget, got ${elapsed}ms`);
+		assert.ok(elapsed < SYNAPSE_STATE_BUDGET_MS * 4, `the wait must end at the budget, got ${elapsed}ms`);
+
+		const expired = readMeteringLog(logPath()).find((event) => event.kind === "error" && event.detail.startsWith("state budget expired"));
+		assert.ok(expired, "an expiry must be written down, not inferred from an absence");
+		assert.equal(expired.kind === "error" ? expired.category : null, "timeout");
+		assert.equal(expired.kind === "error" ? expired.nodeId : null, `${RUN_ID}/0`, "and attributed to the node that waited");
+
+		// Release the hung request rather than letting the client's own 30s timeout
+		// hold the whole suite open: the attempt the budget left running has no more
+		// work to do here, and the assertions above are already made.
+		stub.server.closeAllConnections();
+	});
+
 	it("clears a previous delivery's state envelope when this one cannot send state", async () => {
 		const synapse = synapseContract();
 		const first = await trigger(synapse);
@@ -403,5 +441,27 @@ describe("synapse production trigger", () => {
 		const second = await trigger(synapse);
 		assert.equal(second.state, null);
 		assert.ok(!fs.existsSync(stateInbox()), "a pass that publishes nothing must leave nothing behind");
+	});
+
+	it("sends a full vector, and says why, when the residual switch is off", async () => {
+		// The switch defaults to off, so this is what production does: the same
+		// envelope a run sent before residuals were reachable at all. Asserting
+		// only `kind === "state"` — which is all the tests above did — would pass
+		// just as well if the default had silently inverted, and the encoding is
+		// the whole difference between the two arms of the acceptance run.
+		const opened = await trigger(synapseContract());
+
+		assert.equal(opened.state?.kind, "state");
+		assert.equal(opened.state?.kind === "state" ? opened.state.stateRef.encoding : null, "float32-vector");
+		assert.equal(opened.state?.kind === "state" ? opened.state.stateRef.baseMemoryId : "sentinel", null, "a full vector names no base");
+		const prepares = readMeteringLog(logPath()).filter((event) => event.kind === "state-prepare");
+		assert.equal(prepares.length, 1);
+		const prepare = prepares[0];
+		assert.equal(prepare?.kind === "state-prepare" ? prepare.encoding : null, "float32-vector");
+		assert.equal(
+			prepare?.kind === "state-prepare" ? prepare.fallbackReason : null,
+			"no-base",
+			"the reason must be recorded, or a residual that never engages is indistinguishable from one that engaged and lost",
+		);
 	});
 });

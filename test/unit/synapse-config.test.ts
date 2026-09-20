@@ -40,6 +40,18 @@ describe("synapse config defaults", () => {
 		assert.equal(resolveSynapseConfig({ mode: "text" }, HOME).memory, "off");
 	});
 
+	it("leaves residuals off unless an experiment asks for them", () => {
+		// The measured default: the P4-4 full-account replay found the residual
+		// net-negative on all 239 pairs whenever the base was not resident, so a
+		// configuration that says nothing about residuals must not send one. This
+		// is the assertion the integration tests cannot make — an empty store
+		// answers `no-base` whether the switch is on or off, so only the resolved
+		// value itself can pin the default.
+		assert.equal(resolveSynapseConfig({}, HOME).delta, false);
+		assert.equal(resolveSynapseConfig({ mode: "synapse" }, HOME).delta, false);
+		assert.equal(resolveSynapseConfig({ delta: true, mode: "synapse" }, HOME).delta, true);
+	});
+
 	it("lets an experiment state memory explicitly", () => {
 		assert.equal(resolveSynapseConfig({ memory: "project", mode: "text" }, HOME).memory, "project");
 		assert.equal(resolveSynapseConfig({ memory: "off", mode: "synapse" }, HOME).memory, "off");

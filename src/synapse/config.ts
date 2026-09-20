@@ -42,6 +42,18 @@ export const SYNAPSE_DEFAULT_MAX_OBJECT_BYTES = 1024 * 1024;
 export const SYNAPSE_MAX_EMBEDDING_DIM = 8192;
 
 /**
+ * Whether a launch may send a residual rather than the full query vector.
+ *
+ * Off by default, and that default is a measurement rather than a preference:
+ * the P4-4 full-account replay found the residual net-negative on every one of
+ * 239 pairs whenever the base was not already resident, reaching 61x once base
+ * selection's own reads are counted. Turning it on is a statement that an
+ * experiment wants that cost measured on a real corpus, not a claim that it
+ * pays off; the CCF-A acceptance card rules on that question with data.
+ */
+export const SYNAPSE_DEFAULT_DELTA = false;
+
+/**
  * A JSON value as it arrives from config.json: parsed by the host, not yet
  * validated by us. Naming it keeps the unvalidated boundary visible.
  */
@@ -63,6 +75,8 @@ export type SynapseConfig = {
 	contextBudgetBytes: number;
 	/** Set by experiments to the id a `build-corpus` run produced; null keeps the "unset" placeholder. */
 	corpusSnapshotId: string | null;
+	/** Whether launches may send a residual; see {@link SYNAPSE_DEFAULT_DELTA}. */
+	delta: boolean;
 	embedding: SynapseEmbeddingConfig | null;
 	maxObjectBytes: number;
 	memory: SynapseMemoryMode;
@@ -88,6 +102,7 @@ const RawConfigSchema = Type.Object(
 		corpusSnapshotId: Type.Optional(
 			Type.String({ minLength: 1, pattern: "^[0-9a-f]{64}$", description: "64-hex id from a build-corpus run" }),
 		),
+		delta: Type.Optional(Type.Boolean({ description: "send residuals instead of full vectors; off unless an experiment asks for it" })),
 		embedding: Type.Optional(EmbeddingSchema),
 		maxObjectBytes: Type.Optional(Type.Integer({ minimum: 1 })),
 		memory: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("project")])),
@@ -183,6 +198,7 @@ export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = o
 	return {
 		contextBudgetBytes: raw.contextBudgetBytes ?? SYNAPSE_DEFAULT_CONTEXT_BUDGET_BYTES,
 		corpusSnapshotId: raw.corpusSnapshotId ?? null,
+		delta: raw.delta ?? SYNAPSE_DEFAULT_DELTA,
 		embedding: raw.embedding === undefined ? null : resolveEmbedding(raw.embedding),
 		maxObjectBytes: raw.maxObjectBytes ?? SYNAPSE_DEFAULT_MAX_OBJECT_BYTES,
 		memory,

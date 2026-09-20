@@ -16,6 +16,7 @@ import registerSubagentPromptRuntime, {
 	CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS,
 	registerPermissionGate,
 	rewriteSubagentPrompt,
+	shouldSteerHits,
 	stripGlobalContext,
 	stripInheritedSkills,
 	stripParentOnlySubagentMessages,
@@ -26,6 +27,18 @@ import registerSubagentPromptRuntime, {
 function childConfig(overrides: Partial<ChildRuntimeConfig> = {}): ChildRuntimeConfig {
 	return { fanoutChild: false, depth: 1, waitTool: { enabled: true }, fast: false, ...overrides };
 }
+
+it("does not steer a ranking that selected nothing", () => {
+	// The message's whole content is the hit list, so with no hits it would spend
+	// context on every later turn of the session to say nothing. The consume is
+	// metered either way, so the fact survives in the ledger.
+	assert.equal(shouldSteerHits([]), false);
+	assert.equal(
+		shouldSteerHits([{ chunkId: "a".repeat(16), cosine: 0.1, endLine: 2, path: "src/a.md", startLine: 1 }]),
+		true,
+		"a ranking with a hit is exactly what the child cannot get for itself",
+	);
+});
 
 it("does not skip drain for in-process child sessions when hasUI is true", async () => {
 	const handlers = new Map<string, Function[]>();

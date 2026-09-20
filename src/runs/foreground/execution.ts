@@ -1431,7 +1431,13 @@ async function runSingleAttempt(
 					runtime: input.runtime,
 				});
 				delegation = opened.delegation;
-				await created.prompt(delegation?.prompt ?? message);
+				// A stop that arrived while the state half was embedding must not be
+				// followed by a prompt: the abort above ran before the await, and
+				// delivering the task to a session that was just aborted is what turns
+				// a stop into a failed run.
+				if (!abortedBySignal && !interruptedByControl && !result.timedOut) {
+					await created.prompt(delegation?.prompt ?? message);
+				}
 				closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
 					finalOutput: result.finalOutput ?? "",

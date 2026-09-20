@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { childConsumesState } from "../../synapse/child-contract.ts";
-import { clearStateEnvelope } from "../../synapse/envelope-inbox.ts";
-import { modelUsageFrom, openDelegation, openRetrieveDelegation, type CloseDelegationInput, type OpenDelegation, type RetrieveSendResult } from "../../synapse/delegation.ts";
-import { resolveConfiguredEmbedder, type Embedder } from "../../synapse/embedding.ts";
+import type { SynapseChildContract } from "../../synapse/child-contract.ts";
+import { classifySynapseError } from "../../synapse/errors.ts";
+import { clearStateEnvelope, nodeIdFor } from "../../synapse/envelope-inbox.ts";
+import { meteringLogPath, modelUsageFrom, openDelegation, openRetrieveDelegation, type CloseDelegationInput, type OpenDelegation, type RetrieveSendResult, type SendDeps } from "../../synapse/delegation.ts";
+import { createMeteringLog, type MeteringIdentity } from "../../synapse/metering.ts";
+import { createMemoryService } from "../../synapse/memory-service.ts";
+import { meteredEmbedder, resolveConfiguredEmbedder, type Embedder } from "../../synapse/embedding.ts";
 import type { ReceiptOutcome } from "../../synapse/handoff.ts";
 import { SYNAPSE_DEFAULT_SEARCH_K } from "../../synapse/memory-service.ts";
 import type { Usage } from "../../shared/types.ts";
@@ -76,6 +80,8 @@ export type OpenChildRetrieveInput = {
 	/** The builtin tools the child was granted, as the tool plan resolved them. */
 	childTools: readonly string[];
 	cwd: string;
+	/** The sender's deps, when the caller has already built the log they belong on. */
+	deps?: SendDeps;
 	/** The sender's embedder; the product path builds it from synapse.embedding. */
 	embedder: Embedder;
 	/** How many corpus chunks the receiver should rank. */
@@ -96,8 +102,9 @@ export async function openChildRetrieveDelegation(input: OpenChildRetrieveInput)
 	const synapse = input.runtime.synapse;
 	if (synapse === undefined) return null;
 	try {
-		return openRetrieveDelegation({
+		return await openRetrieveDelegation({
 			contract: synapse.contract,
+			...(input.deps === undefined ? {} : { deps: input.deps }),
 			embedder: input.embedder,
 			identity: {
 				agent: synapse.agent,
@@ -122,6 +129,76 @@ export async function openChildRetrieveDelegation(input: OpenChildRetrieveInput)
 		warn(synapse.agent, "retrieve delegation", error instanceof Error ? error.message : String(error));
 		return null;
 	}
+}
+
+/**
+ * The sender's base-selection seam, built only when this launch may send a residual.
+ *
+ * The service ranks the **child's** store under the **contract's** scope, not the
+ * parent's own: the receiver resolves the named base from its own memory with the
+ * scope it was launched under, so a base chosen under that same scope is
+ * rebuildable on the far side by construction. A wider scope could name a base the
+ * child may not read — a residual that can never be rebuilt, which is the one
+ * failure this design cannot recover from, since re-sending residual bytes cannot
+ * help a receiver that never had the base.
+ *
+ * The corpus is null on purpose. Base selection ranks the sender's memories, not
+ * corpus chunks; pinning a snapshot here would open a second state path inside the
+ * call whose whole purpose is to measure one path's cost.
+ */
+function senderBaseSelector(synapse: SynapseChildContract, childIndex: number | undefined, cwd: string, embedder: Embedder): SendDeps {
+	const identity: MeteringIdentity = {
+		agent: synapse.agent,
+		attempt: 1,
+		mode: synapse.contract.mode,
+		nodeId: nodeIdFor(synapse.runId, childIndex),
+		runId: synapse.runId,
+		sessionId: synapse.sessionId,
+		snapshotId: null,
+	};
+	// One log for the whole state send: the payload's own events and base
+	// selection's reads belong to the same node, and a second log instance over the
+	// same file would give them a second monotonic origin.
+	const log = createMeteringLog(meteringLogPath(synapse.contract, synapse.runId));
+	const service = createMemoryService({
+		corpusSnapshotId: null,
+		// Base selection embeds the query through the same provider the payload
+		// does. Wrapping it keeps the cost of the decision that chooses an encoding
+		// visible; otherwise the one path that decides whether a residual is sent
+		// would be the only unmetered one.
+		embedder: meteredEmbedder(embedder, identity, log),
+		metering: { identity, log },
+		provenance: { agent: synapse.agent, attempt: 1, runId: synapse.runId, sessionId: synapse.sessionId },
+		scope: {
+			agent: synapse.agent,
+			namespaceId: synapse.contract.namespaceId,
+			pathPrefixes: [...synapse.contract.scope.pathPrefixes],
+			write: synapse.contract.scope.write,
+		},
+		storeRoot: synapse.contract.storageRoot,
+		worktreeRoot: cwd,
+	});
+	return {
+		log,
+		predictedBase: async ({ text }) => {
+			try {
+				return await service.predictBase({ text });
+			} catch (error) {
+				// predictBase refuses to degrade to a quieter base, and it is right not
+				// to: a base from a different ranking would be a different experiment.
+				// That refusal stops here — the residual is abandoned and the full
+				// vector goes out — but it is recorded, because "no base exists" and
+				// "the base could not be looked up" produce the same envelope and are
+				// not the same measurement.
+				log.record(identity, {
+					category: classifySynapseError(error),
+					detail: `base-selection failed: ${error instanceof Error ? error.message : String(error)}`,
+					kind: "error",
+				});
+				return null;
+			}
+		},
+	};
 }
 
 /**
@@ -158,9 +235,14 @@ async function openChildStateDelegation(input: OpenChildDelegationInput): Promis
 	if (!childConsumesState(synapse.capabilityTools)) return publishNothing();
 	const embedder = resolveConfiguredEmbedder(synapse.embedding, synapse.contract.storageRoot);
 	if (embedder === undefined) return publishNothing();
+	// With the switch off the call is byte-for-byte the one this seam made before
+	// residuals were reachable: no deps, therefore no base, therefore the existing
+	// no-base branch and a full vector.
+	const deps = synapse.delta ? senderBaseSelector(synapse, input.runtime.childIndex, input.cwd, embedder) : undefined;
 	const result = await openChildRetrieveDelegation({
 		childTools: synapse.capabilityTools,
 		cwd: input.cwd,
+		...(deps === undefined ? {} : { deps }),
 		embedder,
 		// The child reads the corpus itself, so the count is the same one the
 		// memory tool would return by default rather than a second policy.
@@ -180,6 +262,72 @@ export type ChildStateDelegation = {
 };
 
 /**
+ * How long the state half may hold up a child's first turn.
+ *
+ * The two sides of this plane disagree by design about which is worth waiting
+ * for: the receiver deliberately does not wait for a payload — it is not worth
+ * holding back the first turn for — while the sender's embedding call sits on
+ * exactly that turn, bounded only by the HTTP client's own 30s timeout. A budget
+ * gives them the same shape. Past it the launch proceeds with no state, which is
+ * the delivery a child that cannot consume state gets.
+ *
+ * The attempt is left running rather than cleared. Clearing would delete an
+ * envelope the ledger has just recorded as sent, and a late delivery is still a
+ * correct one — it names this node and carries this query — so a receiver that
+ * reads it has not been handed anything stale. What the expiry does produce is an
+ * explicit error event, so "no state crossed" is never ambiguous with "the sender
+ * was still thinking when the child started"; that ambiguity is the one thing the
+ * pre-registration forbids.
+ */
+export const SYNAPSE_STATE_BUDGET_MS = 2500;
+
+/**
+ * The state half under the budget. A launch must not be held hostage to a
+ * provider that is not answering, and a slow answer must not silently look like
+ * a fast empty one.
+ */
+async function stateWithinBudget(input: OpenChildDelegationInput): Promise<RetrieveSendResult | null> {
+	const synapse = input.runtime.synapse;
+	const pending = openChildStateDelegation(input);
+	if (synapse === undefined) return pending;
+	const EXPIRED = Symbol("state-budget-expired");
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expiry = new Promise<typeof EXPIRED>((resolve) => {
+		timer = setTimeout(() => resolve(EXPIRED), SYNAPSE_STATE_BUDGET_MS);
+		// A pending timer must never be the reason the process stays alive.
+		timer.unref();
+	});
+	try {
+		const outcome = await Promise.race([pending, expiry]);
+		if (outcome !== EXPIRED) return outcome;
+		const identity: MeteringIdentity = {
+			agent: synapse.agent,
+			attempt: 1,
+			mode: synapse.contract.mode,
+			nodeId: nodeIdFor(synapse.runId, input.runtime.childIndex),
+			runId: synapse.runId,
+			sessionId: synapse.sessionId,
+			snapshotId: null,
+		};
+		try {
+			createMeteringLog(meteringLogPath(synapse.contract, synapse.runId)).record(identity, {
+				category: "timeout",
+				detail: `state budget expired after ${SYNAPSE_STATE_BUDGET_MS} ms; the delivery may still complete`,
+				kind: "error",
+			});
+		} catch {
+			// Metering a budget must never be the thing that costs the launch.
+		}
+		// The attempt keeps its own bookkeeping; this only stops the wait. The
+		// handler is attached so a late rejection is not an unhandled one.
+		void pending.catch(() => undefined);
+		return null;
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
+
+/**
  * Sends one task to one child, on the task plane always and on the state plane
  * when the child is eligible.
  *
@@ -192,7 +340,7 @@ export type ChildStateDelegation = {
  */
 export async function openChildDelegationWithState(input: OpenChildDelegationInput): Promise<ChildStateDelegation> {
 	const delegation = openChildDelegation(input);
-	const state = await openChildStateDelegation(input);
+	const state = await stateWithinBudget(input);
 	return { delegation, state };
 }
 

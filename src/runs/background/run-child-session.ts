@@ -703,7 +703,12 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 					runtime: createInput.runtime,
 				});
 				delegation = opened.delegation;
-				await created.prompt(delegation?.prompt ?? input.prompt);
+				// A stop that arrived while the state half was embedding must not be
+				// followed by a prompt. The abort above happened before the await, so
+				// without this second look the child is handed a task it was told to
+				// abandon — and the prompt's rejection is what turns a stop into a
+				// failure in the run's own record.
+				if (!interrupted && !timedOut && !stopped) await created.prompt(delegation?.prompt ?? input.prompt);
 				promptSettled = true;
 				closeChildDelegation(delegation, {
 					cancelled: interrupted || stopped,

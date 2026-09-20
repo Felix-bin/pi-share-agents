@@ -266,8 +266,26 @@ describe("memory and duration accounting (AC-09)", () => {
 		assert.equal(totals.duration.totalMs, 50);
 	});
 
-	it("reports an unfinished span rather than inventing an end time", () => {
+	it("takes the run's span from the parent's own clock, not from a second writer's", () => {
 		log.record(identity(), { kind: "task-span", phase: "start", taskId: "t1" });
+		log.record(identity(), { kind: "task-span", phase: "end", taskId: "t1" });
+		const parent = readMeteringLog(logPath);
+		// A background child is a separate process appending to this same file, and
+		// its monotonic clock restarts at its own log instance. Written as a raw line
+		// because that is what the second writer actually produces: this process's
+		// log cannot mint a reading from another process's origin.
+		const childRow = { ...parent[0]!, eventId: "9".repeat(64), kind: "message-received", messageId: "m-child", monotonicMs: 1_000_000, writer: 987_654 };
+		fs.appendFileSync(logPath, `${JSON.stringify(childRow)}\n`, "utf-8");
+
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		// The parent's own span. Without the writer scope this would be the child's
+		// million-millisecond reading minus the parent's origin.
+		assert.equal(totals.duration.totalMs, parent[1]!.monotonicMs - parent[0]!.monotonicMs);
+		// The child's row is not discarded from what it is a count of.
+		assert.equal(totals.messages.received, 1);
+	});
+
+	it("reports an unfinished span rather than inventing an end time", () => {		log.record(identity(), { kind: "task-span", phase: "start", taskId: "t1" });
 		const totals = aggregateMetering(readMeteringLog(logPath));
 		assert.equal(totals.duration.byTask["t1"], "unavailable");
 		assert.deepEqual(totals.duration.unfinishedTasks, ["t1"]);

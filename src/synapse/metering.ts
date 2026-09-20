@@ -128,6 +128,16 @@ export type MeteringEvent = MeteringIdentity &
 		monotonicMs: number;
 		schemaVersion: number;
 		ts: string;
+		/**
+		 * Which process wrote the row. A background child is a second process
+		 * appending to the same per-run file, and `monotonicMs` counts from the
+		 * moment *its* log instance was created — so a difference between two
+		 * monotonic readings is a duration only when both rows share a writer.
+		 * Recorded on every event from this build on; optional because a file
+		 * written before it has none, and a run with no writer recorded anywhere is
+		 * read the old way, as a single writer's log.
+		 */
+		writer?: number;
 	};
 
 export type MeteringLogOptions = {
@@ -148,7 +158,7 @@ export function createMeteringLog(logPath: string, options: MeteringLogOptions =
 	return {
 		path: logPath,
 		record(identity: MeteringIdentity, payload: MeteringPayload): MeteringEvent {
-			const body = { ...identity, ...payload, monotonicMs: monotonicMs(), schemaVersion: SYNAPSE_METERING_SCHEMA_VERSION, ts: now().toISOString() };
+			const body = { ...identity, ...payload, monotonicMs: monotonicMs(), schemaVersion: SYNAPSE_METERING_SCHEMA_VERSION, ts: now().toISOString(), writer: process.pid };
 			// A nonce keeps two genuinely separate events with identical content
 			// distinguishable; without it a repeated send would look like one event
 			// written twice, which is the opposite of what the log must show.
@@ -237,6 +247,14 @@ function projectUsage(accumulated: UsageAccumulator): UsageTotals {
 
 export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTotals {
 	const deliveredKeys = new Set<string>();
+	// Only the parent opens a task span, so the writer that recorded one is the
+	// parent — the process whose log origin precedes every child's. The run's span
+	// is taken from that writer alone; mixing in a child's readings would subtract
+	// two different clocks and silently shorten the duration.
+	//
+	// The other writer's rows are not discarded: every byte, count and error below
+	// still comes from the whole file, because those are sums and not durations.
+	const parentWriter = events.find((event) => event.kind === "task-span")?.writer;
 	const parent = emptyUsage();
 	const child = emptyUsage();
 	const errors: Record<string, number> = {};
@@ -278,9 +296,10 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	let memoryHits = 0;
 
 	for (const event of events) {
-		firstMonotonic = firstMonotonic === null ? event.monotonicMs : Math.min(firstMonotonic, event.monotonicMs);
-		lastMonotonic = lastMonotonic === null ? event.monotonicMs : Math.max(lastMonotonic, event.monotonicMs);
-
+		if (parentWriter === undefined || event.writer === parentWriter) {
+			firstMonotonic = firstMonotonic === null ? event.monotonicMs : Math.min(firstMonotonic, event.monotonicMs);
+			lastMonotonic = lastMonotonic === null ? event.monotonicMs : Math.max(lastMonotonic, event.monotonicMs);
+		}
 		switch (event.kind) {
 			case "message-delivered": {
 				// Identity includes the attempt, so a retry is a new delivery while a
@@ -388,7 +407,8 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 		totals.duration.unfinishedTasks.push(taskId);
 	}
 	totals.duration.unfinishedTasks.sort();
-	totals.duration.totalMs = firstMonotonic === null || lastMonotonic === null ? "unavailable" : lastMonotonic - firstMonotonic;
+	totals.duration.totalMs =
+		parentWriter === undefined || firstMonotonic === null || lastMonotonic === null ? "unavailable" : lastMonotonic - firstMonotonic;
 
 	totals.memory.hitRate = totals.memory.queries === 0 ? "N/A" : memoryHits / totals.memory.queries;
 	totals.embedding.costUsd = embeddingCostMissing ? "unavailable" : embeddingCost;

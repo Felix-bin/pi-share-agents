@@ -40,6 +40,7 @@ function childContract(): SynapseChildContract {
 			storageRoot: store,
 		}),
 		capabilityTools: ["read", "grep"],
+		delta: false,
 		embedding: null,
 		runId: "run-7",
 		sessionId: "sess-parent",
