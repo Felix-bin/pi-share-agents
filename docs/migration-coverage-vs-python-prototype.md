@@ -26,7 +26,7 @@
 | M8 | 消息数/文本开销/非文本规模/耗时/命中率/提升 | ✅ 计量层覆盖全部六项，且**拒绝代理值** | `metering.ts:48-123`（事件）、`metering.ts:200-206`（聚合：`hitRate`/`crossAgentReuses`/`textBytes`/`payloadBytes`/`duration.byTask`）、`metering.ts:201`（`transportBytes: "N/A"`——不报代理值） |
 | M9 | 五大模块 + ≥10 轮连续任务 | 🟡 五大模块齐备（协议/状态/记忆/运行时/计量）；**≥10 轮的执行装置未迁移** | 同 M7 |
 | M10 | 源码+文档+部署+实验报告+视频，openEuler 可复现 | 🟡 本仓库层面：openEuler 适配归操作系统分支；文档在 | `docs/`、README |
-| M11 | CodeAct + 轻量沙箱（加分） | ❌ **未迁移**（原型有双档执行器与边界实测报告） | 见 §2「缺口 B」 |
+| M11 | CodeAct + 轻量沙箱（加分） | ❌ **不迁移（用户裁决 2026-09-20：暂不引入）**，按四档纪律记为**规划中**，不作为已实现能力计分 | 见 §2「缺口 B」 |
 
 ---
 
@@ -51,7 +51,7 @@
 | `modes/text_mode.py`、`modes/synapse_mode.py` | `config.ts` 的 `synapse.mode`、`capability.ts` | 已迁移（更强：`off`/`text`/`synapse` 三态） |
 | `runtime/team.py`（`build_team`：角色 + 能力 + check_fn） | `roles.ts` + Pi 委派运行时 | 已迁移 |
 | `runtime/exec_child.py`（子侧启动契约） | `child-contract.ts`、`lifecycle.ts`、`access.ts` | 已迁移 |
-| `runtime/model.py`、`runtime/subprocess_executor.py`（CodeAct 双档执行器） | —— | **未迁移**（赛题 M11 加分项） |
+| `runtime/model.py`、`runtime/subprocess_executor.py`（CodeAct 双档执行器） | —— | **不迁移**（用户裁决 2026-09-20：暂不引入；赛题 M11 属加分项，材料中按「规划中」表述，不得写成已实现） |
 | `eval/harness.py`（`ABRunner`）、`eval/manifest.py`、`eval/schema.py`、`eval/metrics.py` | `metering.ts` + `docs/experiments/` | **部分迁移**：计量与指标在且更强（拒报代理值、父侧 writer 才计总时长）；**缺 A/B 运行器、manifest 自动采集、结果 schema 校验** |
 | `qa/dataset.py`、`qa/pipeline.py`、`qa/harness.py`、`qa/scoring.py`、`qa/stats.py` | —— | **未迁移**：数据集加载、F1/EM 打分、bootstrap CI 与配对检验在本仓库没有对应物 |
 | `tasks.py`（G1/G2 关联任务族、漂移序列、负样本族） | —— | **未迁移**：连续任务序列目前写在实验 runbook 里人工冻结 |
@@ -79,7 +79,7 @@
 | # | 缺口 | 影响 | 建议 |
 |---|---|---|---|
 | A | **连续任务装置**（对应原型 `tasks.py` + `eval/harness.py`） | 赛题 M7「≥2 组关联连续任务」与 M9「≥10 轮」的直接证据来源；也是 P4-5 与决赛实验的执行基座 | **建议迁移**（改写为 TypeScript，落在实验脚本层） |
-| B | **CodeAct + 轻量沙箱**（原型 `runtime/model.py` + `subprocess_executor.py`） | 赛题 M11 加分项，原型有双档执行器与边界实测报告可背书 | **需裁决**：本仓库设计规范 v1.1 明确"不实施 CodeAct"，重新引入是范围变更 |
+| B | **CodeAct + 轻量沙箱**（原型 `runtime/model.py` + `subprocess_executor.py`） | 赛题 M11 加分项，原型有双档执行器与边界实测报告可背书 | **已裁决（2026-09-20）：暂不引入。** 本仓库设计规范 v1.1 本就明确"不实施 CodeAct"；对外材料按四档纪律记为**规划中**，不得写成已实现能力，也不得引用原型期的 CodeAct 数字来支撑本仓库 |
 | C | **评测装置**：A/B 运行器、manifest 自动采集、结果 schema 校验、配对统计 | 支撑"实验验证"分值与决赛的可复现要求；不补则每轮实验靠人工聚合 | **建议迁移**（打分与统计按决赛所需数据集裁剪） |
 | D | **CNR 运行时能力探测 + 多档编码秩** | M2 的"能力发现"深度；原型把"声明即可验证"作为卖点 | **建议迁移探测**（与现有 `CapabilityDeclaration` 结构天然契合）；多档秩视状态面叙事是否需要 |
 | E | **`memory/consolidate.py`**（记忆固化/合并） | M6 记忆演化的完整度 | 评估后迁移，或明确记录"以取代事件 + 不可变日志替代"的判定与理由 |
