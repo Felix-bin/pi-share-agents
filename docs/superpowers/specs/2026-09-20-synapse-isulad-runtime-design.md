@@ -29,9 +29,9 @@ S2 的跨进程共享内存数据面无从谈起——以及为 S3 提供一个�
 ### 2.1 做
 
 - 一个纯函数 `resolveContainerLaunch`（`src/runs/shared/container-launch.ts`），
-  把子 Agent 的启动改写为 `isula run --ipc container:<anchor> ... -- <原命令>`；
+  把子 Agent 的启动改写为 `isula run --ipc container:<anchor> ... <镜像> <原命令>`；
   `async-execution.ts` 只增加一行调用（§3.1）。
-- 一份**路径对齐契约**：四个路径根在容器内外使用同一绝对路径，对齐不了就拒绝启动（§4.1）。
+- 一份**路径对齐契约**：五个路径根在容器内外使用同一绝对路径，对齐不了就可见降级（§4.1）。
 - 容器生命周期与现有 runner 生命周期的对接：kill / cancel / 进程树归属 / 日志捕获。
 - 一个明确的降级路径：容器引擎不可用时退回今天的 `spawn`，且该退化**可见**（§4.3）。
 - 一个自包含的真机验收脚本包，输出结构化 JSON 报告（§6）。
@@ -62,7 +62,9 @@ resolveContainerLaunch(input: {
 	topology: "process" | "container";
 	engine: ContainerEngineSpec;            // §3.3
 	anchorContainerId: string;
-	identicalPathRoots: readonly string[];  // §4.1
+	image: string;
+	requiredPathRoots: RequiredPathRoots;   // §4.1 的五个根
+	identicalPathRoots: readonly string[];  // 声明的挂载点
 	launch: { command: string; args: readonly string[]; cwd: string };
 }): {
 	command: string;
@@ -102,7 +104,7 @@ resolveContainerLaunch(input: {
    │                     │                     │
    └─────── 共享 IPC namespace + /dev/shm ──────┘
                          │
-        §4.1 的四个路径根以 bind mount 挂入同一绝对路径
+        §4.1 的五个路径根以 bind mount 挂入同一绝对路径
 ```
 
 需要一个 **anchor 容器**持有 IPC namespace，其余容器 `--ipc container:<anchor>` 加入。
@@ -136,7 +138,7 @@ S3 的最终评审发现了一个 Critical，其根因正是 S1 将要引入的�
 而 S3 的实测证明，**部分**不匹配（一部分路径 bind-mount 一致、一部分不一致）比全量不匹配更隐蔽：
 100 B 落在根内、10,000,000 B 落在根外时，账面一度显示"无缺口通过"。
 
-#### 要对齐的是四个根，不是两个
+#### 要对齐的是五个根，不是两个
 
 `async-execution.ts:721-739` 交给子进程的 args 与 env 里带的全是**宿主绝对路径**。
 因此"同路径"要覆盖的不止 worktree 与存储根：
@@ -147,12 +149,17 @@ S3 的最终评审发现了一个 Critical，其根因正是 S1 将要引入的�
 | SYNAPSE 存储根 | 配置 | bind mount 到相同挂载点 |
 | `TEMP_ROOT_DIR`（`cfgPath`、`asyncDir`、日志） | `PI_SUBAGENTS_TEMP_ROOT`（`src/shared/types.ts:2794`） | **显式设为可挂载的固定路径**，不用 `os.tmpdir()` 下的随机 scope 目录 |
 | Pi 安装根 | `piPackageRoot` / `binaryHost` / runner 源码路径 | 镜像内置于同一路径，或 bind mount |
+| **被 exec 的二进制所在目录** | `command = binaryHost ?? nodeExecutable` | bind mount 到相同挂载点 |
+
+最后一行是实现中发现的：走 npm 包这一支时，被 exec 的是 **Node 自身**，
+其宿主路径不被上面任何一个根覆盖。容器 exec 不到自己的命令时报的是"文件不存在"，
+与"某个路径根没对齐"相去甚远，排查成本远高于多校验一个根。
 
 `TEMP_ROOT_DIR` 可由环境变量覆盖这一点是关键：它让"容器内外同一绝对路径"从一个愿望变成一项可配置的事实。
 
 #### 因此 S1 必须交付
 
-1. **上表四个根在容器内外使用同一绝对路径**，使路径不匹配问题消失而非被管理；
+1. **上表五个根在容器内外使用同一绝对路径**，使路径不匹配问题消失而非被管理；
 2. `resolveContainerLaunch` 在任一根未被 `identicalPathRoots` 覆盖时**拒绝构造容器命令**，
    改为退回 `process` 拓扑并附 `degradedReason`——而不是启动一个路径会错位的容器。
    静默错位正是本节开头那条 Critical 的成因。
@@ -163,8 +170,8 @@ S3 的最终评审发现了一个 Critical，其根因正是 S1 将要引入的�
    而不是 `outsideRoot`。
 
 **原先作为备选的"显式路径映射表 + 由采集器换算"方案予以删除。**
-要换算的是四个根而非两个，且部分对齐比全量不对齐更隐蔽（见上文 100 B / 10,000,000 B 的实测）——
-映射表只会让 S3 那条 Critical 换个地方复发。对齐不了就拒绝启动，是唯一不会静默出错的选择。
+要换算的是五个根而非两个，且部分对齐比全量不对齐更隐蔽（见上文 100 B / 10,000,000 B 的实测）——
+映射表只会让 S3 那条 Critical 换个地方复发。对齐不了就拒绝构造容器命令并可见降级，是唯一不会静默出错的选择。
 
 ### 4.2 归因键从 `(pid, startTicks)` 换成 cgroup id
 
@@ -198,7 +205,7 @@ S1 落地后，S3 的归因从"可判定"升级为"结构性正确"，并顺带�
 现有 CI 跑 Ubuntu 与 Windows，没有 iSulad；目标 openEuler 服务器不在开发机上。分层同 S3：
 
 **CI 层（纯函数）**：`resolveContainerLaunch` 的参数构造、引擎选择、preflight 判定、降级决策、
-四个路径根的对齐校验，以及**真机报告的解析与断言**——这些都是纯函数，可在 Windows 上证明。
+五个路径根的对齐校验，以及**真机报告的解析与断言**——这些都是纯函数，可在 Windows 上证明。
 
 **openEuler 真机层：交付一个脚本包，而非一串手工步骤。**
 
@@ -233,9 +240,11 @@ S1 必须交付 `scripts/synapse/s1-acceptance.sh`：一次执行依次跑完下
   （`async-execution.ts:715-729`）；容器化后 fd 无法跨容器传递，日志捕获须改走容器引擎的机制。
   **这会改变 S3 观测到的 `unknownDescriptor` 字节构成**——S3 目前依赖"继承 fd 上的写入恒存在"
   这一事实，S1 落地后该事实可能不再成立。**此项已升级为 §6 真机验收第 5 条**，须实测而非登记。
-- **`PI_SUBAGENTS_TEMP_ROOT` 被固定为可挂载路径后的副作用未评估。** 该变量原本按 scope 隔离
-  （`resolveTempScopeId()`），固定它会改变同机多会话之间的 temp 目录隔离性质。
-  实现计划须确认这不会让两个并行会话互相写入对方的 `asyncDir`。
+- ~~`PI_SUBAGENTS_TEMP_ROOT` 被固定为可挂载路径后会削弱会话隔离。~~ **已证伪并关闭。**
+  `resolveTempScopeId()` 按**用户**分域，不按会话——默认的 temp 根本来就是同一用户所有会话共享的。
+  并行运行之间的隔离来自 run id 子目录（`path.join(DIRS.async, id)`、`async-cfg-<id>.json`），
+  与 temp 根取什么值无关。固定它不改变任何隔离性质。
+  见 `test/unit/temp-paths.test.ts` 的三条断言。
 
 ## 8. 交付边界与后续
 

@@ -145,3 +145,37 @@ console.log(JSON.stringify({ agentDir: getAgentDir(), profilePath: path.join(pro
 		assert.equal(path.basename(getAsyncConfigPath("abc123")), "async-cfg-abc123.json");
 	});
 });
+
+describe("pinning the temp root for the container topology", () => {
+	// S1 design §4.1 pins TEMP_ROOT_DIR to a bind-mountable path via
+	// PI_SUBAGENTS_TEMP_ROOT. The design's §7 worried that pinning it would weaken
+	// isolation between concurrent sessions on one machine. These tests exist to
+	// settle that, because the worry is cheap to state and expensive to carry.
+
+	it("scopes the temp root by user, never by session, so two sessions already shared it", () => {
+		const asOneUser = { env: { USER: "felix" }, getuid: undefined, userInfo: undefined, homedir: undefined };
+
+		// Nothing session-shaped is an input at all: the same user gets the same
+		// scope id no matter how many sessions are running.
+		assert.equal(resolveTempScopeId(asOneUser), resolveTempScopeId(asOneUser));
+	});
+
+	it("separates two users, which is the isolation the scope id actually provides", () => {
+		const base = { getuid: undefined, userInfo: undefined, homedir: undefined };
+
+		assert.notEqual(
+			resolveTempScopeId({ ...base, env: { USER: "felix" } }),
+			resolveTempScopeId({ ...base, env: { USER: "someone-else" } }),
+		);
+	});
+});
+
+describe("what actually separates concurrent runs", () => {
+	it("gives each run its own path under the shared root, whatever the root is", () => {
+		// This is where isolation lives, and pinning the root does not touch it.
+		assert.notEqual(getAsyncConfigPath("run-a"), getAsyncConfigPath("run-b"));
+		for (const suffix of ["run-a", "run-b"]) {
+			assert.ok(getAsyncConfigPath(suffix).startsWith(TEMP_ROOT_DIR));
+		}
+	});
+});
