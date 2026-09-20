@@ -136,21 +136,44 @@ export class EmbeddingHttpError extends Error {
 export type EmbeddingWireFormat = "base64-float32" | "json-number-array";
 
 /**
- * Which wire format a whitelisted provider speaks. Exported so the pairing can
- * be tested as a pairing: a provider in the config whitelist with no format here
- * would fail at the first embedding call rather than at load.
+ * What the client has to know about a provider to talk to it.
+ *
+ * Both fields are properties of the endpoint, not preferences: the format is
+ * described above, and `dimensionsParam` says whether the output width can be
+ * asked for. A model whose native width differs from the configured one needs
+ * that field — declaring 1024 and receiving 2048 is a dimension mismatch that
+ * would surface as a failed run rather than as a wrong answer, which is the
+ * better of the two, but still not a run.
  */
-export function embeddingWireFormatFor(provider: string): EmbeddingWireFormat {
-	if (provider === "paratera") return "json-number-array";
-	if (provider === "siliconflow") return "base64-float32";
+export type EmbeddingProviderProfile = {
+	dimensionsParam: boolean;
+	format: EmbeddingWireFormat;
+};
+
+/**
+ * The profile of a whitelisted provider. Exported so the pairing can be tested
+ * as a pairing: a provider the config parser accepts but this table does not
+ * know would fail at the first embedding call rather than at load.
+ */
+export function embeddingProviderProfileFor(provider: string): EmbeddingProviderProfile {
+	if (provider === "paratera") return { dimensionsParam: true, format: "json-number-array" };
+	if (provider === "siliconflow") return { dimensionsParam: false, format: "base64-float32" };
 	// Unreachable through the config parser, which refuses providers outside its
 	// whitelist; a direct caller gets an error rather than a guessed default.
 	throw new Error(`no embedding wire format is defined for provider ${JSON.stringify(provider)}`);
 }
 
-function wireFormatOf(cfg: SynapseEmbeddingConfig): EmbeddingWireFormat {
-	return embeddingWireFormatFor(cfg.provider);
+function profileOf(cfg: SynapseEmbeddingConfig): EmbeddingProviderProfile {
+	return embeddingProviderProfileFor(cfg.provider);
 }
+
+/** What this client puts on the wire: the two shared fields, plus what the profile allows. */
+type EmbeddingRequestBody = {
+	dimensions?: number;
+	encoding_format?: string;
+	input: string | readonly string[];
+	model: string;
+};
 
 const EmbeddingItemSchema = Type.Object({
 	embedding: Type.String({ minLength: 1 }),
@@ -403,14 +426,19 @@ export function createEmbeddingClient(cfg: SynapseEmbeddingConfig, deps: Embedde
 
 	async function requestEmbeddings(input: string | readonly string[]): Promise<{ durationMs: number; vectors: Float32Array[]; promptTokens: number | null }> {
 		const expectedCount = Array.isArray(input) ? input.length : 1;
-		const format = wireFormatOf(cfg);
+		const { dimensionsParam, format } = profileOf(cfg);
+		// Each field is added only where the endpoint honours it: the parameter asked
+		// for from a provider that ignores it would state a request the response does
+		// not answer, and the width has to be asked for where the model's native
+		// width is not the configured one. An absent key and a present one matter to
+		// the wire, so the body is assembled rather than spread over a default.
+		const body: EmbeddingRequestBody = { input, model: cfg.model };
+		if (dimensionsParam) body.dimensions = cfg.dim;
+		if (format === "base64-float32") body.encoding_format = "base64";
 		const startedAt = performance.now();
 		try {
 			const response = await fetchFn(cfg.endpoint, {
-				// The parameter is asked for only where it is honoured: a gateway that
-				// ignores it would return numbers either way, so sending it there would
-				// state a request the response does not answer.
-				body: JSON.stringify(format === "base64-float32" ? { encoding_format: "base64", input, model: cfg.model } : { input, model: cfg.model }),
+				body: JSON.stringify(body),
 				headers: { authorization: `Bearer ${deps.key}`, "content-type": "application/json" },
 				method: "POST",
 				signal: AbortSignal.timeout(SYNAPSE_EMBEDDING_TIMEOUT_MS),

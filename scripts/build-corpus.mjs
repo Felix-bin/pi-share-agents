@@ -24,12 +24,12 @@ function usageAndExit(message) {
 	console.error(message);
 	console.error("usage: node scripts/build-corpus.mjs --source <dir> --source-commit <sha> --storage-root <dir>");
 	console.error("       [--window 200] [--overlap 40] [--allowlist .md,.ts,.py,.json,.yaml,.txt]");
-	console.error("       [--offline-stub | --endpoint <url> --key-env <name> --model <id> --dim <n>]");
+	console.error("       [--offline-stub | --endpoint <url> --key-env <name> --model <id> --dim <n> --provider <name>]");
 	process.exit(2);
 }
 
 const args = process.argv.slice(2);
-const flagsWithValue = new Set(["--source", "--source-commit", "--storage-root", "--window", "--overlap", "--allowlist", "--endpoint", "--key-env", "--model", "--dim"]);
+const flagsWithValue = new Set(["--source", "--source-commit", "--storage-root", "--window", "--overlap", "--allowlist", "--endpoint", "--key-env", "--model", "--dim", "--provider"]);
 const booleanFlags = new Set(["--offline-stub"]);
 const seenValueFlags = new Set();
 for (let index = 0; index < args.length; index += 1) {
@@ -71,6 +71,11 @@ const endpoint = takeValue("--endpoint") ?? "https://api.siliconflow.cn/v1/embed
 const keyEnv = takeValue("--key-env") ?? "SILICONFLOW_API_KEY";
 const model = takeValue("--model") ?? "BAAI/bge-m3";
 const dim = Number(takeValue("--dim") ?? 1024);
+// The provider selects the wire format. The snapshot id does not depend on the
+// vectors, so the same corpus built against two providers has the same id — which
+// is why buildCorpus refuses an idempotent hit across representations instead of
+// reporting "already present" over vectors from another space.
+const provider = takeValue("--provider") ?? "siliconflow";
 
 // Mirrors test/support/deterministic-embedder.ts (kept separate on purpose:
 // the stub must never be exported from src/).
@@ -109,7 +114,7 @@ if (offlineStub) {
 		console.log(`SKIP: ${keyEnv} is not set; no network call was made. Use --offline-stub for a credentials-free demo.`);
 		process.exit(0);
 	}
-	embedder = createEmbeddingClient({ dim, endpoint, keyEnv, model, provider: "siliconflow" }, { key });
+	embedder = createEmbeddingClient({ dim, endpoint, keyEnv, model, provider }, { key });
 	vectorMode = "real";
 }
 

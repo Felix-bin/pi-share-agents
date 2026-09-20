@@ -422,12 +422,30 @@ describe("gateway embedder (JSON number arrays)", () => {
 		}
 	});
 
-	it("every provider the config whitelist accepts has a wire format", async () => {
+	it("every provider the config whitelist accepts has a wire profile", async () => {
 		const { SYNAPSE_EMBEDDING_PROVIDERS } = await import("../../src/synapse/config.ts");
-		const { embeddingWireFormatFor } = await import("../../src/synapse/embedding.ts");
+		const { embeddingProviderProfileFor } = await import("../../src/synapse/embedding.ts");
 		for (const provider of SYNAPSE_EMBEDDING_PROVIDERS) {
-			assert.doesNotThrow(() => embeddingWireFormatFor(provider), `${provider} is accepted by the parser and must be callable`);
+			assert.doesNotThrow(() => embeddingProviderProfileFor(provider), `${provider} is accepted by the parser and must be callable`);
 		}
-		assert.throws(() => embeddingWireFormatFor("not-a-provider"), /no embedding wire format/);
+		assert.throws(() => embeddingProviderProfileFor("not-a-provider"), /no embedding wire format/);
+	});
+
+	it("asks for the configured width only from the provider that can honour it", async () => {
+		// The gateway's native width is 2048; declaring 1024 without asking for it
+		// would fail the dimension check on every call, and asking SiliconFlow for a
+		// width it does not select would state a request its response ignores.
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithJsonVectorForInput(() => [1, 0, 0, 0]);
+			await createEmbeddingClient(gatewayConfig(server, 4), { key: "gateway-key" }).embedQuery("alpha");
+			assert.equal(JSON.parse(server.requests[0]?.body ?? "{}").dimensions, 4);
+
+			server.respondWithVector([1, 0, 0, 0]);
+			await createEmbeddingClient(baseConfig(server, 4), { key: "v1-key" }).embedQuery("alpha");
+			assert.equal(JSON.parse(server.requests[1]?.body ?? "{}").dimensions, undefined);
+		} finally {
+			await server.close();
+		}
 	});
 });
