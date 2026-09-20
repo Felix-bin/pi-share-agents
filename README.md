@@ -382,6 +382,11 @@ npm run typecheck
    命名空间、能力 ID 与重算的快照 ID 这三项两侧都能确定性重算的事实。
 8. **openEuler 24.03-LTS-SP3 未验证**（AC-15），记为明确的已知欠债。代码按严格 POSIX 路径纪律实现，
    但该平台本身未经实测。
+9. **初赛 Python 原型的部分模块尚未迁移到本仓库**，逐模块判定见
+   [初赛机制迁移覆盖核验](docs/migration-coverage-vs-python-prototype.md)。三条主链（结构化通信 /
+   非文本状态 / 共享记忆）已迁移且多处更强；仍缺的是**评测与执行层**：CodeAct 与轻量沙箱（M11 加分项）、
+   A/B 运行器与 manifest 自动采集、数据集流水线与配对统计、G1/G2 关联任务族，以及 CNR 的运行期
+   能力探测与 `memory/consolidate.py`。**在补齐之前，本仓库不得声称"覆盖初赛全部机制"。**
 
 ---
 
