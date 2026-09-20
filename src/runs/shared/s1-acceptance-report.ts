@@ -146,3 +146,14 @@ export function judgeS1AcceptanceReport(report: S1AcceptanceReport): S1Acceptanc
 		blocksS2: sharedMemory?.outcome !== "pass",
 	};
 }
+
+/**
+ * Distinct exit codes, because a caller that cannot tell "S1 failed" from "S1 was
+ * never measured" will eventually treat the second as the first — or, worse, as a
+ * pass with a warning. An unparseable report gets its own code too: it is a
+ * problem with the report, not with S1.
+ */
+export function s1AcceptanceExitCode(result: { ok: true; verdict: S1AcceptanceVerdict["verdict"] } | { ok: false }): number {
+	if (!result.ok) return 3;
+	return result.verdict === "pass" ? 0 : result.verdict === "fail" ? 1 : 2;
+}

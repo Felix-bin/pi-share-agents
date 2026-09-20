@@ -5,6 +5,7 @@ import {
 	S1_ACCEPTANCE_CHECK_IDS,
 	judgeS1AcceptanceReport,
 	parseS1AcceptanceReport,
+	s1AcceptanceExitCode,
 } from "../../src/runs/shared/s1-acceptance-report.ts";
 
 function check(id: string, overrides: Record<string, unknown> = {}) {
@@ -147,5 +148,25 @@ describe("the report the collection script actually emits", () => {
 		const parsed = parseS1AcceptanceReport(JSON.stringify(shortened));
 
 		assert.equal(parsed.ok, false);
+	});
+});
+
+describe("acceptance exit code", () => {
+	it("gives each verdict its own exit code, so a caller cannot confuse them", () => {
+		const codes = new Set([
+			s1AcceptanceExitCode({ ok: true, verdict: "pass" }),
+			s1AcceptanceExitCode({ ok: true, verdict: "fail" }),
+			s1AcceptanceExitCode({ ok: true, verdict: "incomplete" }),
+			s1AcceptanceExitCode({ ok: false }),
+		]);
+
+		assert.equal(codes.size, 4);
+	});
+
+	it("succeeds only on a pass", () => {
+		assert.equal(s1AcceptanceExitCode({ ok: true, verdict: "pass" }), 0);
+		assert.notEqual(s1AcceptanceExitCode({ ok: true, verdict: "incomplete" }), 0);
+		assert.notEqual(s1AcceptanceExitCode({ ok: true, verdict: "fail" }), 0);
+		assert.notEqual(s1AcceptanceExitCode({ ok: false }), 0);
 	});
 });
