@@ -17,7 +17,7 @@
 | 编号 | 要求要点 | 本仓库状态 | 证据 |
 |---|---|---|---|
 | M1 | ≥3 Agent、≥3 类角色、多步复杂任务 | ✅ 四个角色 `planner`/`retriever`/`executor`/`summarizer`（覆盖赛题点名的全部四类） | `src/synapse/roles.ts:20`、`roles.ts:54-59`；角色提示词 `agents/{planner,retriever,executor,summarizer}.md` |
-| M2 | 结构化通信（动作/参数/结果/能力）+ 握手/能力发现/协议映射 | 🟡 动作、参数、能力、能力协商齐备；**无运行时能力探测**、无 A2A 协议映射 | `envelope.ts:132-152`（`action`/`inputParamsJson`/`capabilityId`/`stateRef`/`memoryRefs`）、`capability.ts:100-127`（协商）、`roles.ts:79`（能力声明） |
+| M2 | 结构化通信（动作/参数/结果/能力）+ 握手/能力发现/协议映射 | 🟡 动作、参数、能力、能力协商齐备；**运行期能力探测已迁移**（2026-09-20，`capability-probe.ts`：构造+语料可加载性承诺，TTL 缓存，协商 `probe-unverified` 回落）；无 A2A 协议映射 | `envelope.ts:132-152`（`action`/`inputParamsJson`/`capabilityId`/`stateRef`/`memoryRefs`）、`capability.ts:124-155`（协商＋探针裁决）、`capability-probe.ts`、`roles.ts:80-97`（探针声明） |
 | M3 | 纯文本 ⊕ 结构化双模式，同条件 A/B | ✅ 三态开关，比原型的两态更细 | `config.ts:19`（`SYNAPSE_MODES = ["off","text","synapse"]`）、`capability.ts:104/118` |
 | M4 | 非文本中间状态传递（生成/传递/接收/使用四环） | ✅ 四环齐备；可靠性校验为「密码学完整性（始终）+ 语义校验（`synapse.stateVerify`，默认关）」两层（见 §3） | `embedding.ts`（生成）、`state-payload.ts:89-119`（选档+封装）、`content-store.ts`（存储）、`state-retrieval.ts`（接收+排序）、`envelope.ts:57-66`（`StateRef`） |
 | M5 | 共享记忆单元（ID/来源 Agent/创建时间/任务主题/摘要） | ✅ 五项元数据齐备，另有种类、确信度、标签、来源指纹、取代状态 | `memory-store.ts:64-77`（`MemoryRecord`）、`memory-store.ts:57-62`（`provenance.agent`） |
@@ -62,12 +62,19 @@
 
 ## 3. 三处「形似而实异」的机制，必须随数字一起说明
 
+> （2026-09-20 更新：第 1、2 条描述的是**默认关闭时**的差异——接收侧语义校验与运行期能力探测
+> 均已落地为可选机制并接入恢复链/协商出口，见 §2 对照表与 §6 追平行；差异从"没有"变为"默认关"。）
+
 1. **残差可靠性校验的层级与默认值不同。** 原型是 VLC：接收方重嵌入比对 `cos(Ŷ, Y_true)`，语义失配才回退全文，**常开**。
-   本仓库**刻意不重嵌入原查询**（`state-retrieval.ts:13-17` 的设计声明），改为：发送侧准入（残差必须
-   小于向量、且不超过其一半，`state-payload.ts:115`）+ 接收侧密码学与结构校验（摘要、维度、表示、
-   非零向量、分块数，`state-retrieval.ts:110-188`）。**能防篡改与错位，不能防"语义偏移但字节完好"**。
-2. **能力发现是"声明式"而非"可验证承诺"。** 原型握手时对声明项跑真实探针（`check_fn` + TTL），
-   本仓库的能力来自"角色声明 ∩ 实际授予的工具"（`roles.ts:69-90`），不做事后实测。
+   本仓库检索模块本身不重嵌入原查询（`state-retrieval.ts` 的设计声明），校验分两层且**默认关**：
+   发送侧准入（残差必须小于向量、且不超过其一半，`state-payload.ts`）+ 接收侧密码学与结构校验
+   （摘要、维度、表示、非零向量、分块数）**常开**；可选的逐消息语义校验（`synapse.stateVerify`，
+   重嵌入信封查询、浮点域阈值 0.98）按启动契约开启。常开的两层**能防篡改与错位，不能防"语义偏移
+   但字节完好"**——那正是可选校验存在的理由。
+2. **能力发现的"可验证承诺"已迁移，但承诺范围比原型窄。** 探针（`check_fn` + TTL）已落地且协商出口
+   真正消费其结论（`probe-unverified` 回落——原型的 `negotiate()` 从不消费验证缓存）；本仓库探针
+   验证的是**构造与语料可加载性**（key 可解析、embedder 可构造、冻结语料端到端加载），**不实测**
+   endpoint 应答、密钥被接受或真实嵌入调用——那些在发送时经计量的 embedding-call 事件暴露。
 3. **"载体"从消息体换成宿主信封。** 原型的残差句柄与内容句柄走自建消息帧；本仓库走宿主生成的
    信封，且 `stateRef` 只在 `retrieve` 动作上承载（`capability.ts:119`）。协议版本号是
    `SYNAPSE_PROTOCOL_VERSION = 2`（`envelope.ts:20`），未知字段一律拒绝。
