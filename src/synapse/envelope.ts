@@ -250,9 +250,12 @@ const queryTextValidator = Compile(QueryTextSchema);
  *
  * The receiver's semantic check compares a decoded state against a fresh embedding of
  * *this* text rather than of whatever the receiver happens to hold, because the state
- * is a claim about the sender's query: a state whose sender has moved on is then a
- * failure the check can see. Null means the params carry no readable query, and the
- * caller decides what that means for it rather than being handed an empty string.
+ * is a claim about the sender's query. What that catches is an envelope whose text
+ * disagrees with what was actually encoded (a buggy or inconsistent sender); it cannot
+ * catch a query that was consistently encoded AND consistently carried yet is stale
+ * for the task — both sides embed the same text, so they agree by construction. Null
+ * means the params carry no readable query, and the caller decides what that means
+ * for it rather than being handed an empty string.
  */
 export function envelopeQueryText(wire: EnvelopeWire): string | null {
 	let parsed: unknown;

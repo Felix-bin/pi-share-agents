@@ -17,7 +17,8 @@ import { createMeteringLog, readMeteringLog, type MeteringEvent } from "../../sr
 import { deriveNamespaceId } from "../../src/synapse/namespace.ts";
 import type { PredictedBase } from "../../src/synapse/predict-base.ts";
 import { capabilityForAgent } from "../../src/synapse/roles.ts";
-import { SYNAPSE_DELTA_MEDIA_TYPE, decodeStatePayload } from "../../src/synapse/state-payload.ts";
+import { SYNAPSE_STATE_VERIFY_MIN_COSINE } from "../../src/synapse/config.ts";
+import { SYNAPSE_DELTA_MEDIA_TYPE, chooseStatePayload, decodeStatePayload } from "../../src/synapse/state-payload.ts";
 import { SYNAPSE_VECTOR_MEDIA_TYPE } from "../../src/synapse/embedding.ts";
 
 /**
@@ -159,6 +160,30 @@ describe("synapse retrieve send side: encoding choice", () => {
 		// here would leave every behavioural test green while the advertised
 		// capability narrowed.
 		assert.deepEqual([...retrieveSenderCapability(REPRESENTATION_ID).encodings], ["text", "float32-vector", "delta"]);
+	});
+
+	it("clears the verification threshold for every residual the frozen encoder emits (dim 1024)", () => {
+		// The regression K3 caught on 2026-09-20: the encoder's stop condition holds on
+		// the quantised grid, the receiver's check measures floats, and quantising the
+		// target itself costs ≈ dim/(24·grid²) ≈ 0.0027 of cosine at the frozen point.
+		// A threshold set at the encoder's own 0.99 in the float domain therefore
+		// refused every legitimate residual. This pins the fix: whatever base quality
+		// the sender finds, what arrives must clear SYNAPSE_STATE_VERIFY_MIN_COSINE
+		// against the query's own embedding — the exact quantity verifyDecoded measures.
+		// 0.2 is deliberately absent: at that base quality the residual exceeds the
+		// frozen half-vector share and the sender correctly falls back to float32 —
+		// there is no residual to verify. The four mixes below are the ones that emit.
+		for (const mix of [0.5, 0.8, 0.95, 0.99]) {
+			const base = baseAt(QUERY_VECTOR, mix, "b".repeat(64));
+			const choice = chooseStatePayload({ base, fullVector: QUERY_VECTOR, representationId: REPRESENTATION_ID });
+			assert.equal(choice.encoding, "delta", `mix=${mix}: the frozen point must emit a residual for the band to be measurable`);
+			const decoded = decodeStatePayload({ base: base.vector, dim: DIM, payload: choice.payload, representationId: REPRESENTATION_ID });
+			const measured = cosine(decoded, QUERY_VECTOR);
+			assert.ok(
+				measured >= SYNAPSE_STATE_VERIFY_MIN_COSINE,
+				`mix=${mix}: decoded cosine ${measured} is below the verification threshold ${SYNAPSE_STATE_VERIFY_MIN_COSINE} — the threshold has drifted from the legitimate band again`,
+			);
+		}
 	});
 
 	it("sends a residual when a base exists, and the bytes decode back to the query", async () => {
@@ -332,7 +357,36 @@ describe("synapse retrieve send side: probe gate traces", () => {
 			const probeEvents = eventsOf(readMeteringLog(meteringLogPath(contract, RUN_ID)), "capability-probe");
 			assert.equal(probeEvents.length, 1, `exactly one capability-probe event for verdict=${verdict}`);
 			assert.equal(probeEvents[0]?.ok, verdict);
+			// `wired` is what lets an auditor tell a probe that ran and failed from a
+			// receiver whose probe items no caller ever wired (K3 P2-2): both negotiate
+			// to text, only one is an environment failure.
+			assert.equal(probeEvents[0]?.wired, true, "a supplied probe is wired");
+			assert.ok(typeof probeEvents[0]?.durationMs === "number", "the consultation is timed so the budget question is answerable from the ledger");
 		}
+	});
+
+	it("records an unwired probe as not wired, distinguishing it from a failed one", async () => {
+		// The receiver's role declares probe items (retriever with synapse_read does),
+		// so a caller that supplies no probe negotiates to text with a FAILED verdict —
+		// the ledger must not call that an environment failure.
+		const contract = contractFor();
+		const result = await openRetrieveDelegation({
+			contract,
+			deps: { log: createMeteringLog(meteringLogPath(contract, RUN_ID)) },
+			embedder: embedderOf(QUERY_VECTOR),
+			identity: identity(),
+			k: 3,
+			query: "what does the auth flow do",
+			worktreeRoot: worktree,
+		});
+		assert.ok(result);
+		assert.equal(result.kind, "text");
+		assert.ok(result.kind === "text");
+		assert.equal(result.reason, "probe-unverified");
+		const probeEvents = eventsOf(readMeteringLog(meteringLogPath(contract, RUN_ID)), "capability-probe");
+		assert.equal(probeEvents.length, 1);
+		assert.equal(probeEvents[0]?.ok, false);
+		assert.equal(probeEvents[0]?.wired, false, "nothing was wired; this is not a probe that ran and failed");
 	});
 
 	it("treats a throwing probe as unverified rather than letting it pierce the seam", async () => {

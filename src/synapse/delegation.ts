@@ -507,15 +507,20 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	// seam never probes on its own. A probe that THROWS is an unverified promise
 	// rather than a failed delegation: the environment-fact contract belongs to
 	// the probe itself, and a throwing caller-supplied probe must degrade to the
-	// text path here instead of piercing the seam.
-	const runReceiverProbe = (): boolean => {
+	// text path here instead of piercing the seam. The consultation is timed so
+	// the ledger can answer whether the probe's cost belongs on the state
+	// budget's critical path; `wired` separates a failed probe from an unwired one.
+	type ProbeConsultation = { durationMs: number; ok: boolean };
+	const runReceiverProbe = (): ProbeConsultation => {
+		const startedAt = Date.now();
 		try {
-			return input.receiverProbe?.() ?? false;
+			return { durationMs: Date.now() - startedAt, ok: input.receiverProbe?.() ?? false };
 		} catch {
-			return false;
+			return { durationMs: Date.now() - startedAt, ok: false };
 		}
 	};
-	const receiverProbeVerified = receiver.declaration.probe !== undefined && receiver.declaration.probe.length > 0 ? runReceiverProbe() : undefined;
+	const probeOutcome = receiver.declaration.probe !== undefined && receiver.declaration.probe.length > 0 ? runReceiverProbe() : undefined;
+	const receiverProbeVerified = probeOutcome?.ok;
 	const probeField = receiverProbeVerified === undefined ? {} : { receiverProbeVerified };
 	const negotiation = negotiate({
 		action: "retrieve",
@@ -543,8 +548,13 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	// The verifiable promise leaves its trace whether it passed or failed: a
 	// round that degraded to text because of the probe must be answerable from
 	// the ledger, including rounds whose verdict came from the TTL cache.
-	if (receiverProbeVerified !== undefined) {
-		deps.log.record(meterIdentity, { kind: "capability-probe", ok: receiverProbeVerified });
+	if (probeOutcome !== undefined) {
+		deps.log.record(meterIdentity, {
+			durationMs: probeOutcome.durationMs,
+			kind: "capability-probe",
+			ok: probeOutcome.ok,
+			wired: input.receiverProbe !== undefined,
+		});
 	}
 	const snapshot = freezeSnapshot({
 		capabilityId: negotiation.capabilityId,

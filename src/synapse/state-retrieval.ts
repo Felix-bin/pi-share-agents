@@ -12,9 +12,14 @@ import { decodeStatePayload } from "./state-payload.ts";
  *
  * The receiving side decodes exactly what arrived: it reads the payload the
  * envelope names, re-verifies it against the envelope's own claims, and ranks
- * the pinned corpus by cosine. It never re-embeds the original query (spec
- * §8.1) and never lets a verification failure degrade into keyword retrieval
- * (spec §8.2): a state that cannot be proven is not consumed, it is refused.
+ * the pinned corpus by cosine. This module never re-embeds the original query
+ * (spec §8.1) — the optional per-message semantic check lives one layer up, in
+ * the delegation seam's `verifyDecoded` (`synapse.stateVerify`, default off),
+ * which re-embeds the envelope's own query text and compares it with the
+ * decoded vector this module returns. Without that switch, nothing here asks
+ * whether the decoded vector still means the query, and a verification failure
+ * never degrades into keyword retrieval (spec §8.2): a state that cannot be
+ * proven is not consumed, it is refused.
  */
 
 const CORPUS_DIR = "corpus";

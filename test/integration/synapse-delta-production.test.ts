@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import type { CanonicalValue } from "../../src/synapse/canonical-json.ts";
 import { resolveSynapseChildContract, type SynapseChildContract } from "../../src/synapse/child-contract.ts";
 import { buildCorpus } from "../../src/synapse/corpus.ts";
+import { SYNAPSE_STATE_VERIFY_MIN_COSINE } from "../../src/synapse/config.ts";
 import { consumeRetrieveState } from "../../src/synapse/delegation.ts";
 import { createEmbeddingClient, type Embedder } from "../../src/synapse/embedding.ts";
 import { readDeliveredEnvelope, stateEnvelopePath } from "../../src/synapse/envelope-inbox.ts";
@@ -464,7 +465,7 @@ describe("synapse residual path in production", () => {
 		assert.equal(totals.state.verifications, 1, "one check ran, and it is recorded with its cosine");
 		assert.equal(totals.state.verificationRefusals, 1, "the refusal is counted where it happened, not only where it was recovered from");
 		const verifyEvent = events.find((event) => event.kind === "state-verify");
-		assert.ok(verifyEvent?.kind === "state-verify" && verifyEvent.cosine < 0.99, "the measured cosine is in the log, so the threshold's margin is a measurement");
+		assert.ok(verifyEvent?.kind === "state-verify" && verifyEvent.cosine < SYNAPSE_STATE_VERIFY_MIN_COSINE, "the measured cosine is in the log, so the threshold's margin is a measurement");
 		// A semantic refusal skips the re-send: the bytes were intact, so repeating them
 		// could only reproduce the refusal one round trip later.
 		assert.equal(totals.state.restoreCount, 1, "the text hop is the only hop a semantic refusal takes");
@@ -572,12 +573,12 @@ describe("synapse residual path in production", () => {
 		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
 		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
 
-		reembedOverride = atCosine(0.995);
+		reembedOverride = atCosine(SYNAPSE_STATE_VERIFY_MIN_COSINE + 0.005);
 		const strict = strictVerify(synapse);
 		const outcome = await consumeStrict(strict, delivered, QUERY);
 		const measured = lastVerifyCosine();
-		assert.equal(outcome.kind, "consumed", `0.995 is above the frozen 0.99 (measured ${measured})`);
-		assert.ok(Math.abs(measured - 0.995) < 0.02, `the check must measure what the provider produced, got ${measured}`);
+		assert.equal(outcome.kind, "consumed", `${SYNAPSE_STATE_VERIFY_MIN_COSINE + 0.005} is above the frozen ${SYNAPSE_STATE_VERIFY_MIN_COSINE} (measured ${measured})`);
+		assert.ok(Math.abs(measured - (SYNAPSE_STATE_VERIFY_MIN_COSINE + 0.005)) < 0.02, `the check must measure what the provider produced, got ${measured}`);
 	});
 
 	it("refuses just below the frozen threshold", async () => {
@@ -587,12 +588,12 @@ describe("synapse residual path in production", () => {
 		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
 		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
 
-		reembedOverride = atCosine(0.985);
+		reembedOverride = atCosine(SYNAPSE_STATE_VERIFY_MIN_COSINE - 0.005);
 		const strict = strictVerify(synapse);
 		const outcome = await consumeStrict(strict, delivered, QUERY);
 		const measured = lastVerifyCosine();
-		assert.equal(outcome.kind, "text-fallback", `0.985 is below the frozen 0.99 (measured ${measured})`);
-		assert.ok(Math.abs(measured - 0.985) < 0.02, `the check must measure what the provider produced, got ${measured}`);
+		assert.equal(outcome.kind, "text-fallback", `${SYNAPSE_STATE_VERIFY_MIN_COSINE - 0.005} is below the frozen ${SYNAPSE_STATE_VERIFY_MIN_COSINE} (measured ${measured})`);
+		assert.ok(Math.abs(measured - (SYNAPSE_STATE_VERIFY_MIN_COSINE - 0.005)) < 0.02, `the check must measure what the provider produced, got ${measured}`);
 	});
 
 	it("does not re-embed the query when the launch did not ask for verification", async () => {

@@ -22,12 +22,13 @@ import type { StateFallbackReason } from "./state-payload.ts";
 
 /**
  * Bumped to 2 when `object-io` gained the `payload-read` purpose, to 3 when the
- * `vector-cache` kind was added, and to 4 when the `capability-probe` kind was
- * added. Every change is additive: each field that existed before kept its
- * meaning, so an older log still aggregates (a component it never recorded is
- * reported as 0) and the frozen full-account definition is unaffected.
+ * `vector-cache` kind was added, to 4 when the `capability-probe` kind was
+ * added, and to 5 when `capability-probe` gained `wired`/`durationMs`. Every
+ * change is additive: each field that existed before kept its meaning, so an
+ * older log still aggregates (a component it never recorded is reported as 0)
+ * and the frozen full-account definition is unaffected.
  */
-export const SYNAPSE_METERING_SCHEMA_VERSION = 4;
+export const SYNAPSE_METERING_SCHEMA_VERSION = 5;
 
 /** A number that was never reported, as distinct from a reported zero. */
 export type Unavailable = "unavailable";
@@ -155,11 +156,17 @@ export type MeteringPayload =
 	| { cosine: number; kind: "state-verify"; ok: boolean }
 	/**
 	 * One negotiation-deciding verdict of the receiver's declared capability probe,
-	 * recorded every time the gate was consulted — including verdicts served from the
-	 * TTL cache — so a delegation window that ran on the text path answers "why" from
+	 * recorded every time the gate was consulted — including verdicts served from
+	 * the TTL cache — so a delegation window that ran on the text path answers "why" from
 	 * the ledger round by round instead of from the one moment the check actually ran.
+	 * `wired` distinguishes a probe that ran and failed from a receiver that declared
+	 * probe items to a caller that wired none (both negotiate to text; only one of
+	 * them is an environment failure). `durationMs` is the consultation's own time:
+	 * ≈0 on a TTL hit, the full corpus-load cost on the first consult of a process —
+	 * the number that decides whether the probe belongs on the state budget's
+	 * critical path at all. Absent on events written before schema 5.
 	 */
-	| { kind: "capability-probe"; ok: boolean }
+	| { durationMs?: number; kind: "capability-probe"; ok: boolean; wired?: boolean }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
 
 export type MeteringEvent = MeteringIdentity &
@@ -243,7 +250,7 @@ export const FULL_ACCOUNT_DEFINITION =
 
 /** Why the hot-base row must be labelled whenever it is printed. */
 export const HOT_BASE_NOTE =
-	"derived: the cold figure minus base reads; no build of this extension keeps base vectors resident, so this row is arithmetic rather than a measurement";
+	"derived: the cold figure minus base reads; the in-process vector cache exists but a one-process-per-round rig never amortises it, so this row is arithmetic unless one process serves many delegations (preregistration §14)";
 
 /** Recovery hops taken, by kind. */
 export type FallbackHops = { fullVector: number; resend: number; text: number };

@@ -59,9 +59,13 @@ export const SYNAPSE_DEFAULT_DELTA = false;
  * Off by default, so the frozen `cold base` full-account convention still describes
  * the default configuration: with the cache off, every ranking reads every record's
  * vector from the store — the cost the P4-4 replay measured at 476 KiB per round.
- * Turning it on makes those reads happen once per process, which is exactly the
- * difference between the cold row and the hot row of the pre-registered table, and
- * turns the hot row from a derived figure into a measured one.
+ * Turning it on makes those reads happen once per process.
+ *
+ * What "once per process" does and does not buy: within one process it turns
+ * repeated rankings into cache hits, but a rig that spawns a fresh process per
+ * round pays the cold fill every round and measures no hot row at all — the
+ * pre-registered hot-base figure stays derived until one long-lived process
+ * serves many delegations (preregistration §14 records this boundary).
  *
  * It changes where the bytes come from, never which bytes are compared: a run with
  * the cache on and one with it off must rank identically, and a difference in
@@ -73,22 +77,27 @@ export const SYNAPSE_STATE_VERIFY_MODES = ["off", "reembed"] as const;
 export type SynapseStateVerify = (typeof SYNAPSE_STATE_VERIFY_MODES)[number];
 
 /**
- * The cosine below which a decoded state is refused.
+ * The cosine below which a decoded state is refused — in the FLOAT domain, the
+ * domain the receiver's check measures.
  *
- * The residual is a lossy encoding: it is admitted on the sender's side only when
- * the payload is small, and the calibration that froze its grid measured an
- * ordered top-5 agreement well below 1 (the negative result this repository
- * reports in full). What was missing was a check *per message*: the receiver
- * rebuilt the vector and ranked with it without ever asking whether it still
- * meant the query. 0.99 is the same threshold the encoder's stop condition uses,
- * so a payload the sender considered "done" is a payload the receiver accepts —
- * one number, used on both sides of the wire, rather than two that drift.
- *
- * It is not 1.0: the quantised round trip cannot reproduce the original exactly,
- * and a threshold that no correct payload can meet would turn every message into
- * a recovery.
+ * Why 0.98 and not the encoder's stop value 0.99: the two numbers live in
+ * different domains and can never share a value. The encoder's stop condition
+ * compares on the quantised integer grid (delta.ts `cosineInt`), where it
+ * guarantees `cos_q(reconstruction, quantised target) >= 0.99`. The receiver's
+ * check compares the decoded float vector against a fresh embedding of the
+ * query, and the quantisation of the target itself costs cosine there: at the
+ * frozen grid 127 / dim 1024 that self-loss is ≈ dim/(24·grid²) ≈ 0.0027, so a
+ * legitimate residual lands at ≈ 0.99 × 0.9973 ≈ 0.9874. Measured on the P4-5
+ * evidence (30 residuals, real GLM-Embedding-3/1024 vectors) the legitimate
+ * band is [0.9868, 0.9882] — every payload the frozen encoder emits sits BELOW
+ * 0.99, and a 0.99 float threshold would refuse all of them (the K3 review of
+ * 2026-09-20, preregistration §14). 0.98 clears the measured band's floor by
+ * ≈ 0.007 while remaining far above any genuine mismatch (a wrong base or a
+ * different encoded query scores far lower). The band's location scales with
+ * dim/grid² — changing either frozen constant requires re-deriving this
+ * threshold and a new preregistered revision, not editing this number.
  */
-export const SYNAPSE_STATE_VERIFY_MIN_COSINE = 0.99;
+export const SYNAPSE_STATE_VERIFY_MIN_COSINE = 0.98;
 
 /** Off by default: verification costs the receiver a second embedding call. */
 export const SYNAPSE_DEFAULT_STATE_VERIFY: SynapseStateVerify = "off";

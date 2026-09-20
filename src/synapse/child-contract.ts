@@ -187,9 +187,12 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 			// state, so nothing here re-embeds a query to check one.
 			stateVerify: "off",
 			storageRoot: contract.contract.storageRoot,
-			// Not inert, unlike `delta` above: the child's own recall ranks records, so
-			// the launch's choice about keeping their vectors in memory applies here as
-			// much as it does on the sender's base selection.
+			// Inert on this path TODAY, and stated as such: the child's own recall
+			// service has no embedder (embedding: null above), so its semantic
+			// ranking — the only consumer of the cache — never runs here, and this
+			// value only becomes live if a future card gives the child's recall an
+			// embedder. Kept wired rather than hardcoded false so that day needs no
+			// contract change. Registered beside the V7 debt (README known-gap #10).
 			vectorCache: contract.vectorCache,
 		},
 		agentDir: getAgentDir(),
