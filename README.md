@@ -141,7 +141,7 @@ pi -e ./index.ts --prompt-template ./prompts
 | 能力协商、信封与冻结快照、自动交接、计量、回执 | **已接入真实委派消息流。** 每次子 Agent 委派都先协商能力、召回记忆、冻结快照、生成信封，并把投递、模型用量、记忆复用与终态写入只追加计量日志。 |
 | 信封投递与接收侧校验 | **已接入。** 信封写入 `<storageRoot>/envelopes/<runId>/<childIndex>.json`，子 Agent 在首个回合读取并按协议解析，命名空间、能力 ID 与重算的快照 ID 任一不符即拒绝执行。信封不进模型上下文，零 token 开销。 |
 | 非文本状态传递（向量载荷） | **已实现且已验证**（限 AC-04/05/11 集成测试范围；集成测试经本地 HTTP stub 提供合成向量，真实 provider 验证待实验批次）：retrieve 委派协商为 state 时，发送侧嵌入查询并把 float32 向量发布到 CAS，信封携带 `stateRef`，接收侧校验（sha-256/维度/表示）后对固定的 `corpusSnapshotId` 语料做余弦 top-k 检索；prepare/send/receive/consume 四类事件分开计量，信封字节与失败/拒绝也入日志，对象损坏按重传≤1、文本回退≤1 的有限恢复链处理。生产宿主的检索委派触发点尚未接线（模块级 API 已就绪）。 |
-| 语义检索 / 嵌入 | **已实现且已验证**（单元与工具级测试范围；测试向量同样由本地 stub 提供，真实 provider 验证待实验批次）：配置 `synapse.embedding` 后记忆检索带语义余弦分量（冻结 0.3/0.2/0.5 权重），无嵌入配置时诚实报 `unavailable`；状态检索（`stateId`）走独立路径消费已验证的向量载荷。 |
+| 语义检索 / 嵌入 | **已实现且已验证**（限单元与集成测试范围 + 一次真实 provider 的端到端）：配置 `synapse.embedding` 后记忆检索带语义余弦分量（冻结 0.3/0.2/0.5 权重），无嵌入配置时诚实报 `unavailable`；状态检索（`stateId`）走独立路径消费已验证的向量载荷。**两个 provider**：`siliconflow`（请求并解析 base64 float32）与 `paratera`（普通 OpenAI 兼容网关，返回 JSON 数字数组，可经 `dimensions` 指定输出宽度）——线格式按 provider 选择，绝不从响应里嗅探，因为"把数字当 base64 解"会得到一个看似合理的错向量。`/synapse-setup` 的 `semantic` 行报告的是**与运行路径同一个**解析结果，不是常量。 |
 | 残差（`delta`）编码 | **已实现且已验证（模块级）**，范围与档位分三部分如实标注：①**编解码**（限单元测试与 Python 参照黄金用例一致性）：`src/synapse/delta.ts` 的量化（round-half-even）、稀疏残差编解码与量化域余弦，与 `stateplane/residual.py` 的三组黄金用例逐字节一致，并覆盖畸形输入拒绝；②**发送/接收/消费/恢复链**（限集成测试，向量由本地 stub 提供）：发送侧按载荷占比选档并把 `encoding`/`baseMemoryId` 写进 `stateRef`，接收侧用**自己记忆库**里的基重建后排序，基缺失或载荷损坏按"重传一次→文本回退一次"的有限链处理；③**标定**（按判据属**原型或代理验证**档）：冻结为网格 127 / 阈值 0.99（int8、两字节索引），**标定结论是负结果**——没有组合达到 100% 检索一致性，按最高档降级冻结，实测 top-1 一致 97.9%、top-5 集合一致 79.1%、有序一致 56.9%（均为**前 240 轮子样本**，扩样 990 对后有序一致降至 45.35%），平均载荷 1789.73 B（较 4096 B 完整向量降 56.3%，**仅载荷口径**）；净收益待全账计量，**不得据此声称收益为正**，扫描表与成立条件见 `docs/experiments/delta-calibration-20260919.md`。**通路已接生产**：`synapse.delta`（默认 `false`）决定是否在发送侧注入基选择；开启时发送方在**接收方能读的范围内**选基，选基失败记 `error` 后回落完整向量、不使委派失败；关闭时不读任何基。真实会话中的端到端验证仍待实验批次（同上一行的范围限定）。 |
 
 完整的已知缺口见[下文](#已知缺口)。
@@ -352,14 +352,18 @@ npm run typecheck
 
 ## 已知缺口
 
-1. **状态平面已接线，但尚未在真实 Pi 进程内跑通。** 发送、消费、恢复链与计量已在模块层实现并
-   经 AC-04/05/11 集成测试验证（嵌入向量由本地 stub 提供）；宿主触发点已接通（前后台同一接缝，
-   见 `openChildDelegationWithState`），且能力协商已按“角色声明的工具 + 扩展注册的工具”计算——
-   此前只按前者计算，导致出厂角色下协商恒判“接收方不能消费”，信封一封也不会发出。
-   残差通路同样已接（`synapse.delta`，默认关闭）。
-   **仍未验证的**：真实 provider 的端到端（需要密钥与授权），以及前台/后台跨进程路径。
-   另有一条已知陷阱：`resolveConfiguredEmbedder` 原先只读环境变量，用 `/synapse-setup key` 存的
-   密钥对建 embedder 无效（界面会显示已配置）——已修为“环境变量优先、回落已存密钥”。
+1. **状态平面已在真实 Pi 进程内跑通（前台路径），后台跨进程路径仍未验证。** 2026-09-20 用真实
+   provider 跑通一次完整链路：发送侧嵌入查询并发布 `stateRef` 信封（`envelopes/<runId>/<childIndex>.state.json`），
+   子会话在启动时校验并消费该载荷，把语料块命中以 steer 消息注入自己的上下文。同一次运行的账本含
+   `state-prepare` / `state-send` / `state-receive` / `state-consume`，`embedding-call ok=true`（真实嵌入成本入账）、
+   接收侧 `object-io read` 在位，**全账无 error 事件**；子会话 transcript 里留有命中列表原文。
+   运行清单见 `synapse/_state/p45-runs/RUN-MANIFEST.md`。
+   **仍未验证的**：后台子会话（分离进程）路径，以及把两臂差异量化出结论——后者属 P4-5，
+   须按 `docs/experiments/AC-17-acceptance-preregistration-20260919.md` 与其 2026-09-20 修订执行。
+   能力协商按“角色声明的工具 + 扩展注册的工具”计算——此前只按前者，导致出厂角色下协商恒判
+   “接收方不能消费”，信封一封也不会发出。残差通路同样已接（`synapse.delta`，默认关闭）。
+   另有一条已知陷阱（已修）：`resolveConfiguredEmbedder` 原先只读环境变量，用 `/synapse-setup key` 存的
+   密钥对建 embedder 无效（界面会显示已配置）——现为“环境变量优先、回落已存密钥”。
    两条与实验口径相关的行为：状态面的等待受 `SYNAPSE_STATE_BUDGET_MS`（2500 ms）约束，超时即按
    “本次未传递状态”放行并记一条 `error(category="timeout")`，该常量须写进 manifest；
    每次子进程写入的计量事件带 `writer` 字段，`totalMs` 只取父侧 writer 的读数（跨进程的
