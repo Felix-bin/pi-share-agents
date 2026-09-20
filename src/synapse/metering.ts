@@ -21,12 +21,12 @@ import type { StateFallbackReason } from "./state-payload.ts";
  */
 
 /**
- * Bumped to 2 when `object-io` gained the `payload-read` purpose. The change is
- * additive: every field that existed in v1 kept its meaning, so a v1 log still
- * aggregates (the new component is simply absent and reported as 0) and the
- * frozen full-account definition is unaffected.
+ * Bumped to 2 when `object-io` gained the `payload-read` purpose, and to 3 when the
+ * `vector-cache` kind was added. Both changes are additive: every field that existed
+ * before kept its meaning, so an older log still aggregates (a component it never
+ * recorded is reported as 0) and the frozen full-account definition is unaffected.
  */
-export const SYNAPSE_METERING_SCHEMA_VERSION = 2;
+export const SYNAPSE_METERING_SCHEMA_VERSION = 3;
 
 /** A number that was never reported, as distinct from a reported zero. */
 export type Unavailable = "unavailable";
@@ -130,6 +130,13 @@ export type MeteringPayload =
 			purpose?: "base-rebuild" | "base-selection" | "payload-read" | "ranking";
 		}
 	| { kind: "task-span"; phase: "start" | "end"; taskId: string }
+	/**
+	 * One ranking's reads, split into those served from the process cache and those
+	 * that had to go to the store. Recorded because "fewer reads" and "fewer records"
+	 * look identical in the account, and the difference decides whether a cache-on run
+	 * is comparable to a cache-off one.
+	 */
+	| { hits: number; kind: "vector-cache"; misses: number }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
 
 export type MeteringEvent = MeteringIdentity &
@@ -329,6 +336,10 @@ export type MeteringTotals = {
 		restoreCount: number;
 		sent: number;
 		sentBytes: number;
+		/** Ranking reads served from the process cache rather than from the store. */
+		vectorCacheHits: number;
+		/** Ranking reads that had to go to the store. */
+		vectorCacheMisses: number;
 	};
 	storage: { readBytes: number; writeBytes: number };
 	text: { handoffBytes: number };
@@ -413,6 +424,10 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			restoreCount: 0,
 			sent: 0,
 			sentBytes: 0,
+			/** Ranking reads served from the process cache rather than from the store. */
+			vectorCacheHits: 0,
+			/** Ranking reads that had to go to the store. */
+			vectorCacheMisses: 0,
 		},
 		storage: { readBytes: 0, writeBytes: 0 },
 		text: { handoffBytes: 0 },
@@ -534,6 +549,10 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 					byTask[event.taskId] = start === undefined ? "unavailable" : event.monotonicMs - start;
 					starts.delete(event.taskId);
 				}
+				break;
+			case "vector-cache":
+				totals.state.vectorCacheHits += event.hits;
+				totals.state.vectorCacheMisses += event.misses;
 				break;
 			case "error":
 				errors[event.category] = (errors[event.category] ?? 0) + 1;

@@ -274,12 +274,24 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 		embedder: Embedder,
 		purpose: "base-selection" | "ranking",
 	): Map<string, Float32Array> {
+		// The cache's own counters are the only record that a read was served from
+		// memory rather than from the store: without them, "fewer reads" and "fewer
+		// records" are indistinguishable in the account, and a reader could not tell
+		// whether a cache-on run is comparable to a cache-off one.
+		const before = options.vectorCache === undefined ? null : { hits: options.vectorCache.hits, misses: options.vectorCache.misses };
 		const recordVectors = new Map<string, Float32Array>();
 		for (const record of records) {
 			if (record.embedding === null) continue;
 			if (!isReadable(record, options.scope)) continue;
 			if (record.embedding.representationId !== embedder.representationId) continue;
 			recordVectors.set(record.memoryId, readRecordVector(record, purpose));
+		}
+		if (before !== null && options.vectorCache !== undefined) {
+			options.metering?.log.record(options.metering.identity, {
+				hits: options.vectorCache.hits - before.hits,
+				kind: "vector-cache",
+				misses: options.vectorCache.misses - before.misses,
+			});
 		}
 		return recordVectors;
 	}

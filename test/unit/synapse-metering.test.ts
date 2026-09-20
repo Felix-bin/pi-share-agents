@@ -59,7 +59,7 @@ describe("metering log durability", () => {
 		// A literal on purpose: bumping the metering schema is a deliberate act that
 		// must change this line and the reader that documents the difference, never
 		// something that slips through by comparing the constant to itself.
-		assert.equal(event.schemaVersion, 2);
+		assert.equal(event.schemaVersion, 3);
 		assert.equal(event.agent, "retriever");
 		assert.equal(event.runId, "run-1");
 		assert.equal(event.attempt, 1);
@@ -339,6 +339,20 @@ describe("full account (frozen definition)", () => {
 		assert.match(totals.fullAccount.definition, /payload/i);
 		assert.match(totals.fullAccount.definition, /base-selection/i);
 		assert.deepEqual(totals.fullAccount.embeddingCalls, { inputTokens: 12, requests: 1 });
+	});
+
+	it("reports cache hits and misses as counts of their own", () => {
+		// Without these, "fewer reads" and "fewer records" are indistinguishable, and a
+		// reader cannot tell whether a cache-on run is comparable to a cache-off one.
+		recordRun(log);
+		log.record(identity(), { hits: 1, kind: "vector-cache", misses: 1 });
+		log.record(identity(), { hits: 2, kind: "vector-cache", misses: 0 });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.state.vectorCacheHits, 3);
+		assert.equal(totals.state.vectorCacheMisses, 1);
+		// They are counts, not bytes: the frozen account must not move because a read was
+		// served from memory instead of from the store.
+		assert.equal(totals.fullAccount.bytes, 9808);
 	});
 
 	it("leaves an unattributed read out of every component", () => {

@@ -14,6 +14,7 @@ import { createMeteringLog, readMeteringLog, type MeteringEvent } from "../../sr
 import { deriveNamespaceId } from "../../src/synapse/namespace.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
 import { openChildDelegationWithState } from "../../src/runs/shared/synapse-delegation.ts";
+import { memoryVectorCacheFor, resetMemoryVectorCaches } from "../../src/synapse/vector-cache.ts";
 import { startEmbeddingStub, type StubEmbeddingServer } from "../support/embedding-stub-server.ts";
 
 /**
@@ -139,6 +140,14 @@ function baseSelections(): ObjectIoEvent[] {
 	);
 }
 
+/** The base the delivered envelope names: the selection this launch actually made. */
+function baseOf(envelopePath: string): string | null {
+	const delivered = readDeliveredEnvelope(envelopePath);
+	assert.equal(delivered.status, "ready", `the state envelope must be delivered: ${envelopePath}`);
+	if (delivered.status !== "ready") return null;
+	return delivered.wire.stateRef?.baseMemoryId ?? null;
+}
+
 function trigger(synapse: SynapseChildContract) {
 	return openChildDelegationWithState({ cwd: worktree, message: QUERY, receiverSessionId: "sess-child", runtime: runtimeFor(synapse) });
 }
@@ -186,6 +195,9 @@ async function rememberBase(): Promise<{ objectId: string; service: MemoryServic
 }
 
 beforeEach(async () => {
+	// The record-vector cache lives in the process, and this file's tests share one
+	// process: without this reset, a test could inherit entries another test filled.
+	resetMemoryVectorCaches();
 	storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "synapse-p44bb-"));
 	corpusRoot = fs.mkdtempSync(path.join(os.tmpdir(), "synapse-p44bbc-"));
 	worktree = fs.mkdtempSync(path.join(os.tmpdir(), "synapse-p44bbw-"));
@@ -324,17 +336,29 @@ describe("synapse residual path in production", () => {
 		await trigger(warm);
 		// The first send pays for both records: it is the ranking that fills the cache.
 		assert.equal(baseSelections().length, 2, "the first ranking reads every record it ranks");
+		const firstBase = baseOf(stateEnvelopePath(storageRoot, RUN_ID, 0));
 
 		const again = await trigger(warm);
 		assert.ok(again.delegation, "the second send must really run, or this test proves nothing");
 		const sends = readMeteringLog(logPath()).filter((event) => event.kind === "state-send" && event.ok);
 		assert.equal(sends.length, 2, "two sends crossed, and the second one ranked the same records");
 		assert.equal(baseSelections().length, 2, "the second ranking must be served from memory, not from the store");
+		// The claim is about the hit path, so the selection it produces is compared with
+		// the one the cold path produces for the same store and query.
+		assert.equal(baseOf(stateEnvelopePath(storageRoot, RUN_ID, 0)), firstBase, "a served-from-memory vector must select the base the stored one selects");
+
+		// The registry is the seam's own cache, not a second one the test built: without
+		// this the cold assertion below would hold even if the sender ignored the switch.
+		const registry = memoryVectorCacheFor(storageRoot, embedder);
+		assert.ok(registry.hits > 0, "the warm sends must have been served by the cache this key names");
 
 		// The cold configuration, on the same store in the same process, still pays for
-		// every ranking: the difference between the two rows is the cache and nothing else.
+		// every ranking and never touches the cache.
+		const hitsBeforeCold = registry.hits;
 		await trigger(synapseContract(true));
 		assert.equal(baseSelections().length, 4, "with the cache off each ranking reads each record again");
+		assert.equal(registry.hits, hitsBeforeCold, "off means the cache is not consulted, not that it is consulted and not written");
+		assert.equal(baseOf(stateEnvelopePath(storageRoot, RUN_ID, 0)), firstBase, "and it selects the same base");
 	});
 
 	it("keeps the receiver's contract check satisfied for a residual, not just for a vector", async () => {

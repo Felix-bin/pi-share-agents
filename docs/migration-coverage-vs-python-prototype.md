@@ -102,3 +102,20 @@ node --experimental-strip-types --test test/integration/synapse-*.test.ts
 ```
 
 本表所有判定均可按上表「证据」列的 `文件:行号` 直接核对；行号对应本仓库 HEAD `27defe1`。
+
+---
+
+## 6. 本仓库有、原型没有的机制（2026-09-20 增补）
+
+迁移不等于逐条照抄：下列机制是在初赛原型之外新增的，也一并登记，以免"覆盖核验"被读成两者等价。
+
+| 机制 | 位置 | 与原型的关系 |
+|---|---|---|
+| **全账口径的归因、聚合与冷/热分层** | `src/synapse/metering.ts`（`FullAccount`、`fullAccount.fallback`、`hotBase.bytesIfBaseResident`）、`docs/experiments/full-account-attribution-rule.md` | 原型的 `eval/metrics.py` 只有分项计数，没有把"这笔字节由谁付"编码进事件，也没有冷/热两行与一致性检查；原型 README 自陈部分字节口径是代理值，本仓库在无法实测处直接记 `"N/A"` 而不报代理值 |
+| **记录向量驻留索引** | `src/synapse/vector-cache.ts`、`synapse.vectorCache`（默认关） | 原型的 `stateplane/vector_index.py` 是**接收侧**恢复面的文本句柄→量化向量表；本仓库的索引针对**发送侧选基**的重复读取，使"每轮读全部记录"变为"每进程一次" |
+| **表示空间守卫** | `corpus.ts`（跨表示空间的幂等命中拒绝）、`state-payload.ts`（`requiredRepresentationId` 校验） | 无等价物：同一份语料在两种嵌入空间下会得到同一个快照 id，静默复用会把占位向量当真实向量用 |
+| **跨进程计量的写者归属** | `metering.ts` 的 `writer` 字段与 `totalMs` 只取父侧读数 | 原型单进程计量，无此问题 |
+| **状态预算与超时语义** | `SYNAPSE_STATE_BUDGET_MS`（2500 ms，超时按"本次未传递状态"放行并记 `error(category="timeout")`） | 原型无预算机制（其超时行为是进程级强制终止） |
+
+**仍未追平原型的两处**（见 §2 缺口 A–H）：接收侧的**语义校验**（原型 VLC：重嵌入比对 `cos(Ŷ,Y_true)`，
+失配回退全文）与**运行期能力探测**（原型 CNR 的 `check_fn` + TTL）。这两项在同一次收口中处理。
