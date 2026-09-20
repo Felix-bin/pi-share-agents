@@ -132,6 +132,19 @@ describe("rehydration after reload or resume (AC-14)", () => {
 		assert.equal(honest.contract.stateVerify, "reembed");
 	});
 
+	it("rehydrates a contract persisted before the verification setting existed", () => {
+		// A setting added later must not make older contracts read as tampered: an old
+		// contract's identity was computed without it, and that identity has to keep
+		// verifying, or every resume across an upgrade fails as corruption.
+		const contract = resolveLaunchContract(contractInput());
+		const legacy = JSON.parse(serialiseLaunchContract(contract)) as Record<string, unknown>;
+		delete legacy.stateVerify;
+		const result = rehydrateLaunchContract(JSON.stringify(legacy), checks());
+		assert.equal(result.status, "ready");
+		if (result.status !== "ready") return;
+		assert.equal(result.contract.stateVerify, "off");
+	});
+
 	it("refuses unreadable persisted state instead of starting from defaults", () => {
 		const result = rehydrateLaunchContract("{ not json", checks());
 		assert.equal(result.status, "refused");

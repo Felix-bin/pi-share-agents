@@ -39,6 +39,8 @@ const K = 3;
 const RUN_ID = "run-delta";
 const SOURCE_COMMIT = "d".repeat(40);
 const QUERY = "# beta\ncoordination as compression observation two\n";
+/** A query the receiver holds but the sender never encoded, to tell the two apart. */
+const OTHER_QUERY = "# gamma\nresidual quantisation observation three\n";
 
 /**
  * The record's stored vector: the query's own axis, plus a fifth of a unit on the
@@ -158,6 +160,44 @@ function baseOf(envelopePath: string): string | null {
 
 function trigger(synapse: SynapseChildContract) {
 	return openChildDelegationWithState({ cwd: worktree, message: QUERY, receiverSessionId: "sess-child", runtime: runtimeFor(synapse) });
+}
+
+/** The decoded state is a unit vector on the second axis, so this answer has cosine c with it. */
+function atCosine(c: number): readonly number[] {
+	return [Math.sqrt(1 - c * c), c, 0, 0, 0, 0, 0, 0];
+}
+
+/** The same launch with the receiver's check switched on. */
+function strictVerify(synapse: SynapseChildContract) {
+	return { ...synapse.contract, stateVerify: "reembed" as const };
+}
+
+/** The most recent cosine the receiver's check recorded. */
+function lastVerifyCosine(): number {
+	const events = readMeteringLog(logPath()).filter(
+		(event): event is Extract<MeteringEvent, { kind: "state-verify" }> => event.kind === "state-verify",
+	);
+	const last = events[events.length - 1];
+	assert.ok(last, "a check must have been recorded");
+	return last.cosine;
+}
+
+function consumeStrict(
+	synapse: ReturnType<typeof strictVerify>,
+	delivered: Extract<ReturnType<typeof readDeliveredEnvelope>, { status: "ready" }>,
+	fallbackQuery: string,
+) {
+	return consumeRetrieveState({
+		contract: synapse,
+		deps: { embedder, log: createMeteringLog(logPath()) },
+		envelope: delivered.wire,
+		expectedSenderSessionId: "sess-parent",
+		fallbackQuery,
+		identity: { agent: "retriever", attempt: 1, childIndex: 0, runId: RUN_ID, sessionId: "sess-child" },
+		k: K,
+		stateRecovery: "resend-then-text",
+		worktreeRoot: worktree,
+	});
 }
 
 /** The receiver's half, through the same call the child runtime makes. */
@@ -420,7 +460,15 @@ describe("synapse residual path in production", () => {
 		// run that recovered would leave no trace of the refusal at all.
 		const textHop = events.find((event) => event.kind === "state-restore" && event.hop === "text");
 		assert.equal(textHop?.kind === "state-restore" ? textHop.cause : null, "state-verify", "the hop must say the state was refused by verification");
-		assert.equal(aggregateMetering(events).state.verificationRefusals, 1, "the refusal is counted, not only the recovery it caused");
+		const totals = aggregateMetering(events);
+		assert.equal(totals.state.verifications, 1, "one check ran, and it is recorded with its cosine");
+		assert.equal(totals.state.verificationRefusals, 1, "the refusal is counted where it happened, not only where it was recovered from");
+		const verifyEvent = events.find((event) => event.kind === "state-verify");
+		assert.ok(verifyEvent?.kind === "state-verify" && verifyEvent.cosine < 0.99, "the measured cosine is in the log, so the threshold's margin is a measurement");
+		// A semantic refusal skips the re-send: the bytes were intact, so repeating them
+		// could only reproduce the refusal one round trip later.
+		assert.equal(totals.state.restoreCount, 1, "the text hop is the only hop a semantic refusal takes");
+		assert.equal(totals.fullAccount.fallback.hops.resend, 0, "and no re-send was attempted");
 		// And it is metered, exactly once: the receiver's re-embedding is a real provider
 		// call, and a verification that ran unmetered would be a cost the account denies.
 		const embeddingCalls = events.filter((event) => event.kind === "embedding-call").length;
@@ -428,9 +476,9 @@ describe("synapse residual path in production", () => {
 	});
 
 	it("fails the consume with the refusal's own category when recovery cannot run", async () => {
-		// No embedder is injected here, so the text fallback cannot run: the refusal then
-		// surfaces as the terminal failure, carrying the prefix that says the digests all
-		// matched and the meaning did not.
+		// The receiver can re-embed, but the launch allows only a re-send — which a semantic
+		// refusal never takes — so the refusal surfaces as the terminal failure, carrying the
+		// prefix that says the digests all matched and the meaning did not.
 		await rememberBase();
 		const synapse = synapseContract(true);
 		const opened = await trigger(synapse);
@@ -456,6 +504,95 @@ describe("synapse residual path in production", () => {
 			events.some((event) => event.kind === "error" && event.category === "integrity" && event.detail.startsWith("state-verify:")),
 			"the terminal failure must be recorded under its own prefix, distinguishable from corruption",
 		);
+		// A refusal that ends the consume is counted exactly like one a fallback rescued:
+		// counting only the recovered ones would understate the refusal rate.
+		const totals = aggregateMetering(events);
+		assert.equal(totals.state.verifications, 1);
+		assert.equal(totals.state.verificationRefusals, 1);
+	});
+
+	it("refuses to consume unverified when the launch asked for verification and cannot perform it", async () => {
+		// The setting is a promise about this side's behaviour. A receiver that cannot
+		// re-embed must say so rather than accept the payload and make the promise empty.
+		await rememberBase();
+		const synapse = synapseContract(true);
+		const opened = await trigger(synapse);
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
+
+		const strict = { ...synapse.contract, stateVerify: "reembed" as const };
+		const outcome = await consumeRetrieveState({
+			contract: strict,
+			// No embedder on this side: the check cannot run.
+			deps: { log: createMeteringLog(logPath()) },
+			envelope: delivered.wire,
+			expectedSenderSessionId: synapse.sessionId,
+			fallbackQuery: QUERY,
+			identity: { agent: "retriever", attempt: 1, childIndex: 0, runId: RUN_ID, sessionId: "sess-child" },
+			k: K,
+			worktreeRoot: worktree,
+		});
+		assert.equal(outcome.kind, "refused", `a check that cannot run must refuse rather than pass silently, got ${outcome.kind}`);
+		assert.equal(outcome.kind === "refused" ? outcome.category : null, "configuration");
+	});
+
+	it("checks the query the sender encoded, not the text this side happens to hold", async () => {
+		// The state is a claim about the sender's query. A receiver whose local copy has
+		// drifted must not be told the state is wrong: the state is right about the sender's
+		// query, and the comparison has to use that one.
+		await rememberBase();
+		const synapse = synapseContract(true);
+		const opened = await trigger(synapse);
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
+
+		const strict = { ...synapse.contract, stateVerify: "reembed" as const };
+		const outcome = await consumeRetrieveState({
+			contract: strict,
+			deps: { embedder, log: createMeteringLog(logPath()) },
+			envelope: delivered.wire,
+			expectedSenderSessionId: synapse.sessionId,
+			// A different local query: had the check used this, the cosine would be 0.
+			fallbackQuery: OTHER_QUERY,
+			identity: { agent: "retriever", attempt: 1, childIndex: 0, runId: RUN_ID, sessionId: "sess-child" },
+			k: K,
+			stateRecovery: "resend-then-text",
+			worktreeRoot: worktree,
+		});
+		assert.equal(outcome.kind, "consumed", `the sender's own query must decide, got ${outcome.kind}`);
+	});
+
+	it("accepts a decoded state just above the frozen threshold", async () => {
+		// The threshold is a number with a meaning only if its neighbourhood is pinned. The
+		// decoded state is a unit vector on the second axis, so an answer whose first two
+		// components are (sqrt(1-c^2), c) has cosine exactly c with it.
+		await rememberBase();
+		const synapse = synapseContract(true);
+		const opened = await trigger(synapse);
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
+
+		reembedOverride = atCosine(0.995);
+		const strict = strictVerify(synapse);
+		const outcome = await consumeStrict(strict, delivered, QUERY);
+		const measured = lastVerifyCosine();
+		assert.equal(outcome.kind, "consumed", `0.995 is above the frozen 0.99 (measured ${measured})`);
+		assert.ok(Math.abs(measured - 0.995) < 0.02, `the check must measure what the provider produced, got ${measured}`);
+	});
+
+	it("refuses just below the frozen threshold", async () => {
+		await rememberBase();
+		const synapse = synapseContract(true);
+		const opened = await trigger(synapse);
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
+
+		reembedOverride = atCosine(0.985);
+		const strict = strictVerify(synapse);
+		const outcome = await consumeStrict(strict, delivered, QUERY);
+		const measured = lastVerifyCosine();
+		assert.equal(outcome.kind, "text-fallback", `0.985 is below the frozen 0.99 (measured ${measured})`);
+		assert.ok(Math.abs(measured - 0.985) < 0.02, `the check must measure what the provider produced, got ${measured}`);
 	});
 
 	it("does not re-embed the query when the launch did not ask for verification", async () => {
@@ -473,6 +610,44 @@ describe("synapse residual path in production", () => {
 			before,
 			"the default path must not pay for a second embedding",
 		);
+	});
+
+	it("does not spend a re-send on a refusal the bytes cannot fix", async () => {
+		await rememberBase();
+		const synapse = synapseContract(true);
+		const opened = await trigger(synapse);
+		const delivered = readDeliveredEnvelope(stateEnvelopePath(storageRoot, RUN_ID, 0));
+		if (delivered.status !== "ready") assert.fail("the state envelope must be delivered");
+
+		reembedOverride = atCosine(0.5);
+		let resendAttempts = 0;
+		const strict = strictVerify(synapse);
+		const outcome = await consumeRetrieveState({
+			contract: strict,
+			deps: {
+				embedder,
+				// The point is that the attempt must not happen: whether this would have
+				// produced usable bytes is beside the question, because the bytes were never
+				// what was wrong with the state.
+				resend: () => {
+					resendAttempts += 1;
+					return null;
+				},
+				log: createMeteringLog(logPath()),
+			},
+			envelope: delivered.wire,
+			expectedSenderSessionId: synapse.sessionId,
+			fallbackQuery: QUERY,
+			identity: { agent: "retriever", attempt: 1, childIndex: 0, runId: RUN_ID, sessionId: "sess-child" },
+			k: K,
+			stateRecovery: "resend-then-text",
+			worktreeRoot: worktree,
+		});
+		assert.equal(outcome.kind, "text-fallback");
+		assert.equal(resendAttempts, 0, "a semantic refusal must not spend a re-send");
+		const totals = aggregateMetering(readMeteringLog(logPath()));
+		assert.equal(totals.fullAccount.fallback.hops.resend, 0);
+		assert.equal(totals.state.restoreCount, 1, "the text hop is the only hop a refusal takes");
 	});
 
 	it("keeps the receiver's contract check satisfied for a residual, not just for a vector", async () => {

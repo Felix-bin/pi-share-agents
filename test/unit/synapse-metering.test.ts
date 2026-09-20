@@ -355,6 +355,18 @@ describe("full account (frozen definition)", () => {
 		assert.equal(totals.fullAccount.bytes, 9808);
 	});
 
+	it("counts the receiver's semantic checks and its refusals separately", () => {
+		// Counted where the refusal happens, so a refusal that a fallback rescued and one
+		// that ended the consume are both in the same column.
+		log.record(identity(), { cosine: 0.999, kind: "state-verify", ok: true });
+		log.record(identity(), { cosine: 0.4, kind: "state-verify", ok: false });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.state.verifications, 2);
+		assert.equal(totals.state.verificationRefusals, 1);
+		// A check is not a transfer: the frozen byte account must not move because one ran.
+		assert.equal(totals.fullAccount.bytes, 0);
+	});
+
 	it("leaves an unattributed read out of every component", () => {
 		log.record(identity(), { bytes: 700, direction: "read", kind: "object-io" });
 		const totals = aggregateMetering(readMeteringLog(logPath));

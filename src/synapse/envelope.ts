@@ -241,3 +241,26 @@ export function envelopeParams(wire: EnvelopeWire): CanonicalValue {
 	const decoded: CanonicalValue = JSON.parse(wire.inputParamsJson);
 	return decoded;
 }
+
+const QueryTextSchema = Type.Object({ query: Type.String({ minLength: 1 }) });
+const queryTextValidator = Compile(QueryTextSchema);
+
+/**
+ * The query text the sender encoded, when the envelope's params carry one.
+ *
+ * The receiver's semantic check compares a decoded state against a fresh embedding of
+ * *this* text rather than of whatever the receiver happens to hold, because the state
+ * is a claim about the sender's query: a state whose sender has moved on is then a
+ * failure the check can see. Null means the params carry no readable query, and the
+ * caller decides what that means for it rather than being handed an empty string.
+ */
+export function envelopeQueryText(wire: EnvelopeWire): string | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(wire.inputParamsJson);
+	} catch {
+		return null;
+	}
+	if (!queryTextValidator.Check(parsed)) return null;
+	return parsed.query;
+}

@@ -1,5 +1,5 @@
 import { canonicalDigest, canonicalJson, type CanonicalValue } from "./canonical-json.ts";
-import type { SynapseMode, SynapseStateVerify } from "./config.ts";
+import { SYNAPSE_DEFAULT_STATE_VERIFY, type SynapseMode, type SynapseStateVerify } from "./config.ts";
 import type { SynapseErrorCategory } from "./errors.ts";
 
 /**
@@ -35,7 +35,8 @@ export type LaunchContractInput = {
 	namespaceId: string;
 	representationId: string;
 	scope: ContractScope;
-	stateVerify: SynapseStateVerify;
+	/** Optional: a contract persisted before this setting existed carries none, and defaults to off. */
+	stateVerify?: SynapseStateVerify;
 	storageRoot: string;
 };
 
@@ -97,7 +98,11 @@ function normaliseScope(scope: ContractScope) {
 
 function contractBody(input: LaunchContractInput): CanonicalValue {
 	const scope = normaliseScope(input.scope);
-	return {
+	// Normalised here as well as in the resolver, because this function is also reached
+	// with a contract parsed back off disk, where a setting added after that contract was
+	// written is simply absent.
+	const stateVerify = input.stateVerify ?? SYNAPSE_DEFAULT_STATE_VERIFY;
+	const body = {
 		capabilityId: input.capabilityId,
 		corpusSnapshotId: input.corpusSnapshotId,
 		memoryRefs: [...new Set(input.memoryRefs)].sort(),
@@ -105,9 +110,13 @@ function contractBody(input: LaunchContractInput): CanonicalValue {
 		namespaceId: input.namespaceId,
 		representationId: input.representationId,
 		scope: { pathPrefixes: scope.pathPrefixes, write: scope.write },
-		stateVerify: input.stateVerify,
 		storageRoot: input.storageRoot,
 	};
+	// A setting at its default is not part of the contract's identity: a launch that never
+	// sets it keeps the identity it had before the setting existed, so a contract persisted
+	// by an older build still rehydrates instead of reading as tampered.
+	if (stateVerify === SYNAPSE_DEFAULT_STATE_VERIFY) return body;
+	return { ...body, stateVerify };
 }
 
 export function resolveLaunchContract(input: LaunchContractInput): LaunchContract {
@@ -121,7 +130,7 @@ export function resolveLaunchContract(input: LaunchContractInput): LaunchContrac
 		namespaceId: input.namespaceId,
 		representationId: input.representationId,
 		scope,
-		stateVerify: input.stateVerify,
+		stateVerify: input.stateVerify ?? SYNAPSE_DEFAULT_STATE_VERIFY,
 		storageRoot: input.storageRoot,
 	};
 }

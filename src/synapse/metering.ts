@@ -146,6 +146,12 @@ export type MeteringPayload =
 	 * is comparable to a cache-off one.
 	 */
 	| { hits: number; kind: "vector-cache"; misses: number }
+	/**
+	 * One run of the receiver's semantic check, with the cosine it measured. Recorded
+	 * whether it passed or refused: how much margin the threshold leaves over legitimate
+	 * payloads is then a distribution in the log rather than an assumption in a comment.
+	 */
+	| { cosine: number; kind: "state-verify"; ok: boolean }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
 
 export type MeteringEvent = MeteringIdentity &
@@ -349,10 +355,12 @@ export type MeteringTotals = {
 		vectorCacheHits: number;
 		/** Ranking reads that had to go to the store. */
 		vectorCacheMisses: number;
+		/** Runs of the receiver's semantic check that the launch asked for. */
+		verifications: number;
 		/**
-		 * Receiver-side semantic refusals: hops taken because the decoded state no longer
-		 * matched the query. Counted on the hop, so a chain that refuses twice (the first
-		 * attempt and its replacement) is two refusals rather than one.
+		 * Of those, the runs that refused. Counted where the refusal happens, not where it
+		 * is recovered from, so a refusal that ends the consume is counted exactly like one
+		 * that a text fallback rescued.
 		 */
 		verificationRefusals: number;
 	};
@@ -444,6 +452,7 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			/** Ranking reads that had to go to the store. */
 			vectorCacheMisses: 0,
 			verificationRefusals: 0,
+			verifications: 0,
 		},
 		storage: { readBytes: 0, writeBytes: 0 },
 		text: { handoffBytes: 0 },
@@ -496,7 +505,6 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 				break;
 			case "state-restore":
 				totals.state.restoreCount += 1;
-				if (event.cause === "state-verify") totals.state.verificationRefusals += 1;
 				if (event.hop === "resend") hops.resend += 1;
 				else if (event.hop === "full-vector") hops.fullVector += 1;
 				else hops.text += 1;
@@ -570,6 +578,10 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			case "vector-cache":
 				totals.state.vectorCacheHits += event.hits;
 				totals.state.vectorCacheMisses += event.misses;
+				break;
+			case "state-verify":
+				totals.state.verifications += 1;
+				if (!event.ok) totals.state.verificationRefusals += 1;
 				break;
 			case "error":
 				errors[event.category] = (errors[event.category] ?? 0) + 1;

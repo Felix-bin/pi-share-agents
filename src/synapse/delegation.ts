@@ -5,7 +5,7 @@ import { negotiate, type CapabilityDeclaration, type NegotiationResult, type Tex
 import { SYNAPSE_STATE_VERIFY_MIN_COSINE } from "./config.ts";
 import { createContentStore } from "./content-store.ts";
 import { meteredEmbedder, type Embedder, SYNAPSE_VECTOR_MEDIA_TYPE } from "./embedding.ts";
-import { buildEnvelope, freezeSnapshot, type Envelope, type EnvelopeWire, type StateRef } from "./envelope.ts";
+import { buildEnvelope, envelopeQueryText, freezeSnapshot, type Envelope, type EnvelopeWire, type StateRef } from "./envelope.ts";
 import { clearStateEnvelope, nodeIdFor, publishEnvelope, publishStateEnvelope, safeComponent } from "./envelope-inbox.ts";
 import { classifySynapseError, type SynapseErrorClassification } from "./errors.ts";
 import { buildReceipt, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
@@ -774,7 +774,9 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 		stateId: stateRef.payloadId,
 	});
 
-	type ConsumeAttempt = { kind: "ok"; result: StateRetrievalResult } | { category: SynapseErrorClassification; kind: "error"; reason: string };
+	type ConsumeAttempt =
+		| { kind: "ok"; result: StateRetrievalResult }
+		| { category: SynapseErrorClassification; kind: "error"; reason: string; verifyRefused?: boolean };
 	const attemptConsume = (against: StateRef): ConsumeAttempt => {
 		try {
 			return { kind: "ok", result: service.search({ k: input.k, stateId: against.payloadId, stateRef: against }) };
@@ -790,42 +792,95 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 	// like every other, and it runs after the ranking: the vector checked is the one
 	// that ranked, and refusing before ranking would mean a second decode path that
 	// could disagree with the first.
-	const verifyQuery = input.fallbackQuery;
+	const verifyRequested = input.contract.stateVerify === "reembed";
+	// The check is against the query the *sender* encoded — carried by the envelope — not
+	// against whatever text this side happens to hold, because the state is a claim about
+	// the sender's query. Comparing against a local copy would accept a state whose sender
+	// had already moved on, which is one of the failures the check exists to catch.
+	const verifyQuery = envelopeQueryText(wire) ?? input.fallbackQuery;
+	if (verifyRequested && (input.deps.embedder === undefined || verifyQuery === undefined || verifyQuery.trim() === "")) {
+		// A launch that asked for verification and a receiver that cannot perform it is a
+		// configuration disagreement, not a state that passed it: accepting the payload
+		// quietly would make the setting a no-op on exactly the side that must honour it.
+		return refuse("configuration", "synapse.stateVerify is reembed but the receiver cannot re-embed: an embedder and the query text are both required");
+	}
 	const stateVerify =
-		input.contract.stateVerify === "reembed" && input.deps.embedder !== undefined && verifyQuery !== undefined && verifyQuery.trim() !== ""
+		verifyRequested && input.deps.embedder !== undefined && verifyQuery !== undefined && verifyQuery.trim() !== ""
 			? { embedder: meteredEmbedder(input.deps.embedder, meterIdentity, input.deps.log), minCosine: SYNAPSE_STATE_VERIFY_MIN_COSINE, query: verifyQuery }
 			: null;
 
 	/** The classification of the failure that forced a hop, with the semantic refusal split out. */
-	function hopCauseOf(failure: { category: SynapseErrorClassification; reason: string }): SynapseErrorClassification | "state-verify" {
-		return failure.reason.startsWith("state-verify:") ? "state-verify" : failure.category;
+	function hopCauseOf(failure: { category: SynapseErrorClassification; verifyRefused?: boolean }): SynapseErrorClassification | "state-verify" {
+		return failure.verifyRefused === true ? "state-verify" : failure.category;
 	}
 
-	async function verifiedAttempt(against: StateRef): Promise<ConsumeAttempt> {
-		const consumed = attemptConsume(against);
-		if (consumed.kind !== "ok" || stateVerify === null) return consumed;
+	/**
+	 * Re-embeds the query and compares it with the vector this side decoded, when the
+	 * launch asked for the check. Every run is recorded with its cosine, so how much
+	 * margin the threshold leaves over legitimate payloads is a measurement rather than
+	 * a claim. Null means the state passed, or that no check is configured.
+	 */
+	async function verifyDecoded(decoded: Float32Array): Promise<ConsumeAttempt | null> {
+		if (stateVerify === null) return null;
 		let cosine: number;
 		try {
 			const reembedded = await stateVerify.embedder.embedQuery(stateVerify.query);
-			cosine = cosineSimilarity(consumed.result.decoded, reembedded.vector);
+			cosine = cosineSimilarity(decoded, reembedded.vector);
 		} catch (error) {
 			// A check that could not run is not a state that passed it: the failure takes
 			// the recovery path like any other unusable payload, and the category says
 			// which of the two happened.
 			return { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
 		}
-		if (cosine < stateVerify.minCosine) {
-			// The prefix maps to the same class as a damaged payload — every digest
-			// matched, but the state is unusable — which is what puts it in the recovery
-			// chain rather than failing the launch outright.
-			const reason = `state-verify: decoded state matches the query at cosine ${cosine.toFixed(6)}, below the frozen ${stateVerify.minCosine}`;
-			return { category: classifySynapseError(new Error(reason)), kind: "error", reason };
+		input.deps.log.record(meterIdentity, { cosine, kind: "state-verify", ok: cosine >= stateVerify.minCosine });
+		if (cosine >= stateVerify.minCosine) return null;
+		const reason = `state-verify: decoded state matches the query at cosine ${cosine.toFixed(6)}, below the frozen ${stateVerify.minCosine}`;
+		// Marked structurally rather than by parsing this message later: the flag decides
+		// which recovery runs, and control flow that depends on a string prefix is one
+		// third-party message away from taking the wrong branch.
+		return { category: classifySynapseError(new Error(reason)), kind: "error", reason, verifyRefused: true };
+	}
+
+	async function verifiedAttempt(against: StateRef): Promise<ConsumeAttempt> {
+		const consumed = attemptConsume(against);
+		if (consumed.kind !== "ok") return consumed;
+		return (await verifyDecoded(consumed.result.decoded)) ?? consumed;
+	}
+
+	/**
+	 * The text path, which both a semantic refusal and an exhausted re-send end at.
+	 * Recorded as a hop of its own so "how often did the state plane need recovering"
+	 * counts it the same way it counts a re-send.
+	 */
+	async function textFallback(failure: ConsumeAttempt & { kind: "error" }): Promise<ConsumeOutcome | null> {
+		if ((input.stateRecovery ?? "resend") !== "resend-then-text" || input.deps.embedder === undefined || input.fallbackQuery === undefined || input.fallbackQuery === "") {
+			return null;
 		}
-		return consumed;
+		try {
+			const result = await service.searchSemantic({ k: input.k, query: input.fallbackQuery });
+			input.deps.log.record(meterIdentity, { cause: hopCauseOf(failure), hop: "text", kind: "state-restore", ok: true });
+			return { kind: "text-fallback", result };
+		} catch (error) {
+			const fallbackFailure = { category: classifySynapseError(error), kind: "error" as const, reason: error instanceof Error ? error.message : String(error) };
+			input.deps.log.record(meterIdentity, { category: fallbackFailure.category, detail: fallbackFailure.reason, kind: "error" });
+			return { category: fallbackFailure.category, kind: "failed", reason: fallbackFailure.reason };
+		}
 	}
 
 	const first = await verifiedAttempt(stateRef);
 	if (first.kind === "ok") return { kind: "consumed", result: first.result };
+
+	// A semantic refusal never goes through the re-send. Every digest matched and the
+	// meaning drifted, so repeating the bytes — or replacing them with the same encoding —
+	// reproduces the same refusal one round trip later, at the cost of the round trip and a
+	// second embedding. It goes straight to the text path, which is the only branch that
+	// can answer with a fresh embedding of the query.
+	if (first.verifyRefused === true) {
+		const recovered = await textFallback(first);
+		if (recovered !== null) return recovered;
+		input.deps.log.record(meterIdentity, { category: first.category, detail: first.reason, kind: "error" });
+		return { category: first.category, kind: "failed", reason: first.reason };
+	}
 
 	// Only object-class problems recover: the bytes may have been lost in
 	// transit while the sender still holds the verified original. A
@@ -914,23 +969,11 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 				if (afterResend.kind === "ok") return { kind: "consumed", result: afterResend.result };
 			}
 		}
-		if ((input.stateRecovery ?? "resend") === "resend-then-text" && input.deps.embedder !== undefined && input.fallbackQuery !== undefined && input.fallbackQuery !== "") {
-			// Text fallback is an ordinary text retrieval done over again here,
-			// metered as such — never recorded as an integrity failure (spec §8.2).
-			// A fallback that itself fails is a terminal failure of the recovery,
-			// never an exception through the seam.
-			try {
-				const result = await service.searchSemantic({ k: input.k, query: input.fallbackQuery });
-				// Recorded as a hop of its own so "how often did the state plane need
-				// recovering" counts this the same way it counts a re-send.
-				input.deps.log.record(meterIdentity, { cause: hopCauseOf(afterResend), hop: "text", kind: "state-restore", ok: true });
-				return { kind: "text-fallback", result };
-			} catch (error) {
-				const fallbackFailure = { category: classifySynapseError(error), kind: "error" as const, reason: error instanceof Error ? error.message : String(error) };
-				input.deps.log.record(meterIdentity, { category: fallbackFailure.category, detail: fallbackFailure.reason, kind: "error" });
-				return { category: fallbackFailure.category, kind: "failed", reason: fallbackFailure.reason };
-			}
-		}
+		// Text fallback is an ordinary text retrieval done over again, metered as such —
+		// never recorded as an integrity failure (spec §8.2). A fallback that itself
+		// fails is a terminal failure of the recovery, never an exception through the seam.
+		const recovered = await textFallback(afterResend);
+		if (recovered !== null) return recovered;
 		// A terminal failure is an auditable event in its own right, recorded as
 		// an error with its category rather than only as a missing consume.
 		input.deps.log.record(meterIdentity, { category: afterResend.category, detail: afterResend.reason, kind: "error" });
