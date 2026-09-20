@@ -77,7 +77,7 @@ export type AttributionKey = string;
  * **The single replacement point for the attribution key.**
  *
  * v1 keys on `(pid, startTicks)`. Once S1 puts each agent in its own container,
- * this becomes a cgroup id (design §3.3), and that swap must not reach into the
+ * this becomes a cgroup id (S1 design §4.2), and that swap must not reach into the
  * join below. Two things keep it that way: the key is built from a *record*
  * rather than from fields the callers pull apart, so growing `cgroupId` onto
  * `AttributionKeySource` changes this function and the two producers of the
