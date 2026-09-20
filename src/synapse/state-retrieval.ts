@@ -243,10 +243,12 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 	// The bytes crossed the disk boundary just as the sender's write did, so the
 	// read is storage traffic and is metered as such — the same rule the send side
 	// already follows for its `object-io` write (P4 group review X-5), applied to
-	// the half that was missing it (item §7.2). No purpose: this is an ordinary
-	// content read, and labelling it as one of the residual path's own reads would
-	// move it into a column that means something else.
-	deps.metering?.log.record(deps.metering.identity, { bytes: payload.byteLength, direction: "read", kind: "object-io" });
+	// the half that was missing it (item §7.2). The purpose names what it is: the
+	// state path's own payload read. It is deliberately NOT one of the columns the
+	// frozen full-account definition sums, because both arms pay it — folding it
+	// into the residual path's column would charge one arm for something the other
+	// pays too. It is reported beside the figure instead (see `fullAccount`).
+	deps.metering?.log.record(deps.metering.identity, { bytes: payload.byteLength, direction: "read", kind: "object-io", purpose: "payload-read" });
 	if (sha256Hex(payload) !== stateRef.sha256) {
 		throw new Error(`integrity: state payload ${stateRef.payloadId} does not match the envelope's sha256 ${stateRef.sha256}`);
 	}

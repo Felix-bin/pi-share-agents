@@ -9,7 +9,7 @@ import { buildCorpus } from "../../src/synapse/corpus.ts";
 import { consumeRetrieveState } from "../../src/synapse/delegation.ts";
 import { createEmbeddingClient, type Embedder } from "../../src/synapse/embedding.ts";
 import { envelopeInboxPath, readDeliveredEnvelope, stateEnvelopePath, verifyEnvelopeAgainstContract } from "../../src/synapse/envelope-inbox.ts";
-import { createMeteringLog, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
+import { aggregateMetering, createMeteringLog, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
 import { resolvePiLaunchToolPlan } from "../../src/runs/shared/child-tool-plan.ts";
 import { openChildDelegationWithState, SYNAPSE_STATE_BUDGET_MS } from "../../src/runs/shared/synapse-delegation.ts";
@@ -208,14 +208,46 @@ describe("synapse production trigger", () => {
 		//
 		// The receiver's read of those same payload bytes is the other half of the
 		// storage column: the sender counts a write, so a receiver that counted
-		// nothing would make the round trip look like it stored data for free.
+		// nothing would make the round trip look like it stored data for free. It
+		// carries its own purpose, which is what keeps it out of the frozen
+		// full-account sum (both arms pay it) while still being reported.
 		const payloadReads = readMeteringLog(logPath()).filter(
-			(event): event is Extract<MeteringEvent, { kind: "object-io" }> => event.kind === "object-io" && event.direction === "read" && event.purpose === undefined,
+			(event): event is Extract<MeteringEvent, { kind: "object-io" }> => event.kind === "object-io" && event.direction === "read" && event.purpose === "payload-read",
 		);
+		assert.ok(payloadReads.length >= 1, "the receiver must record its payload read, naming it");
 		assert.ok(
 			payloadReads.some((event) => event.bytes === (opened.state?.kind === "state" ? opened.state.stateRef.byteLength : -1)),
-			"the receiver's read of the state payload must be metered as an ordinary object read",
+			"the receiver's read of the state payload must be metered as the state path's own read",
 		);
+
+		// The full account is the figure the two arms are compared on, so it is
+		// asserted against a run driven through the production seam rather than only
+		// against hand-written events: every component must be produced by the real
+		// path, and the payload read must stay out of the frozen sum.
+		const totals = aggregateMetering(readMeteringLog(logPath()));
+		const deliveredStateRef = opened.state?.kind === "state" ? opened.state.stateRef : null;
+		assert.ok(deliveredStateRef, "this test needs a delivered state payload");
+		assert.equal(totals.fullAccount.components.payloadBytes, deliveredStateRef.byteLength);
+		assert.equal(totals.fullAccount.components.resendBytes, 0, "a first delivery is not a recovery hop");
+		assert.equal(totals.fullAccount.components.controlBytes, totals.control.envelopeBytes);
+		assert.ok(totals.fullAccount.components.controlBytes > 0, "the envelope is a real cost, not free control");
+		assert.equal(totals.fullAccount.notNamed.payloadReadBytes, deliveredStateRef.byteLength);
+		assert.equal(
+			totals.fullAccount.bytes,
+			totals.fullAccount.components.payloadBytes + totals.fullAccount.components.controlBytes,
+			"with no base reads configured, the frozen sum is the payload plus the control bytes",
+		);
+		assert.equal(
+			totals.fullAccount.hotBase.bytesIfBaseResident,
+			totals.fullAccount.bytes - totals.fullAccount.components.baseRebuildReadBytes - totals.fullAccount.components.baseSelectionReadBytes,
+			"the hot-base row is the cold figure minus the base reads, and says so",
+		);
+		assert.equal(totals.fullAccount.hotBase.derived, true);
+		// No recovery hop ran in this configuration, and the two counters agree that
+		// none did — a run cannot be both "no hops" and "a send claimed a hop".
+		assert.deepEqual(totals.fullAccount.fallback.hops, { fullVector: 0, resend: 0, text: 0 });
+		assert.equal(totals.fullAccount.fallback.sendsWithRestore, 0);
+		assert.equal(totals.fullAccount.fallback.partitionConsistent, true);
 	});
 
 	it("leaves the run byte-identical when a child cannot consume state", async () => {

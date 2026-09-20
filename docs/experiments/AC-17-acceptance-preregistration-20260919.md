@@ -205,3 +205,29 @@ P4-4 落地时必须给出**归因规则**并把规则写进证据包；本预�
 **已按此冻结跑过一次功能级验证**（非 P4-5 数据）：`synapse/_state/p45-runs/RUN-MANIFEST.md`
 记录了用该 provider 重建冻结语料（快照 id 仍为 `c4b1279d…`、1238 块、`vectors.f32` 5 070 848 B）
 并在真实 pi 内完成一次 `pending → send → receive → consume → steer` 的全链路。
+
+### 2026-09-20 · 全账口径归因规则落地（**在 P4-5 任何数据产生之前**声明）
+
+**事实**：§3 的 ② 原文是"① + `object-io`（基读取部分）+ `embedding-call`（`inputTokens`/`requests`）
++ 回退链产生的全部字节"。落地时发现两处措辞在实现层面必须挑明读法，否则同一条日志会算出两个账。
+按 §1 的纪律，本修订**只挑明读法，不改判据**：主指标、方向、判定规则一字未动。
+
+| 措辞 | 本次挑明的读法 | 落地位置 |
+|---|---|---|
+| `embedding-call`（`inputTokens`/`requests`） | **以调用与 token 为单位并列报告，不折算成字节并入 ②**：token 与字节不可换算，混加所得的数既不是字节账也不是 token 账 | `fullAccount.embeddingCalls` |
+| "回退链产生的全部字节" | **回退链的字节已在 ② 的各列内，不另设会把同一笔再算一次的合计项**：`resend`/`full-vector` 两次跳本身就是 `state-send`，其载荷计入 `components.resendBytes`；`text` 跳没有传递字节，其成本是重新嵌入（`embeddingCalls`）与二次检索读取（`notNamed.rankingReadBytes`），命中渲染文本无计量事件（§3 (c) 已声明） | `fullAccount.fallback.hops` + §2.1 |
+
+**同时新增三个不改变 ② 数值的字段**（都不进 ②，只用于让读者看见 ② 之外的东西）：
+
+1. `notNamed.payloadReadBytes`：接收侧读取**载荷对象**的字节。两臂都付，故不入 ②；若把它算进残差臂，
+   等于让一臂替另一臂付账。
+2. `notNamed.rankingReadBytes`：语料排序读取（"状态被用来做的事"，不是传输本身）。
+3. `fullAccount.fallback.partitionConsistent`：当"自称是 hop 的发送条数"与"记录的 hop 条数"不等时置
+   `false`。该不一致**不改变 ②**（两个载荷分量都在 ② 内），只使分量拆分失效；按分量出表前须先看这一位。
+
+**为什么可以在出数前改**：本修订不触碰 §3 的主指标、§4 的判定规则与 §2 的受控条件，只把我方对 ② 的
+读法写死在代码里并公开，正是为了让"看过数字再解释口径"不可能发生。
+
+**证据**：归因规则全文 `docs/experiments/full-account-attribution-rule.md`；计量实现
+`src/synapse/metering.ts`；变异测试 12/12 全杀（`synapse/_state/p46-gate-logs-20260920/`）；
+外部复审（glm-5.3-flash，2026-09-20）逐条处置见同目录 `review-stage-M-response.md`。

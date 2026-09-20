@@ -20,7 +20,13 @@ import type { StateFallbackReason } from "./state-payload.ts";
  * a duplicated delivery record is recognised as duplication rather than volume.
  */
 
-export const SYNAPSE_METERING_SCHEMA_VERSION = 1;
+/**
+ * Bumped to 2 when `object-io` gained the `payload-read` purpose. The change is
+ * additive: every field that existed in v1 kept its meaning, so a v1 log still
+ * aggregates (the new component is simply absent and reported as 0) and the
+ * frozen full-account definition is unaffected.
+ */
+export const SYNAPSE_METERING_SCHEMA_VERSION = 2;
 
 /** A number that was never reported, as distinct from a reported zero. */
 export type Unavailable = "unavailable";
@@ -114,10 +120,14 @@ export type MeteringPayload =
 			 * Why the bytes moved, for the reads that are a cost of the residual path
 			 * rather than of the memory path. `base-rebuild` is a receiver rebuilding
 			 * the base a residual names; `base-selection` is a sender ranking its own
-			 * records to pick one. Absent means an ordinary content or corpus read,
-			 * which is the only thing a pre-delta event could have been.
+			 * records to pick one. `payload-read` is a receiver reading the state
+			 * payload object back out of the store: the state path's own read, present
+			 * on both arms and therefore neutral to the arm comparison, which is why
+			 * the frozen full-account definition does not name it — it is reported
+			 * beside that figure instead of inside it. Absent means an ordinary content
+			 * or corpus read, which is the only thing a pre-delta event could have been.
 			 */
-			purpose?: "base-rebuild" | "base-selection" | "ranking";
+			purpose?: "base-rebuild" | "base-selection" | "payload-read" | "ranking";
 		}
 	| { kind: "task-span"; phase: "start" | "end"; taskId: string }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
@@ -197,11 +207,103 @@ export type UsageTotals = {
 	output: number | Unavailable;
 };
 
+/** The frozen definition of the full-account figure; printed with the number, never re-worded. */
+export const FULL_ACCOUNT_DEFINITION =
+	"payload (first transmissions) + recovery re-transmissions + envelope control bytes + receiver base rebuilds + sender base-selection reads; embedding calls are counted as calls and tokens, never as bytes";
+
+/** Why the hot-base row must be labelled whenever it is printed. */
+export const HOT_BASE_NOTE =
+	"derived: the cold figure minus base reads; no build of this extension keeps base vectors resident, so this row is arithmetic rather than a measurement";
+
+/** Recovery hops taken, by kind. */
+export type FallbackHops = { fullVector: number; resend: number; text: number };
+
+export type FullAccount = {
+	/**
+	 * The figure's definition, carried with the number rather than left in a
+	 * comment, so a report prints what it actually computed. This is the frozen
+	 * definition: payload (first transmissions) + recovery re-transmissions +
+	 * envelope control bytes + the receiver's base rebuilds + the sender's
+	 * base-selection reads. Changing it after the criteria were frozen would be
+	 * moving the goalposts, which is why the extra components below are reported
+	 * separately instead of being folded in.
+	 */
+	definition: string;
+	/**
+	 * Components, each attributed where it was spent. Bytes are never counted
+	 * twice: `payloadBytes` and `resendBytes` partition the state plane's sent
+	 * bytes by first transmission versus recovery hop.
+	 */
+	components: {
+		/** Receiver-side reads that rebuilt a residual's base: the delta path's own cost. */
+		baseRebuildReadBytes: number;
+		/** Sender-side reads that ranked records to choose a base: the cost of selecting one. */
+		baseSelectionReadBytes: number;
+		/** Envelope control bytes. */
+		controlBytes: number;
+		/** Payload bytes of first transmissions. */
+		payloadBytes: number;
+		/** Payload bytes of recovery re-transmissions: a hop's bytes still crossed the wire. */
+		resendBytes: number;
+	};
+	/** Calls the frozen definition counts as calls rather than as bytes. */
+	embeddingCalls: { inputTokens: number | Unavailable; requests: number };
+	/**
+	 * Components the state path also causes but the frozen definition does not
+	 * name. Reported so nothing is hidden, excluded so the frozen figure stays
+	 * the frozen figure.
+	 */
+	notNamed: {
+		/** Receiver reads of the payload object itself: present on both arms. */
+		payloadReadBytes: number;
+		/** Corpus ranking reads: the retrieval the state is used for, not its transfer. */
+		rankingReadBytes: number;
+	};
+	/**
+	 * The recovery chain, which the frozen ② counts as bytes and as hops.
+	 *
+	 * Its byte-shaped costs are already inside `components`: a `resend` or
+	 * `full-vector` hop is a send, so its payload bytes sit in `resendBytes`. What
+	 * the hop also costs is reported where it lands rather than guessed here: a
+	 * `text` hop re-embeds the query (see `embeddingCalls`) and runs a second
+	 * search (see `notNamed.rankingReadBytes`), and the text it renders into the
+	 * child's context has no metering event at all — the gap the pre-registration
+	 * declares in §3 (c).
+	 */
+	fallback: {
+		/** Hops taken, by kind. Their total is pre-registered metric ④ (`state.restoreCount`). */
+		hops: FallbackHops;
+		/**
+		 * `false` when the sends that declared themselves hops do not match the hops
+		 * recorded: a write site that forgot to mark a recovery send. The split
+		 * between `payloadBytes` and `resendBytes` is then wrong — ② itself is not,
+		 * because both components are inside it — so this flag invalidates the
+		 * breakdown, not the headline figure. Reported rather than repaired, because
+		 * a guess at which send was the hop would be indistinguishable from a fact.
+		 */
+		partitionConsistent: boolean;
+		/** Sends that carried the hop marker. Compared against `hops` above. */
+		sendsWithRestore: number;
+	};
+	/**
+	 * `bytes` with the base reads removed — the same path when the base is
+	 * resident. **Derived from the cold figure, not measured**: no build of this
+	 * extension keeps base vectors resident, so a report must label this row as
+	 * derived and must not print it beside the measured column as if it were one.
+	 * The field name says `ifBaseResident` so the conditional survives even a
+	 * consumer that drops the `derived` flag.
+	 */
+	hotBase: { bytesIfBaseResident: number; derived: true; note: string };
+	/** Sum of `components`. Tokens are units of their own and are never added to it. */
+	bytes: number;
+};
+
 export type MeteringTotals = {
 	control: { envelopeBytes: number; transportBytes: NotApplicable };
 	duration: { byTask: Record<string, number | Unavailable>; totalMs: number | Unavailable; unfinishedTasks: string[] };
 	embedding: { costUsd: number | Unavailable; durationMs: number; failed: number; inputTokens: number | Unavailable; requests: number };
 	errors: Record<string, number>;
+	fullAccount: FullAccount;
 	memory: { crossAgentReuses: number; hitRate: number | NotApplicable; queries: number; reuses: number };
 	messages: { delivered: number; duplicateDeliveries: number; failed: number; received: number };
 	model: { child: UsageTotals; complete: boolean; parent: UsageTotals; totalCost: number | Unavailable };
@@ -268,12 +370,34 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	let embeddingTokensMissing = false;
 	let firstMonotonic: number | null = null;
 	let lastMonotonic: number | null = null;
+	// Full-account components that the `state` block does not already hold. The
+	// sent bytes are partitioned by whether the delivery was a first transmission
+	// or a recovery hop, so the two never overlap and their sum is `sentBytes`.
+	let firstSendBytes = 0;
+	let resendBytes = 0;
+	let sendsWithRestore = 0;
+	const hops: FallbackHops = { fullVector: 0, resend: 0, text: 0 };
+	let payloadReadBytes = 0;
+	let rankingReadBytes = 0;
 
 	const totals: MeteringTotals = {
 		control: { envelopeBytes: 0, transportBytes: "N/A" },
 		duration: { byTask, totalMs: "unavailable", unfinishedTasks: [] },
 		embedding: { costUsd: 0, durationMs: 0, failed: 0, inputTokens: 0, requests: 0 },
 		errors,
+		fullAccount: {
+			bytes: 0,
+			components: { baseRebuildReadBytes: 0, baseSelectionReadBytes: 0, controlBytes: 0, payloadBytes: 0, resendBytes: 0 },
+			definition: FULL_ACCOUNT_DEFINITION,
+			embeddingCalls: { inputTokens: 0, requests: 0 },
+			fallback: {
+				hops: { fullVector: 0, resend: 0, text: 0 },
+				partitionConsistent: true,
+				sendsWithRestore: 0,
+			},
+			hotBase: { bytesIfBaseResident: 0, derived: true, note: HOT_BASE_NOTE },
+			notNamed: { payloadReadBytes: 0, rankingReadBytes: 0 },
+		},
 		memory: { crossAgentReuses: 0, hitRate: "N/A", queries: 0, reuses: 0 },
 		messages: { delivered: 0, duplicateDeliveries: 0, failed: 0, received: 0 },
 		model: { child: projectUsage(child), complete: false, parent: projectUsage(parent), totalCost: 0 },
@@ -327,12 +451,23 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			case "state-send":
 				// Bytes count on every attempt: a failed send still crossed the wire.
 				totals.state.sentBytes += event.payloadBytes;
+				// Recovery hops are separated from first transmissions rather than
+				// added on top of them: both are already inside `sentBytes`, so a
+				// second counter that merely restated the total would double it.
+				if (event.restore === undefined) firstSendBytes += event.payloadBytes;
+				else {
+					resendBytes += event.payloadBytes;
+					sendsWithRestore += 1;
+				}
 				if (event.encoding === "delta") totals.state.deltaPayloadBytes += event.payloadBytes;
 				if (event.ok) totals.state.sent += 1;
 				else totals.state.failedSends += 1;
 				break;
 			case "state-restore":
 				totals.state.restoreCount += 1;
+				if (event.hop === "resend") hops.resend += 1;
+				else if (event.hop === "full-vector") hops.fullVector += 1;
+				else hops.text += 1;
 				break;
 			case "state-receive":
 				if (event.ok) {
@@ -382,9 +517,13 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 				else totals.storage.writeBytes += event.bytes;
 				// The residual path's reads are broken out so the full-account
 				// comparison does not have to infer them from a storage total that also
-				// holds memory, content and corpus traffic.
+				// holds memory, content and corpus traffic. The rule is one line: the
+				// event's own `purpose` decides the component, and an event without one
+				// is an ordinary content or corpus read that no arm owns.
 				if (event.purpose === "base-rebuild") totals.state.baseReadBytes += event.bytes;
 				else if (event.purpose === "base-selection") totals.state.baseSelectionReadBytes += event.bytes;
+				else if (event.purpose === "payload-read") payloadReadBytes += event.bytes;
+				else if (event.purpose === "ranking") rankingReadBytes += event.bytes;
 				break;
 			case "task-span":
 				if (event.phase === "start") starts.set(event.taskId, event.monotonicMs);
@@ -423,5 +562,43 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	totals.model.totalCost = totals.model.complete ? parent.cost + child.cost : "unavailable";
 
 	totals.state.receivedWithoutConsume = [...receivedStates].filter((stateId) => !consumedStates.has(stateId)).length;
+
+	// The full account is assembled last, so its embedding component reports the
+	// finished figure rather than a partial one, and so a reader can recompute it
+	// from the same components the raw log lists.
+	const fullAccountComponents = {
+		baseRebuildReadBytes: totals.state.baseReadBytes,
+		baseSelectionReadBytes: totals.state.baseSelectionReadBytes,
+		controlBytes: totals.control.envelopeBytes,
+		payloadBytes: firstSendBytes,
+		resendBytes,
+	};
+	const fullAccountBytes =
+		fullAccountComponents.baseRebuildReadBytes +
+		fullAccountComponents.baseSelectionReadBytes +
+		fullAccountComponents.controlBytes +
+		fullAccountComponents.payloadBytes +
+		fullAccountComponents.resendBytes;
+	totals.fullAccount = {
+		bytes: fullAccountBytes,
+		components: fullAccountComponents,
+		definition: FULL_ACCOUNT_DEFINITION,
+		embeddingCalls: { inputTokens: totals.embedding.inputTokens, requests: totals.embedding.requests },
+		// The two counters answer the same question from opposite ends: a hop records
+		// itself, and the send it performs declares itself a hop. A send that forgot
+		// the marker moves bytes from `resendBytes` to `payloadBytes` — inside ②
+		// either way — so this flag invalidates the breakdown rather than the figure.
+		fallback: {
+			hops: { fullVector: hops.fullVector, resend: hops.resend, text: hops.text },
+			partitionConsistent: sendsWithRestore === hops.resend + hops.fullVector,
+			sendsWithRestore,
+		},
+		hotBase: {
+			bytesIfBaseResident: fullAccountBytes - fullAccountComponents.baseRebuildReadBytes - fullAccountComponents.baseSelectionReadBytes,
+			derived: true,
+			note: HOT_BASE_NOTE,
+		},
+		notNamed: { payloadReadBytes, rankingReadBytes },
+	};
 	return totals;
 }

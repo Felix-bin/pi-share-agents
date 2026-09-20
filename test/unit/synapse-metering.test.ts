@@ -56,7 +56,10 @@ describe("metering log durability", () => {
 		log.record(identity({ agent: "retriever" }), { kind: "message-delivered", envelopeBytes: 1, messageId: "m1", textBytes: 1 });
 		const [event] = readMeteringLog(logPath);
 		assert.ok(event);
-		assert.equal(event.schemaVersion, 1);
+		// A literal on purpose: bumping the metering schema is a deliberate act that
+		// must change this line and the reader that documents the difference, never
+		// something that slips through by comparing the constant to itself.
+		assert.equal(event.schemaVersion, 2);
 		assert.equal(event.agent, "retriever");
 		assert.equal(event.runId, "run-1");
 		assert.equal(event.attempt, 1);
@@ -226,6 +229,125 @@ describe("state plane accounting (AC-09)", () => {
 		const totals = aggregateMetering(readMeteringLog(logPath));
 		assert.equal(totals.state.consumed, 0);
 		assert.equal(totals.state.receivedWithoutConsume, 1);
+	});
+});
+
+describe("full account (frozen definition)", () => {
+	// One run's worth of events, so each test below can change exactly one thing.
+	function recordRun(target: MeteringLog, overrides: { payloadRead?: boolean } = {}): void {
+		target.record(identity(), { envelopeBytes: 80, kind: "message-delivered", messageId: "m1", textBytes: 100 });
+		target.record(identity(), { kind: "state-send", ok: true, payloadBytes: 4096, representationId: "rep-1", stateId: "s1" });
+		// A recovery hop: the same path paying for the bytes a second time.
+		target.record(identity({ attempt: 2 }), { kind: "state-send", ok: true, payloadBytes: 1024, representationId: "rep-1", restore: "resend", stateId: "s2" });
+		// The hop itself, recorded the way the recovery chain records it: the send
+		// above declares the marker, this event counts the hop.
+		target.record(identity({ attempt: 2 }), { hop: "resend", kind: "state-restore", ok: true });
+		target.record(identity({ attempt: 2 }), { bytes: 1024, direction: "write", kind: "object-io" });
+		target.record(identity(), { bytes: 4096, direction: "read", kind: "object-io", purpose: "base-rebuild" });
+		target.record(identity(), { bytes: 512, direction: "read", kind: "object-io", purpose: "base-selection" });
+		target.record(identity(), { bytes: 2048, direction: "read", kind: "object-io", purpose: "ranking" });
+		if (overrides.payloadRead !== false) {
+			target.record(identity(), { bytes: 4096, direction: "read", kind: "object-io", purpose: "payload-read" });
+		}
+		target.record(identity(), { costUsd: 0.0001, durationMs: 30, inputTokens: 12, kind: "embedding-call", ok: true, requests: 1 });
+	}
+
+	it("sums the frozen components and partitions the sent bytes without overlap", () => {
+		recordRun(log);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.deepEqual(totals.fullAccount.components, {
+			baseRebuildReadBytes: 4096,
+			baseSelectionReadBytes: 512,
+			// Hand-counted from the events recorded above rather than compared with the
+			// control field, which the same aggregation line produces: comparing the two
+			// would restate the assignment instead of checking the rule.
+			controlBytes: 80,
+			payloadBytes: 4096,
+			resendBytes: 1024,
+		});
+		// 4096 first transmission + 1024 recovery + 80 control + 4096 base rebuild + 512 selection.
+		assert.equal(totals.fullAccount.bytes, 9808);
+		// The two payload components partition the state plane's sent bytes rather than
+		// restating the total, so a recovery hop can never be counted twice.
+		assert.equal(totals.fullAccount.components.payloadBytes + totals.fullAccount.components.resendBytes, totals.state.sentBytes);
+	});
+
+	it("keeps the receiver's payload read out of the frozen sum but still reports it", () => {
+		// Two separate logs, not two runs appended to one: appending would double every
+		// component and the comparison would be between one run and two.
+		const withoutReadPath = path.join(root, "without-payload-read.jsonl");
+		const withoutReadLog = createMeteringLog(withoutReadPath, { monotonicMs: () => (elapsed += 10), now: () => new Date(clock) });
+		recordRun(withoutReadLog, { payloadRead: false });
+		recordRun(log);
+		const withoutRead = aggregateMetering(readMeteringLog(withoutReadPath));
+		const withRead = aggregateMetering(readMeteringLog(logPath));
+		// Both arms read their payload back, so the figure the arms are compared on
+		// must not move when that read appears.
+		assert.equal(withRead.fullAccount.bytes, withoutRead.fullAccount.bytes);
+		assert.equal(withoutRead.fullAccount.notNamed.payloadReadBytes, 0);
+		assert.equal(withRead.fullAccount.notNamed.payloadReadBytes, 4096);
+	});
+
+	it("reports the corpus ranking reads separately from the transfer account", () => {
+		recordRun(log);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.fullAccount.notNamed.rankingReadBytes, 2048);
+		// Ranking is the retrieval the state is used for, not the transfer itself.
+		assert.equal(totals.fullAccount.bytes, 9808);
+	});
+
+	it("labels the hot-base row as derived and computes it as the cold figure minus base reads", () => {
+		recordRun(log);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.fullAccount.hotBase.bytesIfBaseResident, 9808 - 4096 - 512);
+		assert.equal(totals.fullAccount.hotBase.derived, true);
+		assert.match(totals.fullAccount.hotBase.note, /derived|arithmetic/i);
+		// The conditional has to survive a consumer that serialises the object and
+		// keeps only the number, so it is in the field name as well as the flag.
+		assert.match(JSON.stringify(totals.fullAccount.hotBase), /IfBaseResident/);
+	});
+
+	it("counts the recovery hops by kind and checks the hop marker against them", () => {
+		recordRun(log);
+		log.record(identity({ attempt: 3 }), { hop: "text", kind: "state-restore", ok: true });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.deepEqual(totals.fullAccount.fallback.hops, { fullVector: 0, resend: 1, text: 1 });
+		// One recorded hop carries the marker on its send; the text hop does not send
+		// at all, so it must not be demanded from the sends.
+		assert.equal(totals.fullAccount.fallback.sendsWithRestore, 1);
+		assert.equal(totals.fullAccount.fallback.partitionConsistent, true);
+		// The hop count is metric ④, arrived at independently of the hops breakdown.
+		assert.equal(totals.state.restoreCount, 2);
+	});
+
+	it("flags a recovery send that never declared itself a hop", () => {
+		recordRun(log);
+		// A second recovery hop whose send forgot its marker: the bytes move from the
+		// resend component to the first-transmission one, so the breakdown is wrong
+		// while ② (which holds both) is not.
+		log.record(identity({ attempt: 3 }), { kind: "state-send", ok: true, payloadBytes: 700, representationId: "rep-1", stateId: "s3" });
+		log.record(identity({ attempt: 3 }), { hop: "resend", kind: "state-restore", ok: true });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.fullAccount.fallback.partitionConsistent, false);
+		assert.equal(totals.fullAccount.fallback.sendsWithRestore, 1);
+		assert.equal(totals.fullAccount.fallback.hops.resend, 2);
+	});
+
+	it("carries the definition with the number and counts embedding calls as calls, not bytes", () => {
+		recordRun(log);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.match(totals.fullAccount.definition, /payload/i);
+		assert.match(totals.fullAccount.definition, /base-selection/i);
+		assert.deepEqual(totals.fullAccount.embeddingCalls, { inputTokens: 12, requests: 1 });
+	});
+
+	it("leaves an unattributed read out of every component", () => {
+		log.record(identity(), { bytes: 700, direction: "read", kind: "object-io" });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.fullAccount.bytes, 0);
+		assert.deepEqual(totals.fullAccount.notNamed, { payloadReadBytes: 0, rankingReadBytes: 0 });
+		// It is still storage traffic; it simply belongs to no arm.
+		assert.equal(totals.storage.readBytes, 700);
 	});
 });
 
