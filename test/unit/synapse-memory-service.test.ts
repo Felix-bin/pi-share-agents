@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { AccessScope } from "../../src/synapse/access.ts";
 import { createContentStore } from "../../src/synapse/content-store.ts";
-import { createSiliconFlowEmbedder, SYNAPSE_VECTOR_MEDIA_TYPE, type Embedder } from "../../src/synapse/embedding.ts";
+import { createEmbeddingClient, SYNAPSE_VECTOR_MEDIA_TYPE, type Embedder } from "../../src/synapse/embedding.ts";
 import { createMeteringLog, readMeteringLog, type MeteringEvent, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
 import { startEmbeddingStub } from "../support/embedding-stub-server.ts";
 import {
@@ -393,7 +393,7 @@ describe("synapse_write.remember embedding", () => {
 			server.respondWithVector([3, 4, 0, 0], { promptTokens: 9 });
 			const meteringPath = path.join(storeRoot, "metering.jsonl");
 			const metering = createMeteringLog(meteringPath);
-			const embedder = createSiliconFlowEmbedder(
+			const embedder = createEmbeddingClient(
 				{ dim: 4, endpoint: `http://127.0.0.1:${server.port}/v1/embeddings`, keyEnv: "SILICONFLOW_API_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 				{ identity: meteringIdentity, key: "test-key-0123456789abcdef", metering },
 			);
@@ -461,7 +461,7 @@ describe("synapse_write.remember embedding", () => {
 			server.respondWithVector([3, 4, 0, 0]);
 			const meteringPath = path.join(storeRoot, "metering-idem.jsonl");
 			const metering = createMeteringLog(meteringPath);
-			const embedder = createSiliconFlowEmbedder(
+			const embedder = createEmbeddingClient(
 				{ dim: 4, endpoint: `http://127.0.0.1:${server.port}/v1/embeddings`, keyEnv: "SILICONFLOW_API_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 				{ identity: meteringIdentity, key: "test-key-0123456789abcdef", metering },
 			);
@@ -506,7 +506,7 @@ describe("synapse_write.remember embedding", () => {
 				response.statusCode = 503;
 				response.end("unavailable");
 			});
-			const embedder = createSiliconFlowEmbedder(
+			const embedder = createEmbeddingClient(
 				{ dim: 4, endpoint: `http://127.0.0.1:${server.port}/v1/embeddings`, keyEnv: "SILICONFLOW_API_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 				{ key: "test-key-0123456789abcdef" },
 			);
@@ -546,7 +546,7 @@ describe("synapse_write.remember embedding", () => {
 
 describe("synapse_read.search semantic integration", () => {
 	function stubEmbedder(port: number, dim = 2, metering?: { identity: MeteringIdentity; log: MeteringLog }): Embedder {
-		return createSiliconFlowEmbedder(
+		return createEmbeddingClient(
 			{ dim, endpoint: `http://127.0.0.1:${port}/v1/embeddings`, keyEnv: "SILICONFLOW_API_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 			metering === undefined ? { key: "test-key-0123456789abcdef" } : { identity: metering.identity, key: "test-key-0123456789abcdef", metering: metering.log },
 		);
@@ -577,7 +577,7 @@ describe("synapse_read.search semantic integration", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVectorForInput((input) => (input.includes("主题乙") ? [0, 1] : [1, 0]));
-			const embedder = createSiliconFlowEmbedder(
+			const embedder = createEmbeddingClient(
 				{ dim: 2, endpoint: `http://127.0.0.1:${server.port}/v1/embeddings`, keyEnv: "SILICONFLOW_API_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 				{ key: "test-key-0123456789abcdef" },
 			);

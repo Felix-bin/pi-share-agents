@@ -19,7 +19,7 @@ import type { CanonicalValue } from "./canonical-json.ts";
 export const SYNAPSE_MODES = ["off", "text", "synapse"] as const;
 export const SYNAPSE_MEMORY_MODES = ["off", "project"] as const;
 export const SYNAPSE_STATE_RECOVERIES = ["resend", "resend-then-text"] as const;
-export const SYNAPSE_EMBEDDING_PROVIDERS = ["siliconflow"] as const;
+export const SYNAPSE_EMBEDDING_PROVIDERS = ["paratera", "siliconflow"] as const;
 
 /**
  * Provider names reserved for the deterministic stub used in tests. Accepting

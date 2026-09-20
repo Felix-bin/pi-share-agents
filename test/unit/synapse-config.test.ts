@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { CanonicalValue } from "../../src/synapse/canonical-json.ts";
-import { resolveSynapseConfig, SYNAPSE_MAX_EMBEDDING_DIM } from "../../src/synapse/config.ts";
+import { representationIdOf, resolveSynapseConfig, SYNAPSE_MAX_EMBEDDING_DIM } from "../../src/synapse/config.ts";
 
 const HOME = path.resolve("/home/dev");
 
@@ -104,6 +104,18 @@ describe("synapse embedding config", () => {
 		const config = resolveSynapseConfig({ embedding: embedding(), mode: "synapse" }, HOME);
 		assert.equal(config.embedding?.model, "BAAI/bge-m3");
 		assert.equal(config.embedding?.dim, 1024);
+	});
+
+	it("accepts a gateway provider, whose wire format differs from the v1 one", () => {
+		// Paratera's GLM-Embedding-3 returns JSON number arrays and ignores
+		// `encoding_format`, so the provider name is what selects the decoder. The
+		// space it names must carry that choice: two providers with the same model
+		// name are not the same representation, and a config that could not say so
+		// would let a corpus from one be ranked by vectors from the other.
+		const config = resolveSynapseConfig({ embedding: embedding({ dim: 2048, model: "GLM-Embedding-3", provider: "paratera" }), mode: "synapse" }, HOME);
+		assert.equal(config.embedding?.provider, "paratera");
+		assert.equal(representationIdOf(config), "paratera/GLM-Embedding-3/2048");
+		assert.notEqual(representationIdOf(config), representationIdOf(resolveSynapseConfig({ embedding: embedding({ dim: 2048, model: "GLM-Embedding-3" }), mode: "synapse" }, HOME)));
 	});
 
 	it("requires every field that enters the representation id", () => {

@@ -7,7 +7,7 @@ import type { CanonicalValue } from "../../src/synapse/canonical-json.ts";
 import { resolveSynapseChildContract, type SynapseChildContract } from "../../src/synapse/child-contract.ts";
 import { buildCorpus } from "../../src/synapse/corpus.ts";
 import { consumeRetrieveState } from "../../src/synapse/delegation.ts";
-import { createSiliconFlowEmbedder, type Embedder } from "../../src/synapse/embedding.ts";
+import { createEmbeddingClient, type Embedder } from "../../src/synapse/embedding.ts";
 import { readDeliveredEnvelope, stateEnvelopePath } from "../../src/synapse/envelope-inbox.ts";
 import { createMemoryService, type MemoryService } from "../../src/synapse/memory-service.ts";
 import { createMeteringLog, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
@@ -197,7 +197,7 @@ beforeEach(async () => {
 		[BASE_EMBED_TEXT, BASE_VECTOR],
 	]);
 	stub.respondWithVectorForInput((input) => vectorByText.get(input) ?? vectorByText.get(input.trim()) ?? [0, 0, 0, 1, 0, 0, 0, 0]);
-	embedder = createSiliconFlowEmbedder(
+	embedder = createEmbeddingClient(
 		{ dim: DIM, endpoint: `http://127.0.0.1:${stub.port}/v1/embeddings`, keyEnv: "SYNAPSE_TEST_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 		{ key: "stub-key" },
 	);

@@ -7,7 +7,7 @@ import { startEmbeddingStub } from "../support/embedding-stub-server.ts";
 import type { StubEmbeddingServer } from "../support/embedding-stub-server.ts";
 import type { SynapseEmbeddingConfig } from "../../src/synapse/config.ts";
 import { createMeteringLog, readMeteringLog, type MeteringEvent, type MeteringIdentity } from "../../src/synapse/metering.ts";
-import { createSiliconFlowEmbedder } from "../../src/synapse/embedding.ts";
+import { createEmbeddingClient } from "../../src/synapse/embedding.ts";
 
 let root = "";
 
@@ -54,7 +54,7 @@ describe("siliconflow embedder", () => {
 			server.respondWithVector([3, 4, 0, 0], { promptTokens: 11 });
 			const meteringPath = path.join(root, "metering.jsonl");
 			const metering = createMeteringLog(meteringPath);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), {
+			const embedder = createEmbeddingClient(baseConfig(server, 4), {
 				identity,
 				key: "test-key-0123456789abcdef",
 				metering,
@@ -93,7 +93,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([1, 2, 3, 4, 5]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			await assert.rejects(() => embedder.embedQuery("文本"), /dimension/);
 		} finally {
 			await server.close();
@@ -104,7 +104,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([1, Number.NaN, 0, 0]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			await assert.rejects(() => embedder.embedQuery("文本"), /finite/);
 			server.respondWithVector([1, Number.POSITIVE_INFINITY, 0, 0]);
 			await assert.rejects(() => embedder.embedQuery("文本"), /finite/);
@@ -117,7 +117,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([0, 0, 0, 0]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			await assert.rejects(() => embedder.embedQuery("文本"), /norm/);
 		} finally {
 			await server.close();
@@ -128,7 +128,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([3, 4, 0, 0]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			const first = await embedder.embedQuery("重复查询");
 			const second = await embedder.embedQuery("重复查询");
 			assert.equal(server.requests.length, 1);
@@ -149,7 +149,7 @@ describe("siliconflow embedder", () => {
 			});
 			const meteringPath = path.join(root, "metering-failed.jsonl");
 			const metering = createMeteringLog(meteringPath);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), {
+			const embedder = createEmbeddingClient(baseConfig(server, 4), {
 				identity,
 				key: "test-key-0123456789abcdef",
 				metering,
@@ -172,11 +172,11 @@ describe("siliconflow embedder", () => {
 			server.respondWithVector([3, 4, 0, 0], { promptTokens: 5 });
 			const storageRoot = path.join(root, "storage");
 			const config = baseConfig(server, 4);
-			const firstProcess = createSiliconFlowEmbedder(config, { key: "test-key-0123456789abcdef", storageRoot });
+			const firstProcess = createEmbeddingClient(config, { key: "test-key-0123456789abcdef", storageRoot });
 			const stored = await firstProcess.embedQuery("跨进程查询");
 			assert.equal(server.requests.length, 1);
 
-			const secondProcess = createSiliconFlowEmbedder(config, { key: "test-key-0123456789abcdef", storageRoot });
+			const secondProcess = createEmbeddingClient(config, { key: "test-key-0123456789abcdef", storageRoot });
 			const replayed = await secondProcess.embedQuery("跨进程查询");
 			assert.equal(server.requests.length, 1);
 			assert.equal(replayed.cached, true);
@@ -191,7 +191,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([1, 0, 0, 0]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			const results = await embedder.embedBatch(["甲", "乙", "甲"]);
 			assert.equal(results.length, 3);
 			assert.equal(results[0]!.cached, false);
@@ -215,7 +215,7 @@ describe("siliconflow embedder", () => {
 				response.setHeader("content-type", "application/json");
 				response.end(JSON.stringify({ data: [{ embedding: truncated, index: 0 }], model: "BAAI/bge-m3", object: "list" }));
 			});
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			await assert.rejects(() => embedder.embedQuery("文本"), /whole number of float32/);
 		} finally {
 			await server.close();
@@ -226,7 +226,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([3, 4, 0, 0]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			const first = await embedder.embedQuery("可变向量");
 			const before = first.vector[0]!;
 			const cached = await embedder.embedQuery("可变向量");
@@ -244,7 +244,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([3, 4, 0, 0]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			const results = await embedder.embedBatch(["同文", "异文", "同文"]);
 			const before = results[0]!.vector[0]!;
 			results[0]!.vector[0] = 999;
@@ -261,7 +261,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([1, 0, 0, 0]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			const texts = Array.from({ length: 33 }, (_unused, index) => `条目${index}`);
 			const results = await embedder.embedBatch(texts);
 			assert.equal(results.length, 33);
@@ -287,7 +287,7 @@ describe("siliconflow embedder", () => {
 		const server = await startEmbeddingStub();
 		try {
 			server.respondWithVector([1, 0, 0, 0]);
-			const embedder = createSiliconFlowEmbedder(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
+			const embedder = createEmbeddingClient(baseConfig(server, 4), { key: "test-key-0123456789abcdef" });
 			await assert.rejects(() => embedder.embedQuery(""), /non-empty/);
 			await assert.rejects(() => embedder.embedBatch(["有", ""]), /non-empty/);
 			assert.deepEqual(await embedder.embedBatch([]), []);
@@ -295,5 +295,139 @@ describe("siliconflow embedder", () => {
 		} finally {
 			await server.close();
 		}
+	});
+});
+
+describe("gateway embedder (JSON number arrays)", () => {
+	/**
+	 * An ordinary OpenAI-compatible gateway — GLM-Embedding-3 through Paratera,
+	 * say — returns `embedding` as an array of JSON numbers and ignores
+	 * `encoding_format`. The client therefore has to know which shape its provider
+	 * speaks, because a base64 request against this endpoint is not a hard failure:
+	 * it returns numbers anyway, and they would decode into a plausible wrong
+	 * vector if the two formats were not distinguished.
+	 */
+	function gatewayConfig(server: StubEmbeddingServer, dim: number): SynapseEmbeddingConfig {
+		return {
+			dim,
+			endpoint: `http://127.0.0.1:${server.port}/v1/embeddings`,
+			keyEnv: "PARATERA_API_KEY",
+			model: "GLM-Embedding-3",
+			provider: "paratera",
+		};
+	}
+
+	it("decodes, validates and normalizes a JSON number array", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithJsonVectorForInput((text) => (text === "alpha" ? [3, 4, 0, 0] : [0, 0, 1, 0]), { promptTokens: 7 });
+			const meteringPath = path.join(root, "metering.jsonl");
+			const metering = createMeteringLog(meteringPath);
+			const embedder = createEmbeddingClient(gatewayConfig(server, 4), { identity, key: "gateway-key", metering });
+
+			const result = await embedder.embedQuery("alpha");
+			assert.equal(result.cached, false);
+			assert.equal(result.promptTokens, 7);
+			// Unit length, and the direction the provider gave: [3,4,0,0]/5. Compared
+			// against float32 literals because the stored vector is float32 — a float64
+			// literal differs in the last bits, and this is a vector rather than a scalar.
+			assert.ok(Math.abs(Math.hypot(...result.vector) - 1) < 1e-6);
+			assert.deepEqual([...result.vector], [Math.fround(0.6), Math.fround(0.8), 0, 0]);
+
+			const calls = embeddingCalls(readMeteringLog(meteringPath));
+			assert.equal(calls.length, 1);
+			assert.equal(calls[0]?.inputTokens, 7);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("does not ask for base64 from a gateway that would not honour it", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithJsonVectorForInput(() => [1, 0, 0, 0]);
+			const embedder = createEmbeddingClient(gatewayConfig(server, 4), { key: "gateway-key" });
+			await embedder.embedQuery("alpha");
+			const body = JSON.parse(server.requests[0]?.body ?? "{}");
+			assert.equal(body.encoding_format, undefined, "the parameter states a request the response does not answer");
+			assert.equal(body.model, "GLM-Embedding-3");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("reads a batch in request order and keeps the provider's per-request token count", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			// Deliberately out of order: the client must order by `index`, not by arrival.
+			server.setHandler((request, response) => {
+				const parsed = JSON.parse(request.body) as { input: readonly string[] };
+				response.statusCode = 200;
+				response.setHeader("content-type", "application/json");
+				response.end(
+					JSON.stringify({
+						data: parsed.input.map((text, index) => ({ embedding: text === "a" ? [1, 0] : [0, 1], index })).reverse(),
+						model: "GLM-Embedding-3",
+						usage: { prompt_tokens: 3 },
+					}),
+				);
+			});
+			const embedder = createEmbeddingClient(gatewayConfig(server, 2), { key: "gateway-key" });
+			const results = await embedder.embedBatch(["a", "b"]);
+			assert.deepEqual([...results[0]!.vector], [1, 0]);
+			assert.deepEqual([...results[1]!.vector], [0, 1]);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("refuses a JSON vector of the wrong width instead of ranking with it", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithJsonVectorForInput(() => [1, 0, 0]);
+			const embedder = createEmbeddingClient(gatewayConfig(server, 4), { key: "gateway-key" });
+			await assert.rejects(() => embedder.embedQuery("alpha"), /dimension mismatch/);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("refuses a body that is not a number array, and an all-zero vector", async () => {
+		const server = await startEmbeddingStub();
+		try {
+			const embedder = createEmbeddingClient(gatewayConfig(server, 2), { key: "gateway-key" });
+			// JSON has no Infinity: a non-finite component cannot travel in this format,
+			// so the schema is what refuses it (as null) before any numeric check runs.
+			// The dimension and finiteness checks still guard the base64 path, where
+			// arbitrary bytes can decode into either.
+			server.respondWithJsonVectorForInput(() => [1, Number.POSITIVE_INFINITY]);
+			await assert.rejects(() => embedder.embedQuery("alpha"), /expected schema/);
+			server.respondWithJsonVectorForInput(() => [0, 0]);
+			await assert.rejects(() => embedder.embedQuery("alpha"), /zero norm/);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("refuses a base64 body where the provider speaks JSON numbers", async () => {
+		// The two shapes are not interchangeable, so a response in the wrong one is
+		// an error rather than something to interpret charitably.
+		const server = await startEmbeddingStub();
+		try {
+			server.respondWithVector([1, 0, 0, 0]);
+			const embedder = createEmbeddingClient(gatewayConfig(server, 4), { key: "gateway-key" });
+			await assert.rejects(() => embedder.embedQuery("alpha"), /expected schema/);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("every provider the config whitelist accepts has a wire format", async () => {
+		const { SYNAPSE_EMBEDDING_PROVIDERS } = await import("../../src/synapse/config.ts");
+		const { embeddingWireFormatFor } = await import("../../src/synapse/embedding.ts");
+		for (const provider of SYNAPSE_EMBEDDING_PROVIDERS) {
+			assert.doesNotThrow(() => embeddingWireFormatFor(provider), `${provider} is accepted by the parser and must be callable`);
+		}
+		assert.throws(() => embeddingWireFormatFor("not-a-provider"), /no embedding wire format/);
 	});
 });

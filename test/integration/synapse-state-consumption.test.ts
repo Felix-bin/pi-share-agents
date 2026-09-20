@@ -7,7 +7,7 @@ import { writeAtomicJson } from "../../src/shared/atomic-json.ts";
 import { resolveSynapseChildContract, type SynapseChildContract } from "../../src/synapse/child-contract.ts";
 import type { CanonicalValue } from "../../src/synapse/canonical-json.ts";
 import { buildCorpus } from "../../src/synapse/corpus.ts";
-import { createSiliconFlowEmbedder, type Embedder } from "../../src/synapse/embedding.ts";
+import { createEmbeddingClient, type Embedder } from "../../src/synapse/embedding.ts";
 import { readDeliveredEnvelope, stateEnvelopePath } from "../../src/synapse/envelope-inbox.ts";
 import { readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
@@ -161,7 +161,7 @@ beforeEach(async () => {
 		["# gamma\nresidual quantisation observation three", basis(2)],
 	]);
 	stub.respondWithVectorForInput((input) => vectorByText.get(input) ?? vectorByText.get(input.trim()) ?? basis(3));
-	embedder = createSiliconFlowEmbedder(
+	embedder = createEmbeddingClient(
 		{ dim: DIM, endpoint: `http://127.0.0.1:${stub.port}/v1/embeddings`, keyEnv: "SYNAPSE_TEST_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 		{ key: "stub-key" },
 	);

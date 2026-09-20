@@ -6,7 +6,7 @@
  * green without credentials. With a key, one query is embedded and only
  * scalars are printed — never vector contents.
  */
-import { createSiliconFlowEmbedder } from "../src/synapse/embedding.ts";
+import { createEmbeddingClient } from "../src/synapse/embedding.ts";
 
 const key = (process.env.SILICONFLOW_API_KEY ?? "").trim();
 if (key.length === 0) {
@@ -15,7 +15,7 @@ if (key.length === 0) {
 	console.log("SKIP: SILICONFLOW_API_KEY is not set; no network call was made.");
 } else {
 
-const embedder = createSiliconFlowEmbedder(
+const embedder = createEmbeddingClient(
 	{
 		dim: 1024,
 		endpoint: "https://api.siliconflow.cn/v1/embeddings",

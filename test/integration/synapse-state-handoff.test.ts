@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { buildCorpus } from "../../src/synapse/corpus.ts";
 import { createContentStore } from "../../src/synapse/content-store.ts";
-import { createSiliconFlowEmbedder, type Embedder } from "../../src/synapse/embedding.ts";
+import { createEmbeddingClient, type Embedder } from "../../src/synapse/embedding.ts";
 import { resolveLaunchContract, type LaunchContract } from "../../src/synapse/lifecycle.ts";
 import {
 	consumeRetrieveState,
@@ -128,7 +128,7 @@ beforeEach(async () => {
 		["# gamma\nresidual quantisation observation three", basis(2)],
 	]);
 	stub.respondWithVectorForInput((input) => vectorByText.get(input) ?? vectorByText.get(input.trim()) ?? basis(3));
-	embedder = createSiliconFlowEmbedder(
+	embedder = createEmbeddingClient(
 		{ dim: DIM, endpoint: `http://127.0.0.1:${stub.port}/v1/embeddings`, keyEnv: "SYNAPSE_TEST_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 		{
 			identity: { agent: "parent", attempt: 1, mode: "synapse", nodeId: "run-1/0", runId: "run-1", sessionId: "sess-parent", snapshotId: null },

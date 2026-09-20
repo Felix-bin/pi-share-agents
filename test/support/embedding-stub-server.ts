@@ -30,6 +30,8 @@ export type StubEmbeddingServer = {
 	respondWithVector: (values: readonly number[], options?: StubResponseOptions) => void;
 	/** Like respondWithVector, but each input text gets its own vector. */
 	respondWithVectorForInput: (resolve: (input: string) => readonly number[], options?: StubResponseOptions) => void;
+	/** The same, in the JSON-number wire shape an ordinary gateway returns. */
+	respondWithJsonVectorForInput: (resolve: (input: string) => readonly number[], options?: StubResponseOptions) => void;
 	port: number;
 	server: http.Server;
 };
@@ -111,6 +113,29 @@ export async function startEmbeddingStub(): Promise<StubEmbeddingServer> {
 			};
 		},
 		server,
+		/**
+		 * The wire shape of an ordinary OpenAI-compatible gateway: an array of JSON
+		 * numbers, whatever `encoding_format` the request asked for. Modelling that
+		 * indifference is the point — a client that assumes it is obeyed would decode
+		 * these numbers as base64.
+		 */
+		respondWithJsonVectorForInput(resolve: (input: string) => readonly number[], options: StubResponseOptions = {}) {
+			state.handler = (request, response) => {
+				// SAFETY: the request body is JSON this stub's counterpart (the embedder under test) serialized.
+				const parsed = JSON.parse(request.body) as { input: string | readonly string[] };
+				const inputs = Array.isArray(parsed.input) ? parsed.input : [parsed.input];
+				response.statusCode = 200;
+				response.setHeader("content-type", "application/json");
+				response.end(
+					JSON.stringify({
+						data: inputs.map((text, index) => ({ embedding: [...resolve(text)], index })),
+						model: "GLM-Embedding-3",
+						object: "list",
+						usage: options.promptTokens === undefined ? undefined : { prompt_tokens: options.promptTokens, total_tokens: options.promptTokens },
+					}),
+				);
+			};
+		},
 		setHandler: (handler) => {
 			state.handler = handler;
 		},

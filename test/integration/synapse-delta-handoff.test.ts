@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { buildCorpus } from "../../src/synapse/corpus.ts";
 import { createContentStore } from "../../src/synapse/content-store.ts";
-import { type Embedder, createSiliconFlowEmbedder } from "../../src/synapse/embedding.ts";
+import { type Embedder, createEmbeddingClient } from "../../src/synapse/embedding.ts";
 import {
 	consumeRetrieveState,
 	openRetrieveDelegation,
@@ -175,7 +175,7 @@ beforeEach(async () => {
 		["auth flow\nauth flow", baseUnderThreshold()],
 	]);
 	stub.respondWithVectorForInput((input) => vectorByText.get(input) ?? vectorByText.get(input.trim()) ?? basis(3));
-	embedder = createSiliconFlowEmbedder(
+	embedder = createEmbeddingClient(
 		{ dim: DIM, endpoint: `http://127.0.0.1:${stub.port}/v1/embeddings`, keyEnv: "SYNAPSE_TEST_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
 		{ identity: { agent: "parent", attempt: 1, mode: "synapse", nodeId: "run-1/0", runId: "run-1", sessionId: "sess-parent", snapshotId: null }, key: "stub-key", metering: log },
 	);

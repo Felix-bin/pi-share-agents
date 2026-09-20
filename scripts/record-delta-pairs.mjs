@@ -27,7 +27,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { buildCorpus } from "../src/synapse/corpus.ts";
-import { createSiliconFlowEmbedder } from "../src/synapse/embedding.ts";
+import { createEmbeddingClient } from "../src/synapse/embedding.ts";
 import { createMemoryService } from "../src/synapse/memory-service.ts";
 import { SYNAPSE_DEFAULT_MAX_LOADED_RECORDS } from "../src/synapse/memory-store.ts";
 
@@ -188,7 +188,7 @@ function sha256(text) {
 	return createHash("sha256").update(text, "utf-8").digest("hex");
 }
 
-const embedder = withRetry(createSiliconFlowEmbedder({ dim, endpoint, keyEnv, model, provider: "siliconflow" }, { key, storageRoot }), 5);
+const embedder = withRetry(createEmbeddingClient({ dim, endpoint, keyEnv, model, provider: "siliconflow" }, { key, storageRoot }), 5);
 
 // A recording is a sequence of rounds that grows a shared memory, and a round's
 // base is whatever that memory ranks first. Starting from a store that already

@@ -18,7 +18,7 @@
 import { createHash } from "node:crypto";
 import * as path from "node:path";
 import { buildCorpus, SYNAPSE_CORPUS_MAX_WHOLE_FILE_BYTES } from "../src/synapse/corpus.ts";
-import { createSiliconFlowEmbedder } from "../src/synapse/embedding.ts";
+import { createEmbeddingClient } from "../src/synapse/embedding.ts";
 
 function usageAndExit(message) {
 	console.error(message);
@@ -109,7 +109,7 @@ if (offlineStub) {
 		console.log(`SKIP: ${keyEnv} is not set; no network call was made. Use --offline-stub for a credentials-free demo.`);
 		process.exit(0);
 	}
-	embedder = createSiliconFlowEmbedder({ dim, endpoint, keyEnv, model, provider: "siliconflow" }, { key });
+	embedder = createEmbeddingClient({ dim, endpoint, keyEnv, model, provider: "siliconflow" }, { key });
 	vectorMode = "real";
 }
 

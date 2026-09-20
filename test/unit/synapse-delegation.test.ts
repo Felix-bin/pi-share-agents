@@ -15,7 +15,7 @@ import {
 } from "../../src/synapse/delegation.ts";
 import { openChildRetrieveDelegation } from "../../src/runs/shared/synapse-delegation.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
-import { createSiliconFlowEmbedder } from "../../src/synapse/embedding.ts";
+import { createEmbeddingClient } from "../../src/synapse/embedding.ts";
 import { createMeteringLog } from "../../src/synapse/metering.ts";
 import { resolveLaunchContract, type LaunchContract } from "../../src/synapse/lifecycle.ts";
 import { createMemoryService } from "../../src/synapse/memory-service.ts";
@@ -259,7 +259,7 @@ describe("synapse retrieve seam", () => {
 
 	it("keeps the state plane off when the contract has no pinned corpus", async () => {
 		// The representation matches the embedder so the corpus guard is the only one left to fire.
-		const embedder = createSiliconFlowEmbedder(embeddingConfig, { key: "stub" });
+		const embedder = createEmbeddingClient(embeddingConfig, { key: "stub" });
 		const unset = { ...contractFor("synapse"), corpusSnapshotId: "unset", representationId: embedder.representationId };
 		await assert.rejects(
 			openRetrieveDelegation({
@@ -278,7 +278,7 @@ describe("synapse retrieve seam", () => {
 	it("bridges through openChildRetrieveDelegation or degrades to null, never loses the run", async () => {
 		// A runtime without the synapse contract returns null: upstream keeps its
 		// text behaviour, the same totality the delegate seam guarantees.
-		const embedder = createSiliconFlowEmbedder(embeddingConfig, { key: "stub" });
+		const embedder = createEmbeddingClient(embeddingConfig, { key: "stub" });
 		const runtime: ChildRuntimeConfig = { childIndex: 0, depth: 1, fanoutChild: false, fast: false, waitTool: { enabled: false } };
 		assert.equal(await openChildRetrieveDelegation({ childTools: ["read"], cwd: worktree, embedder, k: 3, query: "q", receiverSessionId: "sess", runtime }), null);
 	});

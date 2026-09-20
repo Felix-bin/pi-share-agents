@@ -121,6 +121,37 @@ export class EmbeddingHttpError extends Error {
 	}
 }
 
+/**
+ * How a provider puts a vector on the wire.
+ *
+ * Two shapes exist and they are not interchangeable. SiliconFlow honours
+ * `encoding_format: "base64"` and returns packed float32; an ordinary
+ * OpenAI-compatible gateway ignores the parameter and returns an array of JSON
+ * numbers. Sending the base64 request to the latter is not a hard failure — it
+ * returns numbers anyway — so a client that assumed one shape would decode the
+ * other into a plausible wrong vector, and those low bits are exactly what the
+ * residual calibration quantises (spec §8.1). The format is therefore chosen by
+ * provider, never sniffed from the response.
+ */
+export type EmbeddingWireFormat = "base64-float32" | "json-number-array";
+
+/**
+ * Which wire format a whitelisted provider speaks. Exported so the pairing can
+ * be tested as a pairing: a provider in the config whitelist with no format here
+ * would fail at the first embedding call rather than at load.
+ */
+export function embeddingWireFormatFor(provider: string): EmbeddingWireFormat {
+	if (provider === "paratera") return "json-number-array";
+	if (provider === "siliconflow") return "base64-float32";
+	// Unreachable through the config parser, which refuses providers outside its
+	// whitelist; a direct caller gets an error rather than a guessed default.
+	throw new Error(`no embedding wire format is defined for provider ${JSON.stringify(provider)}`);
+}
+
+function wireFormatOf(cfg: SynapseEmbeddingConfig): EmbeddingWireFormat {
+	return embeddingWireFormatFor(cfg.provider);
+}
+
 const EmbeddingItemSchema = Type.Object({
 	embedding: Type.String({ minLength: 1 }),
 	index: Type.Optional(Type.Integer()),
@@ -131,7 +162,18 @@ const EmbeddingResponseSchema = Type.Object({
 	usage: Type.Optional(Type.Object({ prompt_tokens: Type.Optional(Type.Number()) })),
 });
 
+const JsonEmbeddingItemSchema = Type.Object({
+	embedding: Type.Array(Type.Number()),
+	index: Type.Optional(Type.Integer()),
+});
+
+const JsonEmbeddingResponseSchema = Type.Object({
+	data: Type.Array(JsonEmbeddingItemSchema, { minItems: 1 }),
+	usage: Type.Optional(Type.Object({ prompt_tokens: Type.Optional(Type.Number()) })),
+});
+
 const embeddingResponseValidator = Compile(EmbeddingResponseSchema);
+const jsonEmbeddingResponseValidator = Compile(JsonEmbeddingResponseSchema);
 
 const CacheEntrySchema = Type.Object(
 	{
@@ -177,6 +219,47 @@ function decodeEmbeddingBytes(bytes: Uint8Array): Float32Array {
 
 function bytesOfVector(vector: Float32Array): Uint8Array {
 	return new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength);
+}
+
+/**
+ * The response body as vectors, in request order, decoded by the provider's own
+ * wire format — plus the provider's own token count when it reports one.
+ *
+ * Takes the raw text rather than an already-parsed value on purpose: parsing,
+ * shape checking and decoding are one boundary. Split apart, this would become a
+ * function that accepts "some JSON" and promises a vector — the shape that lets a
+ * wrong-space response decode into a plausible wrong answer.
+ */
+/** What one response body yielded: the provider's token count, and the vectors. */
+type DecodedEmbeddingResponse = { promptTokens: number | null; vectors: Float32Array[] };
+
+function decodeResponseBody(body: string, format: EmbeddingWireFormat, expectedCount: number, dim: number): DecodedEmbeddingResponse {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(body);
+	} catch {
+		throw new Error("embedding response is not valid JSON");
+	}
+	if (format === "json-number-array") {
+		if (!jsonEmbeddingResponseValidator.Check(parsed)) throw new Error("embedding response does not match the expected schema");
+		if (parsed.data.length !== expectedCount) {
+			throw new Error(`embedding response holds ${parsed.data.length} vectors for ${expectedCount} inputs`);
+		}
+		const vectors = [...parsed.data]
+			.sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
+			// A JSON number is a double and the vector is float32; the narrowing happens
+			// here in one place, so the wire type and the stored type cannot drift apart.
+			.map((item) => validatedUnitVector(Float32Array.from(item.embedding), dim));
+		return { promptTokens: parsed.usage?.prompt_tokens ?? null, vectors };
+	}
+	if (!embeddingResponseValidator.Check(parsed)) throw new Error("embedding response does not match the expected schema");
+	if (parsed.data.length !== expectedCount) {
+		throw new Error(`embedding response holds ${parsed.data.length} vectors for ${expectedCount} inputs`);
+	}
+	const vectors = [...parsed.data]
+		.sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
+		.map((item) => validatedUnitVector(decodeEmbeddingBytes(Buffer.from(item.embedding, "base64")), dim));
+	return { promptTokens: parsed.usage?.prompt_tokens ?? null, vectors };
 }
 
 function validatedUnitVector(values: Float32Array, dim: number): Float32Array {
@@ -301,13 +384,13 @@ export function resolveConfiguredEmbedder(embedding: SynapseEmbeddingConfig | nu
 	try {
 		// The persistent cache lives in its own subtree, so embedding-cache object
 		// writes never mix into the memory store's object-io accounting.
-		return createSiliconFlowEmbedder(embedding, { key, storageRoot: path.join(storageRoot, "embedding-store") });
+		return createEmbeddingClient(embedding, { key, storageRoot: path.join(storageRoot, "embedding-store") });
 	} catch {
 		return undefined;
 	}
 }
 
-export function createSiliconFlowEmbedder(cfg: SynapseEmbeddingConfig, deps: EmbedderDeps): Embedder {
+export function createEmbeddingClient(cfg: SynapseEmbeddingConfig, deps: EmbedderDeps): Embedder {
 	const representationId = representationIdOfConfig(cfg);
 	const fetchFn = deps.fetchFn ?? fetch;
 	const memory = new Map<string, EmbeddingResult>();
@@ -320,10 +403,14 @@ export function createSiliconFlowEmbedder(cfg: SynapseEmbeddingConfig, deps: Emb
 
 	async function requestEmbeddings(input: string | readonly string[]): Promise<{ durationMs: number; vectors: Float32Array[]; promptTokens: number | null }> {
 		const expectedCount = Array.isArray(input) ? input.length : 1;
+		const format = wireFormatOf(cfg);
 		const startedAt = performance.now();
 		try {
 			const response = await fetchFn(cfg.endpoint, {
-				body: JSON.stringify({ encoding_format: "base64", input, model: cfg.model }),
+				// The parameter is asked for only where it is honoured: a gateway that
+				// ignores it would return numbers either way, so sending it there would
+				// state a request the response does not answer.
+				body: JSON.stringify(format === "base64-float32" ? { encoding_format: "base64", input, model: cfg.model } : { input, model: cfg.model }),
 				headers: { authorization: `Bearer ${deps.key}`, "content-type": "application/json" },
 				method: "POST",
 				signal: AbortSignal.timeout(SYNAPSE_EMBEDDING_TIMEOUT_MS),
@@ -334,16 +421,7 @@ export function createSiliconFlowEmbedder(cfg: SynapseEmbeddingConfig, deps: Emb
 				await response.arrayBuffer().catch(() => undefined);
 				throw new EmbeddingHttpError(response.status);
 			}
-			const parsed: unknown = await response.json();
-			if (!embeddingResponseValidator.Check(parsed)) {
-				throw new Error("embedding response does not match the expected schema");
-			}
-			if (parsed.data.length !== expectedCount) {
-				throw new Error(`embedding response holds ${parsed.data.length} vectors for ${expectedCount} inputs`);
-			}
-			const ordered = [...parsed.data].sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
-			const vectors = ordered.map((item) => validatedUnitVector(decodeEmbeddingBytes(Buffer.from(item.embedding, "base64")), cfg.dim));
-			const promptTokens = parsed.usage?.prompt_tokens ?? null;
+			const { promptTokens, vectors } = decodeResponseBody(await response.text(), format, expectedCount, cfg.dim);
 			const durationMs = performance.now() - startedAt;
 			recordCall(true, durationMs, promptTokens);
 			return { durationMs, promptTokens, vectors };
