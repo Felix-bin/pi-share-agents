@@ -268,6 +268,51 @@ describe("synapse kernel I/O attribution: orphan records", () => {
 		assert.equal(placedBytesOf(row.io), 100_000);
 	});
 
+	it("reports a run whose orphan moved a megabyte that resolved to no path, and says so in three places", () => {
+		// The magnitude case for the trade this round made deliberately, and the
+		// test a later reader wants when they ask why a megabyte of orphaned
+		// traffic tripped nothing.
+		//
+		// The orphan here moved 2,000x the attributed volume, all of it on a
+		// descriptor with no `openat` behind it. It does not raise the share,
+		// because the share is a ratio of *placed* bytes and these resolved to no
+		// path — they are as likely to be an unrelated process's stdout as
+		// anything of SYNAPSE's. Refusing on pathless orphan volume would refuse
+		// every real run: the Pi parent and the MCP server appear in every trace
+		// as exactly this shape.
+		//
+		// What must not happen is the account passing silently. It does not: the
+		// orphan is kept whole, its volume is reported, and `complete` is false.
+		const records: TraceRecord[] = [
+			...envelopeWrite(42, 1_000, 500, 5_000_000_000),
+			rw({ bytes: 1_000_000, fd: 7, nsecs: 30_000_000_000, pid: 99, ret: 1_000_000, startTicks: 7_000 }),
+		];
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
+
+		// Reported, not refused — consistent with the standing ruling that
+		// incomplete coverage is stated rather than withheld.
+		assert.equal(attributedRows(result).length, 1);
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(result.diagnostics.unattributedShare, 0);
+		assert.equal(result.diagnostics.attributedBytes.placed, 500);
+
+		// Place one: the orphan is kept whole, never folded into the run.
+		assert.equal(result.diagnostics.unattributedProcesses.length, 1);
+		const [orphan] = result.diagnostics.unattributedProcesses;
+		assert.ok(orphan !== undefined);
+		assert.equal(orphan.pid, 99);
+		assert.equal(orphan.unknownDescriptor.writeBytes, 1_000_000);
+		// Place two: its volume is reported, in the currency that carries it.
+		assert.equal(result.diagnostics.unattributedBytes.placed, 0);
+		assert.equal(result.diagnostics.unattributedBytes.traced, 1_000_000);
+		assert.equal(rootEvidence(result).pathlessBytes, 1_000_000);
+		// Place three: the account does not claim to be whole, even though every
+		// other conjunct is satisfied and the share is zero.
+		assert.equal(rowFor(result, 42, 1_000).coverage.observedFromStart, true);
+		assert.equal(result.diagnostics.coverage.processesWithUnobservedPrefix, 0);
+		assert.equal(result.diagnostics.coverage.complete, false);
+	});
+
 	it("counts read bytes as well as written ones, on both sides of the share", () => {
 		// Reads and writes stay apart in the buckets but both are bytes the join
 		// was responsible for placing. A denominator that summed only writes
@@ -901,6 +946,40 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		assert.equal(rowFor(result, 42, 1_000).coverage.observedFromStart, true);
 		assert.equal(result.diagnostics.attributedBytes.placed, 0);
 		assert.equal(result.diagnostics.coverage.complete, false);
+	});
+
+	it("does not call an account complete when every attributed byte resolved to no path", () => {
+		// The `complete` conjunct restated in the wrong currency, which is door 2
+		// rebuilt at this site. It is worth being exact about why this test has to
+		// exist: `anyPlaced` refuses a `TracedBytes` argument, but nothing forces
+		// the conjunct to call `anyPlaced` at all. Replacing it with a bare
+		// `attributedBytes.traced > 0` compiles clean and needs no cast, so the
+		// type system does not catch that rewrite — this test is the only thing
+		// that does.
+		//
+		// The run below satisfies every other conjunct: one bound process, observed
+		// from before it started, nothing orphaned, no bound key missing. It moved
+		// a megabyte — on a descriptor with no `openat` behind it, so not one byte
+		// of it resolved to a path under the storage root. An account holding no
+		// SYNAPSE bytes at all must not certify as whole.
+		const records: TraceRecord[] = [rw({ bytes: 1_000_000, fd: 7, nsecs: 5_000_000_000, ret: 1_000_000 })];
+		const result = attributeKernelIo([identityEvent()], collected({ records }), ROOT);
+
+		assert.equal(result.diagnostics.coverage.complete, false);
+
+		// Everything a traced-bytes conjunct would have read as healthy.
+		assert.equal(result.diagnostics.attributedBytes.traced, 1_000_000);
+		assert.equal(result.diagnostics.attributedBytes.placed, 0);
+		assert.equal(rowFor(result, 42, 1_000).coverage.observedFromStart, true);
+		assert.equal(result.diagnostics.coverage.processesWithUnobservedPrefix, 0);
+		assert.equal(result.diagnostics.identityKeysWithoutTrace, 0);
+		assert.deepEqual(result.diagnostics.unattributedProcesses, []);
+		// No path was resolved anywhere, so there is nothing to refuse over and
+		// nothing to state a share about. The account is reported; it simply does
+		// not claim to be whole.
+		assert.deepEqual(result.unavailableReasons, []);
+		assert.equal(result.diagnostics.unattributedShare, "N/A");
+		assert.deepEqual(rootEvidence(result), { pathlessBytes: 1_000_000, pathsOutsideRoot: false, pathsUnderRoot: false });
 	});
 
 	it("does not call an empty account complete", () => {

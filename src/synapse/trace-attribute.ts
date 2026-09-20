@@ -903,10 +903,20 @@ export function attributeKernelIo(
 			attributedBytes,
 			clockInconsistentIdentityEvents: clockInconsistentEvents,
 			coverage: {
-				// Stated in placed bytes, and `anyPlaced` is what keeps it unstatable
-				// in anything else — a bare `> 0` would have accepted `.traced` just
-				// as happily. Rows were tried, then traced bytes, and both certified
-				// an account whose every classified byte had fallen outside the root.
+				// Stated in placed bytes. Rows were tried, then traced bytes, and both
+				// certified an account whose every classified byte had fallen outside
+				// the root.
+				//
+				// Be precise about what holds this: `anyPlaced` constrains the
+				// *currency* of the site that calls it — hand it `.traced` and the
+				// build fails — but nothing makes this conjunct call it. Replacing
+				// this line with a bare `attributedBytes.traced > 0` compiles clean,
+				// needs no cast, and trips no lint beyond an unused `anyPlaced`. The
+				// type therefore closes the accident, not the rewrite; the test named
+				// "does not call an account complete when every attributed byte
+				// resolved to no path" is what pins the rewrite, and it is the only
+				// thing that does.
+				//
 				// A bound process that emitted no trace line at all has no row here to
 				// be false on, and orphaned bytes deny it too: under the threshold
 				// they are reported rather than refused, but they are still bytes this
