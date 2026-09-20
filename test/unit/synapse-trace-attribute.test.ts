@@ -31,7 +31,7 @@ function identity(overrides: Partial<MeteringIdentity> = {}): MeteringIdentity {
 	return {
 		agent: "researcher",
 		attempt: 1,
-		mode: "isolated",
+		mode: "synapse",
 		nodeId: "run-1/0",
 		runId: "run-1",
 		sessionId: "sess-1",
