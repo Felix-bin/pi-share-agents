@@ -139,7 +139,9 @@ function eventsOf<K extends MeteringEvent["kind"]>(kind: K): (MeteringEvent & { 
 }
 
 async function sendState(input: OpenRetrieveInput): Promise<Extract<RetrieveSendResult, { kind: "state" }>> {
-	const result = await openRetrieveDelegation(input);
+	// These handoff tests assert the state path with the receiver's verifiable
+	// promise satisfied; the probe's own failure path has its own tests.
+	const result = await openRetrieveDelegation({ ...input, receiverProbe: input.receiverProbe ?? (() => true) });
 	assert.ok(result !== null, "the retrieve delegation must open");
 	assert.equal(result.kind, "state", `negotiation must select the state path, got ${result.kind}`);
 	// SAFETY: the assertions above proved null-free and state-kind.

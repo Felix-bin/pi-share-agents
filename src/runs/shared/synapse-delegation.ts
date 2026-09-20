@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { childConsumesState } from "../../synapse/child-contract.ts";
 import type { SynapseChildContract } from "../../synapse/child-contract.ts";
 import { classifySynapseError } from "../../synapse/errors.ts";
 import { clearStateEnvelope, nodeIdFor } from "../../synapse/envelope-inbox.ts";
 import { meteringLogPath, modelUsageFrom, openDelegation, openRetrieveDelegation, type CloseDelegationInput, type OpenDelegation, type RetrieveSendResult, type SendDeps } from "../../synapse/delegation.ts";
+import { createCapabilityProbeCache, stateRetrievalProbeCheck } from "../../synapse/capability-probe.ts";
 import { createMeteringLog, type MeteringIdentity } from "../../synapse/metering.ts";
 import { createMemoryService } from "../../synapse/memory-service.ts";
 import { meteredEmbedder, resolveConfiguredEmbedder, type Embedder } from "../../synapse/embedding.ts";
@@ -89,9 +90,32 @@ export type OpenChildRetrieveInput = {
 	k: number;
 	/** The query text to embed and hand over. */
 	query: string;
+	/**
+	 * Runs the receiver's declared runtime probe. The state seam below is the
+	 * one production caller and always wires this; injecting it keeps the
+	 * function honest under test instead of probing as a hidden side effect.
+	 */
+	receiverProbe?: () => boolean;
 	receiverSessionId: string;
 	runtime: ChildRuntimeConfig;
 };
+
+/**
+ * The state seam's probe cache: process-wide with the prototype's TTL, keyed by
+ * the facts the check depends on — store, pinned snapshot, representation,
+ * embedding configuration — so consecutive delegations against the same corpus
+ * share one verification and a reconfigured store is a different key. Each
+ * process holds its own cache (the prototype ran one CNR instance in one
+ * process; a background child is a second process with a second cache) —
+ * recorded as a deliberate difference in the migration coverage doc.
+ */
+const capabilityProbes = createCapabilityProbeCache();
+
+/** A stable digest of the embedding configuration for the probe cache key; the key material never enters it. */
+function sha256OfEmbedding(embedding: SynapseChildContract["embedding"]): string {
+	if (embedding === null) return "none";
+	return createHash("sha256").update(JSON.stringify({ dim: embedding.dim, endpoint: embedding.endpoint, keyEnv: embedding.keyEnv, model: embedding.model, provider: embedding.provider }), "utf-8").digest("hex").slice(0, 16);
+}
 
 /**
  * The state-plane sibling of openChildDelegation: a retrieve delegation whose
@@ -122,6 +146,7 @@ export async function openChildRetrieveDelegation(input: OpenChildRetrieveInput)
 			},
 			k: input.k,
 			query: input.query,
+			...(input.receiverProbe === undefined ? {} : { receiverProbe: input.receiverProbe }),
 			worktreeRoot: input.cwd,
 		});
 	} catch (error) {
@@ -245,6 +270,29 @@ async function openChildStateDelegation(input: OpenChildDelegationInput): Promis
 	// residuals were reachable: no deps, therefore no base, therefore the existing
 	// no-base branch and a full vector.
 	const deps = synapse.delta ? senderBaseSelector(synapse, input.runtime.childIndex, input.cwd, embedder) : undefined;
+	// The verifiable promise, wired at the one production call site: the
+	// receiver's declaration claims state retrieval can work here, and the probe
+	// holds that claim to the runtime — an embedder that cannot be constructed
+	// or a corpus that cannot load takes the text path before an embedding call
+	// is spent. The TTL cache keeps consecutive delegations against the same
+	// store to one verification per window (passes 300 s, failures 30 s: a
+	// failure is usually a transient environment fact and must not pin a whole
+	// window to text). The key carries every fact the check reads — store,
+	// pinned snapshot, representation, and the embedding configuration, whose
+	// endpoint/keyEnv the check also depends on.
+	const receiverProbe = () =>
+		capabilityProbes.probe(
+			`state-retrieval:${synapse.contract.storageRoot}:${synapse.contract.corpusSnapshotId}:${synapse.contract.representationId}:${sha256OfEmbedding(synapse.embedding)}`,
+			() =>
+				stateRetrievalProbeCheck({
+					// The unset contract never reaches the probe: the gate above returned
+					// before it, so this is always a published snapshot id here.
+					corpusSnapshotId: synapse.contract.corpusSnapshotId,
+					embedding: synapse.embedding,
+					representationId: synapse.contract.representationId,
+					storageRoot: synapse.contract.storageRoot,
+				}),
+		);
 	const result = await openChildRetrieveDelegation({
 		childTools: synapse.capabilityTools,
 		cwd: input.cwd,
@@ -254,6 +302,7 @@ async function openChildStateDelegation(input: OpenChildDelegationInput): Promis
 		// memory tool would return by default rather than a second policy.
 		k: SYNAPSE_DEFAULT_SEARCH_K,
 		query: input.message,
+		receiverProbe,
 		receiverSessionId: input.receiverSessionId,
 		runtime: input.runtime,
 	});

@@ -146,6 +146,7 @@ async function send(predictedBase?: (query: { text: string }) => Promise<Predict
 		identity: identity(),
 		k: 3,
 		query: "what does the auth flow do",
+		receiverProbe: () => true,
 		worktreeRoot: worktree,
 	});
 	assert.ok(result, "a retriever that declares the consuming tool must reach the state plane");
@@ -248,6 +249,7 @@ describe("synapse retrieve send side: encoding choice", () => {
 				identity: identity(),
 				k: 3,
 				query: "q",
+				receiverProbe: () => true,
 				worktreeRoot: worktree,
 			}),
 			/embedding provider unreachable/,
@@ -260,5 +262,114 @@ describe("synapse retrieve send side: encoding choice", () => {
 		assert.equal(result.stateRef.encoding, "float32-vector");
 		const prepare = eventsOf(events, "state-prepare")[0];
 		assert.equal(prepare?.fallbackReason, "no-base");
+	});
+});
+
+describe("synapse retrieve send side: the runtime probe gate", () => {
+	it("falls back to text with an explicit reason when the receiver's probe fails, spending no embedding call", async () => {
+		const contract = contractFor();
+		const log = createMeteringLog(meteringLogPath(contract, RUN_ID));
+		const embedder = embedderOf(QUERY_VECTOR);
+		let embedded = 0;
+		const counting = { ...embedder, embedQuery: async (text: string) => {
+			embedded += 1;
+			return embedder.embedQuery(text);
+		} };
+		const result = await openRetrieveDelegation({
+			contract,
+			deps: { log },
+			embedder: counting,
+			identity: identity(),
+			k: 3,
+			query: "what does the auth flow do",
+			receiverProbe: () => false,
+			worktreeRoot: worktree,
+		});
+		assert.ok(result, "the delegation opens: an unverified promise degrades to text, it does not refuse the task");
+		assert.equal(result.kind, "text");
+		assert.ok(result.kind === "text");
+		assert.equal(result.reason, "probe-unverified");
+		// The point of asking before spending: a payload nobody could rank must
+		// not cost the embedding call that would have produced it.
+		assert.equal(embedded, 0);
+		// And nothing state-shaped crossed, so no state events may exist.
+		assert.equal(eventsOf(readMeteringLog(meteringLogPath(contract, RUN_ID)), "state-send").length, 0);
+	});
+
+	it("trusts an unwired probe no further than the text path: a declared claim without a verdict is not verified", async () => {
+		const contract = contractFor();
+		const result = await openRetrieveDelegation({
+			contract,
+			deps: { log: createMeteringLog(meteringLogPath(contract, RUN_ID)) },
+			embedder: embedderOf(QUERY_VECTOR),
+			identity: identity(),
+			k: 3,
+			query: "what does the auth flow do",
+			worktreeRoot: worktree,
+		});
+		assert.ok(result);
+		assert.equal(result.kind, "text");
+		assert.ok(result.kind === "text");
+		assert.equal(result.reason, "probe-unverified");
+	});
+});
+
+describe("synapse retrieve send side: probe gate traces", () => {
+	it("records a capability-probe metering event for the verdict, pass or fail", async () => {
+		const contract = contractFor();
+		for (const verdict of [true, false]) {
+			fs.rmSync(meteringLogPath(contract, RUN_ID), { force: true });
+			await openRetrieveDelegation({
+				contract,
+				deps: { log: createMeteringLog(meteringLogPath(contract, RUN_ID)) },
+				embedder: embedderOf(QUERY_VECTOR),
+				identity: identity(),
+				k: 3,
+				query: "what does the auth flow do",
+				receiverProbe: () => verdict,
+				worktreeRoot: worktree,
+			});
+			const probeEvents = eventsOf(readMeteringLog(meteringLogPath(contract, RUN_ID)), "capability-probe");
+			assert.equal(probeEvents.length, 1, `exactly one capability-probe event for verdict=${verdict}`);
+			assert.equal(probeEvents[0]?.ok, verdict);
+		}
+	});
+
+	it("treats a throwing probe as unverified rather than letting it pierce the seam", async () => {
+		const contract = contractFor();
+		const result = await openRetrieveDelegation({
+			contract,
+			deps: { log: createMeteringLog(meteringLogPath(contract, RUN_ID)) },
+			embedder: embedderOf(QUERY_VECTOR),
+			identity: identity(),
+			k: 3,
+			query: "what does the auth flow do",
+			receiverProbe: () => {
+				throw new Error("probe blew up");
+			},
+			worktreeRoot: worktree,
+		});
+		assert.ok(result);
+		assert.equal(result.kind, "text");
+		assert.ok(result.kind === "text");
+		assert.equal(result.reason, "probe-unverified");
+	});
+
+	it("lets the same peers negotiate differently as the probe verdict flips — verification state, not contract state", async () => {
+		const contract = contractFor();
+		const run = async (verdict: boolean) => openRetrieveDelegation({
+			contract,
+			deps: { log: createMeteringLog(meteringLogPath(contract, RUN_ID)) },
+			embedder: embedderOf(QUERY_VECTOR),
+			identity: identity(),
+			k: 3,
+			query: "what does the auth flow do",
+			receiverProbe: () => verdict,
+			worktreeRoot: worktree,
+		});
+		const failed = await run(false);
+		assert.equal(failed?.kind, "text");
+		const passed = await run(true);
+		assert.equal(passed?.kind, "state");
 	});
 });

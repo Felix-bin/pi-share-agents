@@ -382,3 +382,43 @@ describe("synapse child state consumption", () => {
 		assert.equal(errorEvents().length, 1, "a state inbox holding something else is a divergence worth a row");
 	});
 });
+
+describe("AC-probe: the state seam's verifiable promise", () => {
+	it("degrades to text with a recorded verdict when the pinned corpus is missing from the store", async () => {
+		// A real 64-hex snapshot id that was never published passes the seam's
+		// cheap gates (it is not "unset") — the probe is what catches it, before
+		// an embedding call is spent on a payload no consume could rank.
+		const missing = resolveSynapseChildContract({
+			agentDir: storageRoot,
+			agentName: "retriever",
+			childTools: CONSUMING_TOOLS,
+			cwd: worktree,
+			extensionConfig: { ...extensionConfig(), corpusSnapshotId: "b".repeat(64) },
+			runId: RUN_ID,
+			sessionId: "sess-parent",
+		});
+		assert.ok(missing !== null);
+		const opened = await openChildDelegationWithState({
+			cwd: worktree,
+			message: QUERY,
+			receiverSessionId: "sess-child",
+			runtime: childConfig(missing),
+		});
+		assert.ok(opened.state !== null, "the delegation opens: an unverified promise degrades, it does not vanish");
+		assert.equal(opened.state.kind, "text");
+		if (opened.state.kind !== "text") return;
+		assert.equal(opened.state.reason, "probe-unverified");
+		const probeEvents = readMeteringLog(path.join(storageRoot, "metering", `${RUN_ID}.jsonl`)).filter((event) => event.kind === "capability-probe");
+		assert.equal(probeEvents.length, 1, "the failing verdict is answerable from the ledger");
+		assert.equal(probeEvents[0] && "ok" in probeEvents[0] ? probeEvents[0].ok : undefined, false);
+		// And the store the next delegation runs against has the real corpus, so
+		// the verdict flips back without any code path in between.
+		const healed = await openChildDelegationWithState({
+			cwd: worktree,
+			message: QUERY,
+			receiverSessionId: "sess-child",
+			runtime: childConfig(synapseContract()),
+		});
+		assert.equal(healed.state?.kind, "state", "a different key (real snapshot) is probed on its own and passes");
+	});
+});

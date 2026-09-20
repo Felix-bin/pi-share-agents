@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { aggregateMetering, createMeteringLog, readMeteringLog, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
+import { aggregateMetering, createMeteringLog, readMeteringLog, type MeteringIdentity, type MeteringLog , SYNAPSE_METERING_SCHEMA_VERSION } from "../../src/synapse/metering.ts";
 
 let root = "";
 let logPath = "";
@@ -59,7 +59,7 @@ describe("metering log durability", () => {
 		// A literal on purpose: bumping the metering schema is a deliberate act that
 		// must change this line and the reader that documents the difference, never
 		// something that slips through by comparing the constant to itself.
-		assert.equal(event.schemaVersion, 3);
+		assert.equal(event.schemaVersion, SYNAPSE_METERING_SCHEMA_VERSION);
 		assert.equal(event.agent, "retriever");
 		assert.equal(event.runId, "run-1");
 		assert.equal(event.attempt, 1);

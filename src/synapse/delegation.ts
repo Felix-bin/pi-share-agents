@@ -356,8 +356,21 @@ export type OpenRetrieveInput = {
 	embedder: Embedder;
 	identity: SendIdentity;
 	k: number;
-	/** The query text to embed — it also travels in the envelope for text fallback. */
+	/**
+	 * The query text to embed — it also travels in the envelope for text fallback.
+	 */
 	query: string;
+	/**
+	 * Runs the receiver's declared runtime probe, when the caller wired one.
+	 * Returned verdict feeds negotiation: a failed probe takes the text path
+	 * with `probe-unverified` before an embedding call is spent on a payload no
+	 * consume could rank, and the verdict leaves a `capability-probe` metering
+	 * event whether it passed or failed. A receiver that declares probe items
+	 * and a caller that wires nothing negotiates down to text — the claim is
+	 * only trusted once something verified it. A probe that throws is treated
+	 * as unverified rather than allowed to pierce the seam.
+	 */
+	receiverProbe?: () => boolean;
 	worktreeRoot: string;
 };
 
@@ -489,11 +502,27 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	const { contract, identity } = input;
 	const sender = retrieveSenderCapability(contract.representationId);
 	const receiver = capabilityForAgent({ agent: identity.agent, childTools: identity.childTools, representationId: contract.representationId });
+	// The verifiable promise: a receiver that declared probe items is only
+	// trusted once its probe ran. The verdict is the caller's to supply — this
+	// seam never probes on its own. A probe that THROWS is an unverified promise
+	// rather than a failed delegation: the environment-fact contract belongs to
+	// the probe itself, and a throwing caller-supplied probe must degrade to the
+	// text path here instead of piercing the seam.
+	const runReceiverProbe = (): boolean => {
+		try {
+			return input.receiverProbe?.() ?? false;
+		} catch {
+			return false;
+		}
+	};
+	const receiverProbeVerified = receiver.declaration.probe !== undefined && receiver.declaration.probe.length > 0 ? runReceiverProbe() : undefined;
+	const probeField = receiverProbeVerified === undefined ? {} : { receiverProbeVerified };
 	const negotiation = negotiate({
 		action: "retrieve",
 		allowTextFallback: true,
 		mode: contract.mode,
 		receiver: receiver.declaration,
+		...probeField,
 		receiverMayRead: contract.scope.pathPrefixes.length > 0,
 		sender,
 	});
@@ -511,6 +540,12 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 		sessionId: identity.senderSessionId,
 		snapshotId: null,
 	};
+	// The verifiable promise leaves its trace whether it passed or failed: a
+	// round that degraded to text because of the probe must be answerable from
+	// the ledger, including rounds whose verdict came from the TTL cache.
+	if (receiverProbeVerified !== undefined) {
+		deps.log.record(meterIdentity, { kind: "capability-probe", ok: receiverProbeVerified });
+	}
 	const snapshot = freezeSnapshot({
 		capabilityId: negotiation.capabilityId,
 		memoryRefs: [],

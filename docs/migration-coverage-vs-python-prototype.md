@@ -35,7 +35,7 @@
 | 原型（Python，初赛 master） | 本仓库（TypeScript） | 判定 |
 |---|---|---|
 | `protocol/messages.py` 结构化消息单元 + 大结果 spill 句柄 | `envelope.ts`、`canonical-json.ts` | **已迁移（更强）**：TypeBox 全字段校验、未知字段拒绝（`additionalProperties: false`）、canonical JSON 保证同参数同字节 |
-| `protocol/handshake.py` CNR：`hello`/`discover`/`negotiate` + `check_fn` 运行时探测（TTL） | `capability.ts` | **降级迁移**：协商在，但只有 `state`/`text`/`refused` 三出口；无 probe 运行时探测、无多档编码秩（原型 hidden>residual>embedding>text）、无 A2A 映射 |
+| `protocol/handshake.py` CNR：`hello`/`discover`/`negotiate` + `check_fn` 运行时探测（TTL） | `capability.ts` + `capability-probe.ts` | **探测已迁移并强于原型（2026-09-20）**：运行期探测（`state-retrieval` 探针＝可构建 embedder + 端到端加载冻结语料）带 TTL 缓存，且协商出口消费探针结论（`probe-unverified` 文本回落）——原型的 `negotiate()` 实际上从未消费其验证缓存，只有外部查询；多档编码秩不迁（本仓库以逐消息率失真选择替代秩选择，见 `state-payload.ts`） |
 | `protocol/scheduler.py` | `delegation.ts`、`handoff.ts`、`lifecycle.ts` | 已迁移（调度由宿主 Pi 运行时驱动，形态不同） |
 | `protocol/transport.py`（AF_UNIX 长度前缀 framing / 进程内） | `envelope-inbox.ts`（同侧文件投递） | 已迁移（形态不同）；Socket / 共享内存属操作系统适配面 |
 | `stateplane/embedding.py` | `embedding.ts` | 已迁移（更强：线格式按 provider 显式声明、两级缓存计入计量、已存密钥回落） |
@@ -46,7 +46,7 @@
 | `stateplane/projection.py`（JL 投影，默认关） | —— | **不适用**：原型该能力默认关闭（`residual_project_dim > 0` 才惰性构建），不迁移与其默认态一致 |
 | `memory/store.py`（`MemoryUnit` + CAS 去重） | `memory-store.ts` | 已迁移（更强：不可变记录 + 取代事件重放派生状态 + 孤儿正文报告） |
 | `memory/retrieval.py`（关键词 jaccard + 标签 + 余弦融合） | `retrieval.ts` | 已迁移（更强：无向量时语义位如实报 `unavailable`，不用哈希占位） |
-| `memory/consolidate.py`（记忆固化/合并） | —— | **未迁移**（有取代 `supersede`，但不是合并式固化） |
+| `memory/consolidate.py`（记忆固化/合并） | —— | **不迁移（2026-09-20 裁决，理由见 §4-E）**（有取代 `supersede`，但不是合并式固化） |
 | `memory/tom.py`（`ToMPredictor`） | `predict-base.ts`、`memory-service.ts` | **功能位等价、方法不同**：以语义相似度选基，无显式心智理论建模 |
 | `modes/text_mode.py`、`modes/synapse_mode.py` | `config.ts` 的 `synapse.mode`、`capability.ts` | 已迁移（更强：`off`/`text`/`synapse` 三态） |
 | `runtime/team.py`（`build_team`：角色 + 能力 + check_fn） | `roles.ts` + Pi 委派运行时 | 已迁移 |
@@ -81,8 +81,8 @@
 | A | **连续任务装置**（对应原型 `tasks.py` + `eval/harness.py`） | 赛题 M7「≥2 组关联连续任务」与 M9「≥10 轮」的直接证据来源；也是 P4-5 与决赛实验的执行基座 | **建议迁移**（改写为 TypeScript，落在实验脚本层） |
 | B | **CodeAct + 轻量沙箱**（原型 `runtime/model.py` + `subprocess_executor.py`） | 赛题 M11 加分项，原型有双档执行器与边界实测报告可背书 | **已裁决（2026-09-20）：暂不引入。** 本仓库设计规范 v1.1 本就明确"不实施 CodeAct"；对外材料按四档纪律记为**规划中**，不得写成已实现能力，也不得引用原型期的 CodeAct 数字来支撑本仓库 |
 | C | **评测装置**：A/B 运行器、manifest 自动采集、结果 schema 校验、配对统计 | 支撑"实验验证"分值与决赛的可复现要求；不补则每轮实验靠人工聚合 | **建议迁移**（打分与统计按决赛所需数据集裁剪） |
-| D | **CNR 运行时能力探测 + 多档编码秩** | M2 的"能力发现"深度；原型把"声明即可验证"作为卖点 | **建议迁移探测**（与现有 `CapabilityDeclaration` 结构天然契合）；多档秩视状态面叙事是否需要 |
-| E | **`memory/consolidate.py`**（记忆固化/合并） | M6 记忆演化的完整度 | 评估后迁移，或明确记录"以取代事件 + 不可变日志替代"的判定与理由 |
+| D | **CNR 运行时能力探测 + 多档编码秩** | M2 的"能力发现"深度；原型把"声明即可验证"作为卖点 | **探测已迁移（2026-09-20）**：`capability-probe.ts`（TTL 缓存）+ 协商 `probe-unverified` 回落 + 状态缝接线；**多档秩不迁**（逐消息率失真选择已替代秩选择，判定记录于此） |
+| E | **`memory/consolidate.py`**（记忆固化/合并） | M6 记忆演化的完整度 | **不迁移（2026-09-20 裁决）**。三条理由：①**协议身份问题**——巩固产物（topic 质心原型）若只写发送侧记忆，接收方无法从自己的库重建该基，delta 消费直接失败；要做就必须是双侧共享、确定性可重放的存储级操作（同活跃记录集+同表示空间→同质心），那是新的协议面而非迁移；②**测量可比性**——P4-5 已按"无巩固"口径冻结并出数，巩固会改变基池构成，任何收益主张须按预登记纪律先冻结判据再出数（新卡）；③其收益前提（"原型作基 → 残差更稀疏"）依赖残差路径本身成立（热基/基复用场景），与预登记 §11 登记的派生机会同一条件，作为该条件下的后续工作而非默认能力。M6 的覆盖以"取代事件 + 不可变日志 + 记录级有效性"回答演化问题，本条按上述边界如实入档 |
 | F | **`memory/tom.py`**（显式心智理论） | 与 `predict-base.ts` 功能位重叠 | **不迁移**，但对外口径不得声称"ToM 建模"已实现 |
 | G | **`stateplane/projection.py`**（JL 投影） | 原型默认关 | **不迁移**（与其默认态一致），材料中不得作为已实现能力 |
 | H | **操作系统中介面**（Socket / 共享内存 / IPC 四级通道） | 赛题 M10 的系统技术加分 | **不迁移**：按分工归操作系统适配分支（且 `oeipc.py`/`node.py` 属 v5 而非初赛） |
@@ -118,5 +118,5 @@ node --experimental-strip-types --test test/integration/synapse-*.test.ts
 | **状态预算与超时语义** | `SYNAPSE_STATE_BUDGET_MS`（2500 ms，超时按"本次未传递状态"放行并记 `error(category="timeout")`） | 原型无预算机制（其超时行为是进程级强制终止） |
 
 **追平进度（2026-09-20 更新）**：接收侧**语义校验**已落地（`synapse.stateVerify`，重嵌入比对余弦，
-失配走恢复链；默认关——原型 VLC 是常开），见预登记 §12；**运行期能力探测**（原型 CNR 的 `check_fn` + TTL）
-仍未做，属阶段 R-2 剩余项。
+失配走恢复链；默认关——原型 VLC 是常开），见预登记 §12；**运行期能力探测**已落地（`capability-probe.ts`，
+TTL 缓存 + 协商消费，强于原型的仅查询）——R-2 剩余项清零。

@@ -1,4 +1,5 @@
 import { describeCapability, type CapabilityDeclaration, type CapabilityRecord, type SynapseAction, type SynapseEncoding } from "./capability.ts";
+import { STATE_RETRIEVAL_PROBE } from "./capability-probe.ts";
 
 /**
  * The collaboration roles and the capability each one declares.
@@ -78,12 +79,19 @@ export type CapabilityForAgentInput = {
 
 export function capabilityForAgent(input: CapabilityForAgentInput): CapabilityRecord {
 	const spec = isSynapseRole(input.agent) ? ROLE_SPECS[input.agent] : GENERIC_SPEC;
+	const consumes = consumesState(input.childTools);
+	// A role that claims the state path claims the verifiable promise behind it:
+	// its embedder can be constructed and the pinned corpus loads. The promise is
+	// strict — without a probe verdict the negotiation takes text — so the one
+	// production seam always wires the probe.
+	const probeField = consumes && spec.encodings.includes("float32-vector") ? { probe: [STATE_RETRIEVAL_PROBE] } : {};
 	const declaration: CapabilityDeclaration = {
 		actions: spec.actions,
 		agent: input.agent,
-		consumesState: consumesState(input.childTools),
+		consumesState: consumes,
 		consumerVersion: SYNAPSE_CONSUMER_VERSION,
 		encodings: spec.encodings,
+		...probeField,
 		representationId: input.representationId,
 	};
 	return describeCapability(declaration);

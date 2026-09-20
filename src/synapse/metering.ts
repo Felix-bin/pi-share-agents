@@ -21,12 +21,13 @@ import type { StateFallbackReason } from "./state-payload.ts";
  */
 
 /**
- * Bumped to 2 when `object-io` gained the `payload-read` purpose, and to 3 when the
- * `vector-cache` kind was added. Both changes are additive: every field that existed
- * before kept its meaning, so an older log still aggregates (a component it never
- * recorded is reported as 0) and the frozen full-account definition is unaffected.
+ * Bumped to 2 when `object-io` gained the `payload-read` purpose, to 3 when the
+ * `vector-cache` kind was added, and to 4 when the `capability-probe` kind was
+ * added. Every change is additive: each field that existed before kept its
+ * meaning, so an older log still aggregates (a component it never recorded is
+ * reported as 0) and the frozen full-account definition is unaffected.
  */
-export const SYNAPSE_METERING_SCHEMA_VERSION = 3;
+export const SYNAPSE_METERING_SCHEMA_VERSION = 4;
 
 /** A number that was never reported, as distinct from a reported zero. */
 export type Unavailable = "unavailable";
@@ -152,6 +153,13 @@ export type MeteringPayload =
 	 * payloads is then a distribution in the log rather than an assumption in a comment.
 	 */
 	| { cosine: number; kind: "state-verify"; ok: boolean }
+	/**
+	 * One negotiation-deciding verdict of the receiver's declared capability probe,
+	 * recorded every time the gate was consulted — including verdicts served from the
+	 * TTL cache — so a delegation window that ran on the text path answers "why" from
+	 * the ledger round by round instead of from the one moment the check actually ran.
+	 */
+	| { kind: "capability-probe"; ok: boolean }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
 
 export type MeteringEvent = MeteringIdentity &
@@ -321,6 +329,7 @@ export type FullAccount = {
 };
 
 export type MeteringTotals = {
+	capability: { probeFailures: number; probeVerdicts: number };
 	control: { envelopeBytes: number; transportBytes: NotApplicable };
 	duration: { byTask: Record<string, number | Unavailable>; totalMs: number | Unavailable; unfinishedTasks: string[] };
 	embedding: { costUsd: number | Unavailable; durationMs: number; failed: number; inputTokens: number | Unavailable; requests: number };
@@ -415,6 +424,7 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	let rankingReadBytes = 0;
 
 	const totals: MeteringTotals = {
+		capability: { probeFailures: 0, probeVerdicts: 0 },
 		control: { envelopeBytes: 0, transportBytes: "N/A" },
 		duration: { byTask, totalMs: "unavailable", unfinishedTasks: [] },
 		embedding: { costUsd: 0, durationMs: 0, failed: 0, inputTokens: 0, requests: 0 },
@@ -582,6 +592,10 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			case "state-verify":
 				totals.state.verifications += 1;
 				if (!event.ok) totals.state.verificationRefusals += 1;
+				break;
+			case "capability-probe":
+				totals.capability.probeVerdicts += 1;
+				if (!event.ok) totals.capability.probeFailures += 1;
 				break;
 			case "error":
 				errors[event.category] = (errors[event.category] ?? 0) + 1;

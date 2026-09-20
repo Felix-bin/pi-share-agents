@@ -89,7 +89,9 @@ function sendDeps(): SendDeps {
 
 /** Opens a retrieve delegation and narrows it to the state branch, or fails. */
 async function sendState(input: OpenRetrieveInput): Promise<Extract<RetrieveSendResult, { kind: "state" }>> {
-	const result = await openRetrieveDelegation(input);
+	// These handoff tests assert the state path with the receiver's verifiable
+	// promise satisfied; the probe's failure path has dedicated tests of its own.
+	const result = await openRetrieveDelegation({ ...input, receiverProbe: input.receiverProbe ?? (() => true) });
 	assert.ok(result !== null, "the retrieve delegation must open");
 	assert.equal(result.kind, "state", `negotiation must select the vector path, got ${result.kind}`);
 	// SAFETY: the assertions above proved null-free and state-kind; the cast only
@@ -167,6 +169,7 @@ it("refuses a k the receiver would refuse, before spending the embedding call", 
 			k: SYNAPSE_MAX_SEARCH_K + 1,
 			// The k check runs before the embedding call, so the query text never reaches the provider here.
 			query: "unused by this assertion",
+			receiverProbe: () => true,
 			worktreeRoot: worktree,
 		}),
 		/k-out-of-range/,

@@ -270,6 +270,7 @@ describe("synapse retrieve seam", () => {
 				identity: identity({ childTools: ["read", "synapse_read"] }),
 				k: 3,
 				query: "any query",
+				receiverProbe: () => true,
 				worktreeRoot: worktree,
 			}),
 			/synapse\.corpusSnapshotId/,
