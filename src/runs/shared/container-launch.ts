@@ -1,4 +1,9 @@
+import { spawnSync } from "node:child_process";
 import * as path from "node:path";
+
+const PROBE_TIMEOUT_MS = 5_000;
+const MAX_PROBE_OUTPUT_BYTES = 8 * 1024;
+const MAX_REPORTED_VERSION_LENGTH = 120;
 
 /**
  * S1 design §3.3. The engines differ only in their binary name and in the shape
@@ -130,5 +135,80 @@ export function resolveContainerLaunch(input: ContainerLaunchInput): ResolvedCon
 			...input.launch.args,
 		],
 		topology: "container",
+	};
+}
+
+/**
+ * What a probe found when it asked an engine binary for its version. The two
+ * outcomes are kept apart all the way into the reason string: "iSulad is not
+ * installed" and "iSulad is installed but answered something we do not accept"
+ * send whoever reads the run artifact to different places.
+ */
+export type ContainerEngineProbe =
+	| { outcome: "absent"; detail: string }
+	| { outcome: "present"; version: string };
+
+export type ContainerEngineSelection =
+	| { selected: true; engine: ContainerEngineSpec; version: string }
+	| { selected: false; unavailableReason: string };
+
+/**
+ * Deliberately permissive: it accepts any answer carrying a `<major>.<minor>`,
+ * which is enough to tell a working engine from a missing one or from a shell
+ * error captured as output. The exact strings `isula --version` prints on
+ * openEuler cannot be verified from the development machine, so tightening this
+ * per engine waits for the real-machine report (design §6, acceptance run).
+ * A pattern invented here without that output would be a guess wearing a regex.
+ */
+function isVersionAccepted(version: string): boolean {
+	return /\d+\.\d+/.test(version);
+}
+
+/** Runs the engine's `--version`. The only impure part of engine selection. */
+export function probeContainerEngineBinary(engine: ContainerEngineSpec): ContainerEngineProbe {
+	const result = spawnSync(engine.binary, ["--version"], {
+		encoding: "utf-8",
+		timeout: PROBE_TIMEOUT_MS,
+		maxBuffer: MAX_PROBE_OUTPUT_BYTES,
+		windowsHide: true,
+	});
+	if (result.error) {
+		const code = (result.error as NodeJS.ErrnoException).code;
+		return { outcome: "absent", detail: code === "ENOENT" ? "not found on PATH" : result.error.message };
+	}
+	if (result.status !== 0) {
+		return { outcome: "absent", detail: `'${engine.binary} --version' exited with code ${result.status}` };
+	}
+	return { outcome: "present", version: `${result.stdout ?? ""}`.trim().split("\n")[0] ?? "" };
+}
+
+/**
+ * Picks the first engine in the table that is installed and answers a version we
+ * accept (design §3.3). Returning a reason rather than throwing is the point:
+ * "no container engine here" is a legitimate environment, and the run degrades to
+ * the process model — visibly, naming every engine it tried and what each said.
+ */
+export function selectContainerEngine(input: {
+	probe?: (engine: ContainerEngineSpec) => ContainerEngineProbe;
+	ids?: readonly ContainerEngineId[];
+}): ContainerEngineSelection {
+	const probe = input.probe ?? probeContainerEngineBinary;
+	const rejections: string[] = [];
+	for (const id of input.ids ?? CONTAINER_ENGINE_IDS) {
+		const engine = containerEngineSpec(id);
+		const probed = probe(engine);
+		if (probed.outcome === "absent") {
+			rejections.push(`${id} (${probed.detail})`);
+			continue;
+		}
+		if (!isVersionAccepted(probed.version)) {
+			rejections.push(`${id} (version not accepted: ${JSON.stringify(probed.version.slice(0, MAX_REPORTED_VERSION_LENGTH))})`);
+			continue;
+		}
+		return { selected: true, engine, version: probed.version };
+	}
+	return {
+		selected: false,
+		unavailableReason: `No container engine is usable: ${rejections.join(", ")}.`,
 	};
 }

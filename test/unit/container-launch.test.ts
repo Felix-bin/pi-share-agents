@@ -4,6 +4,9 @@ import {
 	CONTAINER_ENGINE_IDS,
 	containerEngineSpec,
 	resolveContainerLaunch,
+	selectContainerEngine,
+	type ContainerEngineId,
+	type ContainerEngineProbe,
 } from "../../src/runs/shared/container-launch.ts";
 
 const roots = {
@@ -128,3 +131,79 @@ describe("container launch construction", () => {
 		}
 	});
 });
+
+function probeTable(
+	table: Partial<Record<ContainerEngineId, ContainerEngineProbe>>,
+): (engine: { id: ContainerEngineId }) => ContainerEngineProbe {
+	return (engine) => table[engine.id] ?? { outcome: "absent", detail: "not found on PATH" };
+}
+
+describe("container engine selection", () => {
+	it("selects the first engine in the table when it is usable", () => {
+		const selection = selectContainerEngine({
+			probe: probeTable({
+				isula: { outcome: "present", version: "Version 2.1.5" },
+				docker: { outcome: "present", version: "Docker version 24.0.5" },
+			}),
+		});
+
+		assert.equal(selection.selected, true);
+		assert.equal(selection.selected && selection.engine.id, "isula");
+	});
+
+	it("falls back to the next engine when the preferred one is absent", () => {
+		const selection = selectContainerEngine({
+			probe: probeTable({ docker: { outcome: "present", version: "Docker version 24.0.5" } }),
+		});
+
+		assert.equal(selection.selected, true);
+		assert.equal(selection.selected && selection.engine.id, "docker");
+		assert.equal(selection.selected && selection.engine.binary, "docker");
+	});
+
+	it("skips an engine whose binary exists but whose version is not accepted", () => {
+		const selection = selectContainerEngine({
+			probe: probeTable({
+				isula: { outcome: "present", version: "not a version at all" },
+				podman: { outcome: "present", version: "podman version 4.6.1" },
+			}),
+		});
+
+		assert.equal(selection.selected, true);
+		assert.equal(selection.selected && selection.engine.id, "podman");
+	});
+
+	it("distinguishes an absent binary from a rejected version when nothing is usable", () => {
+		const selection = selectContainerEngine({
+			probe: probeTable({
+				isula: { outcome: "absent", detail: "not found on PATH" },
+				docker: { outcome: "present", version: "garbage" },
+			}),
+		});
+
+		assert.equal(selection.selected, false);
+		const reason = selection.selected ? "" : selection.unavailableReason;
+
+		// Every engine in the table is accounted for by name.
+		for (const id of CONTAINER_ENGINE_IDS) assert.match(reason, new RegExp(id));
+
+		// The two kinds of failure do not collapse into one word.
+		const absentAt = reason.indexOf("isula");
+		const rejectedAt = reason.indexOf("docker");
+		assert.match(reason.slice(absentAt, rejectedAt), /not found/i);
+		assert.match(reason.slice(rejectedAt), /version/i);
+		assert.match(reason.slice(rejectedAt), /garbage/);
+	});
+
+	it("probes each engine at most once", () => {
+		const probed: ContainerEngineId[] = [];
+		selectContainerEngine({
+			probe: (engine) => {
+				probed.push(engine.id);
+				return { outcome: "absent", detail: "not found on PATH" };
+			},
+		});
+
+		assert.deepEqual(probed, [...CONTAINER_ENGINE_IDS]);
+	});
+})
