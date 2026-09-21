@@ -129,7 +129,11 @@ for (const arm of ["S2", "R1"]) {
 			storageRoot: storeRoot.replaceAll("\\", "/"),
 		};
 		const synapse = {
-			agent: "parent",
+			// The contract belongs to the DELEGATED CHILD; negotiation maps agent
+			// names to role capabilities, and only a real role (retriever) declares
+			// the retrieve action the state plane needs — "parent" would negotiate
+			// to a refusal, which is exactly what the first pilot round showed.
+			agent: "retriever",
 			capabilityTools: ["read", "grep", "glob", "synapse_read"],
 			contextBudgetBytes: 0,
 			contract,
@@ -151,8 +155,11 @@ for (const arm of ["S2", "R1"]) {
 				receiverSessionId: `seam-child-${runId}`,
 				runtime: { childIndex: 0, synapse },
 			});
-			outcomeKind = result === null ? "null" : result.kind;
-			reason = result !== null && result.kind !== "state" ? result.reason : null;
+			// The entry returns BOTH planes: { delegation, state } — the state half
+			// is the measurement target here.
+			const state = result?.state;
+			outcomeKind = state === null || state === undefined ? "null" : state.kind;
+			reason = state !== null && state !== undefined && state.kind !== "state" ? state.reason : null;
 		} catch (error) {
 			outcomeKind = "throw";
 			reason = error instanceof Error ? error.message : String(error);
