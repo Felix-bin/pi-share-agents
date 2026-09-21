@@ -64,12 +64,31 @@ S3 的线协议。
   内核字节的和。
 - Depends on: Task 2
 
+### Task 3a: 把 uds 档接进投递路径
+
+> 本任务是执行期补入的。Task 2 交付后暴露出一个计划缺口：没有任何任务把 uds 档接进真实的投递
+> 路径，于是这个档位存在但没有人走。后果不是少一个功能，而是 `transportBytes` 在真实运行里
+> 恒为零，spec §4.1 的对账——S2 自称的核心验收——根本无从发生。
+
+- [ ] Change: `LaunchContract` 携带传输档位，使子侧知道该从哪里收；`delegation.ts` 的
+      `publishEnvelope` 调用点按档位分流；`subagent-prompt-runtime.ts` 的信封校验从同步
+      `readFileSync` 改为可等待的接收。**接收端必须早绑定**——惰性绑定会让父侧先发、子侧后听，
+      信封落空。`file` 档的行为与时序必须逐字不变。
+- Verify: 单测证明——(a) 默认 `file` 档下，`delegation.ts` 与子侧的调用序列与改动前逐字相同；
+  (b) `uds` 档下一条信封从父侧发出、子侧收到，并通过既有的 `verifyEnvelopeAgainstContract`；
+  (c) 接收端未就绪时是具名失败，**不是**"投递成功但内容为空"；
+  (d) 同步改异步之后，「信封缺失不是失败」这条既有语义不变——父侧在协商拒绝或计量打不开时
+      本来就会跳过投递，子侧那时必须照常运行上游的任务。
+- Depends on: Task 2、Task 3
+
 ### Task 4: 句柄兑现
 
 - [ ] Change: `subagent-prompt-runtime.ts` 的信封处理保留 `delivered.wire` 而不是校验后丢弃；
       子进程启动时按 `memoryRefs` 用**它自己已注册的 MemoryService** 读取正文并拼进提示词
       （spec §4.2，确定性兑现，不依赖模型调工具）。`delegation.ts` 的提示词拼装在 synapse 档
       不再携带摘要行。兑现路径不得绕开 MemoryService 直接读 CAS 文件。
+- Depends on: Task 3a（两者都改 `subagent-prompt-runtime.ts` 的信封处理；3a 先把它改成异步，
+      本任务再在其上保留 `delivered.wire` 并兑现）
 - Verify: 单测证明——(a) synapse 档下父侧提示词不再含记忆摘要段，而子侧兑现后的提示词含正文；
   (b) text 档的行为逐字不变（对照组不能被这个改动污染）；
   (c) 注入一个窄 scope 后，scope 之外的 `memoryId` 兑现被拒绝并归类为**权限错误**，
