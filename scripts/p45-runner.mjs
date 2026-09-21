@@ -709,6 +709,7 @@ async function cmdRunResident(expDir, options) {
 		fs.rmSync(tempRoot, { force: true, recursive: true });
 		fs.mkdirSync(tempRoot, { recursive: true });
 		const processLog = path.join(expDir, `evidence`, `${arm}-resident-process.log`);
+		fs.mkdirSync(path.join(expDir, "evidence"), { recursive: true });
 		fs.rmSync(processLog, { force: true });
 		const meteringDir = path.join(expDir, `store-${arm}`, "metering");
 		const child = spawn(
