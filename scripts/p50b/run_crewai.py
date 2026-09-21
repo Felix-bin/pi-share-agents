@@ -30,6 +30,14 @@ from p50b_common import (
 
 
 def run_round(task_text: str, mock: bool) -> dict:
+    import os as _os
+
+    # CrewAI's interactive trace-sharing prompt would block for 20 s per round in
+    # a non-interactive run; telemetry is off by default upstream and this only
+    # silences the prompt (no capability change).
+    _os.environ.setdefault("CREWAI_TELEMETRY_OPT_OUT", "true")
+    _os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+
     from crewai import Agent, Crew, LLM, Process, Task
     from crewai.tools import tool
 

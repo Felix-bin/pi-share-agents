@@ -63,6 +63,16 @@ async def run_round(task: str, mock: bool) -> dict:
             api_key=load_key(),
             temperature=0.0,
             timeout=180.0,
+            # A non-OpenAI model name requires an explicit capability card; the
+            # fields below are what this provider actually supports (no vision,
+            # no structured output; function calling is how the tools work).
+            model_info={
+                "function_calling": True,
+                "vision": False,
+                "json_output": False,
+                "structured_output": False,
+                "family": "unknown",
+            },
         )
 
     worker = AssistantAgent(
