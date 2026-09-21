@@ -106,7 +106,7 @@ function log(message) {
 }
 
 /** The synapse config one arm runs with; S2 omits the delta key entirely. */
-function synapseConfigFor(arm, storageRoot) {
+function synapseConfigFor(arm, storageRoot, stateVerify) {
 	const config = {
 		mode: "synapse",
 		memory: "project",
@@ -115,6 +115,9 @@ function synapseConfigFor(arm, storageRoot) {
 		embedding: { ...EMBEDDING },
 	};
 	if (arm === "R1") config.delta = true;
+	// Batch B (§15 登记四): stateVerify is set on BOTH arms identically, as §12
+	// requires; the default (key omitted) stays "off".
+	if (stateVerify !== undefined) config.stateVerify = stateVerify;
 	return config;
 }
 
@@ -146,10 +149,10 @@ function writeModelsJson(agentDir) {
 	fs.writeFileSync(path.join(agentDir, "models.json"), `${JSON.stringify(models, null, "\t")}\n`, "utf-8");
 }
 
-function writeSynapseConfig(agentDir, arm, storageRoot) {
+function writeSynapseConfig(agentDir, arm, storageRoot, stateVerify) {
 	const dir = path.join(agentDir, "extensions", "subagent");
 	fs.mkdirSync(dir, { recursive: true });
-	fs.writeFileSync(path.join(dir, "config.json"), `${JSON.stringify({ synapse: synapseConfigFor(arm, storageRoot) }, null, "\t")}\n`, "utf-8");
+	fs.writeFileSync(path.join(dir, "config.json"), `${JSON.stringify({ synapse: synapseConfigFor(arm, storageRoot, stateVerify) }, null, "\t")}\n`, "utf-8");
 }
 
 /**
@@ -442,7 +445,7 @@ async function cmdRun(expDir, options) {
 				},
 				switches: {
 					"synapse.vectorCache": "key omitted in both arms (default false — the frozen cold-base convention)",
-					"synapse.stateVerify": "key omitted in both arms (default off)",
+					"synapse.stateVerify": options.stateVerify === undefined ? "key omitted in both arms (default off)" : `${options.stateVerify} on BOTH arms (§15 登记四 batch B — §12 requires manifest declaration + both arms identical)`,
 					"synapse.stateRecovery": "key omitted in both arms (default resend-then-text)",
 					SYNAPSE_STATE_BUDGET_MS: 2500,
 				},
@@ -465,7 +468,7 @@ async function cmdRun(expDir, options) {
 		fs.rmSync(path.join(expDir, `store-${arm}`), { force: true, recursive: true });
 		copyTree(seedStore, path.join(expDir, `store-${arm}`));
 		writeModelsJson(path.join(expDir, `agent-${arm}`));
-		writeSynapseConfig(path.join(expDir, `agent-${arm}`), arm, path.join(expDir, `store-${arm}`));
+			writeSynapseConfig(path.join(expDir, `agent-${arm}`), arm, path.join(expDir, `store-${arm}`), options.stateVerify);
 	}
 	/**
 	 * The base pool must stay identical across arms and rounds. The retriever's
@@ -593,10 +596,12 @@ for (let index = 0; index < rest.length; index += 2) {
 	const value = rest[index + 1];
 	if (key === "--n" || key === "--attempts") options[key.slice(2)] = Number(value);
 	else if (key === "--pairs") options.pairs = value;
+	else if (key === "--state-verify") options.stateVerify = value;
 	else throw new Error(`unknown option ${key}`);
 }
+if (options.stateVerify !== undefined && !["off", "reembed"].includes(options.stateVerify)) throw new Error(`bad --state-verify: ${options.stateVerify}`);
 if (command !== "seed" && command !== "run") {
-	console.error("usage: p45-runner.mjs seed|run <expDir> [--n 30] [--pairs 1-30] [--attempts 3]");
+	console.error("usage: p45-runner.mjs seed|run <expDir> [--n 30] [--pairs 1-30] [--attempts 3] [--state-verify reembed]");
 	process.exit(2);
 }
 const expDir = path.resolve(expDirArg);
