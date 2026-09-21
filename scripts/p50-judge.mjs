@@ -74,12 +74,20 @@ async function judgeOnce(key, task, keypoints, answer) {
 				{ role: "user", content: PROMPT.user(task, keypoints, answer) },
 			],
 			temperature: 0,
-			max_tokens: 256,
+			// The provider's DeepSeek-V4-Flash spends the budget on reasoning_content
+			// first (observed: 2048 reasoning tokens, empty content at max_tokens=256,
+			// finish_reason "length"). The budget must cover the model's reasoning AND
+			// the JSON, so it is set well above the observed reasoning length.
+			max_tokens: 8192,
 		}),
 	});
 	if (!resp.ok) throw new Error(`judge API ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
 	const data = await resp.json();
-	const text = data.choices?.[0]?.message?.content ?? "";
+	const choice = data.choices?.[0];
+	const text = choice?.message?.content ?? "";
+	if (text.trim().length === 0) {
+		throw new Error(`empty judge content (finish_reason=${choice?.finish_reason}, reasoning=${(choice?.message?.reasoning_content ?? "").length} chars)`);
+	}
 	const cleaned = text.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
 	const parsed = JSON.parse(cleaned);
 	if (!Array.isArray(parsed.hits) || parsed.hits.length !== keypoints.length || !parsed.hits.every((h) => h === 0 || h === 1)) {
@@ -92,7 +100,17 @@ async function main() {
 	const argv = process.argv.slice(2);
 	const opt = { out: null, pairs: null };
 	for (let i = 0; i < argv.length; i += 2) opt[argv[i].slice(2)] = argv[i + 1];
-	for (const key of ["syn", "txt", "out"]) if (!opt[key]) throw new Error("--syn <dir> --txt <dir> --out <file> required");
+	// Two ways to name the arms: the P50 pair (--syn/--txt) or an explicit list
+	// (--arms "AUTOGEN=<dir>,CREWAI=<dir>") for the §11 framework baselines.
+	// Both go through the identical frozen prompt and scoring.
+	const arms = opt.arms
+		? opt.arms.split(",").map((entry) => {
+				const at = entry.indexOf("=");
+				if (at <= 0) throw new Error(`bad --arms entry: ${entry}`);
+				return [entry.slice(0, at).trim(), entry.slice(at + 1).trim()];
+			})
+		: [["SYN", opt.syn], ["TXT", opt.txt]];
+	if (!opt.out || arms.some(([, dir]) => !dir)) throw new Error("--out <file> and (--arms L=D,... or --syn <dir> --txt <dir>) required");
 
 	const key = loadKey();
 	const keypointsDoc = JSON.parse(fs.readFileSync(KEYPOINTS_FILE, "utf-8"));
@@ -103,17 +121,21 @@ async function main() {
 		? new Set(opt.pairs.split("-").length === 2 ? Array.from({ length: Number(opt.pairs.split("-")[1]) - Number(opt.pairs.split("-")[0]) + 1 }, (_, i) => Number(opt.pairs.split("-")[0]) + i) : opt.pairs.split(",").map(Number))
 		: null;
 
-	const results = { model: `${"paratera"}/${JUDGE_MODEL}`, promptSha256, keypointsSha256: createHash("sha256").update(fs.readFileSync(KEYPOINTS_FILE)).digest("hex"), generatedAt: new Date().toISOString(), scores: { SYN: {}, TXT: {} }, detail: {}, failures: [] };
+	const results = { model: `${"paratera"}/${JUDGE_MODEL}`, promptSha256, keypointsSha256: createHash("sha256").update(fs.readFileSync(KEYPOINTS_FILE)).digest("hex"), generatedAt: new Date().toISOString(), scores: Object.fromEntries(arms.map(([name]) => [name, {}])), detail: {}, failures: [] };
 
-	for (const [armName, dir] of [["SYN", opt.syn], ["TXT", opt.txt]]) {
+	for (const [armName, dir] of arms) {
 		const seen = new Map();
 		for (const record of readJsonl(path.join(dir, "rounds.jsonl"))) {
 			if (record.valid && !seen.has(record.round)) seen.set(record.round, record);
 		}
 		for (const [round, record] of [...seen.entries()].sort((a, b) => a[0] - b[0])) {
 			if (wanted !== null && !wanted.has(round)) continue;
-			const answerFile = path.join(dir, "evidence", `round-${String(round).padStart(2, "0")}`, `attempt-${record.attempt}`, "answer.md");
-			if (!fs.existsSync(answerFile)) {
+			// Two layouts exist: the P50 runner writes evidence/round-XX/attempt-N/answer.md,
+			// the framework harnesses write evidence/round-XX/answer.md (no attempts).
+			const roundDir = path.join(dir, "evidence", `round-${String(round).padStart(2, "0")}`);
+			const candidates = [path.join(roundDir, `attempt-${record.attempt}`, "answer.md"), path.join(roundDir, "answer.md")];
+			const answerFile = candidates.find((candidate) => fs.existsSync(candidate));
+			if (answerFile === undefined) {
 				results.failures.push({ arm: armName, round, error: "answer.md missing" });
 				continue;
 			}
@@ -149,8 +171,12 @@ async function main() {
 	const pool = [...allCases];
 	for (let i = 0; i < Math.min(SAMPLE_N, pool.length); i += 1) {
 		const at = Math.floor(rng() * pool.length);
-		const [arm, round] = pool.splice(at, 1)[0].split("-");
-		const answerFile = path.join(arm === "SYN" ? opt.syn : opt.txt, "evidence", `round-${String(Number(round)).padStart(2, "0")}`, `attempt-${readJsonl(path.join(arm === "SYN" ? opt.syn : opt.txt, "rounds.jsonl")).find((r) => r.valid && r.round === Number(round)).attempt}`, "answer.md");
+		const caseKey = pool.splice(at, 1)[0];
+		const [arm, round] = caseKey.split("-");
+		const armDir = arms.find(([name]) => name === arm)[1];
+		const record = readJsonl(path.join(armDir, "rounds.jsonl")).find((r) => r.valid && r.round === Number(round));
+		const roundDir = path.join(armDir, "evidence", `round-${String(Number(round)).padStart(2, "0")}`);
+		const answerFile = [path.join(roundDir, `attempt-${record.attempt}`, "answer.md"), path.join(roundDir, "answer.md")].find((candidate) => fs.existsSync(candidate));
 		sample.push({
 			arm,
 			round: Number(round),
