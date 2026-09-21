@@ -63,6 +63,25 @@ const PROMPT = {
 };
 const promptSha256 = createHash("sha256").update(PROMPT.system + "\n---\n" + PROMPT.user("<task>", ["<k>"], "<answer>"), "utf-8").digest("hex");
 
+/**
+ * Answer-side normalization (O4): strips formatting shape so the judge sees
+ * words, not markdown. Both arms run through the identical rule — a structured
+ * answer and a long narrative that state the same fact score the same way, and
+ * neither gains an impression advantage from headers, fences, or bullet
+ * decoration. Deliberately conservative: only markers are removed, never any
+ * word or number a keypoint might score.
+ */
+function normalizeAnswer(raw) {
+	return raw
+		.replace(/```[\s\S]*?```/g, (block) => block.replace(/^```[^\n]*\n?/gm, "").replace(/```/g, ""))
+		.split(/\r?\n/)
+		.map((line) => line.replace(/^\s*(?:#{1,6}\s+|>\s?|\*\s+|-\s+|\+\s+|\d+[.)]\s+)/, "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/`([^`]+)`/g, "$1"))
+		.join("\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+const normalizeSha256 = createHash("sha256").update(normalizeAnswer.toString(), "utf-8").digest("hex");
+
 async function judgeOnce(key, task, keypoints, answer) {
 	const resp = await fetch(`${API_BASE}/chat/completions`, {
 		method: "POST",
@@ -121,7 +140,7 @@ async function main() {
 		? new Set(opt.pairs.split("-").length === 2 ? Array.from({ length: Number(opt.pairs.split("-")[1]) - Number(opt.pairs.split("-")[0]) + 1 }, (_, i) => Number(opt.pairs.split("-")[0]) + i) : opt.pairs.split(",").map(Number))
 		: null;
 
-	const results = { model: `${"paratera"}/${JUDGE_MODEL}`, promptSha256, keypointsSha256: createHash("sha256").update(fs.readFileSync(KEYPOINTS_FILE)).digest("hex"), generatedAt: new Date().toISOString(), scores: Object.fromEntries(arms.map(([name]) => [name, {}])), detail: {}, failures: [] };
+	const results = { model: `${"paratera"}/${JUDGE_MODEL}`, promptSha256, normalize: { version: "v1-answer-normalization", normalizeSha256 }, keypointsSha256: createHash("sha256").update(fs.readFileSync(KEYPOINTS_FILE)).digest("hex"), generatedAt: new Date().toISOString(), scores: Object.fromEntries(arms.map(([name]) => [name, {}])), detail: {}, failures: [] };
 
 	for (const [armName, dir] of arms) {
 		const seen = new Map();
@@ -140,15 +159,28 @@ async function main() {
 				continue;
 			}
 			const answer = fs.readFileSync(answerFile, "utf-8");
+			const normalized = normalizeAnswer(answer);
 			const keypoints = keypointsByTask.get(round);
 			if (keypoints === undefined) throw new Error(`no keypoints for task ${round}`);
 			let outcome = null;
+			let secondOutcome = null;
 			let lastError = null;
 			for (let attempt = 1; attempt <= 2 && outcome === null; attempt += 1) {
 				try {
-					outcome = await judgeOnce(key, TASKS[round - 1], keypoints, answer);
+					outcome = await judgeOnce(key, TASKS[round - 1], keypoints, normalized);
 				} catch (error) {
 					lastError = error;
+				}
+			}
+			// Self-check (--self-check): an independent second grading of the same
+			// normalized input. Temperature 0 still leaves provider-side
+			// nondeterminism; the flip count bounds how much of any reported gap
+			// could be judge noise rather than answer quality.
+			if (opt["self-check"] && outcome !== null) {
+				try {
+					secondOutcome = await judgeOnce(key, TASKS[round - 1], keypoints, normalized);
+				} catch {
+					secondOutcome = null;
 				}
 			}
 			if (outcome === null) {
@@ -158,7 +190,16 @@ async function main() {
 			}
 			const score = outcome.hits.reduce((s, h) => s + h, 0) / outcome.hits.length;
 			results.scores[armName][round] = Math.round(score * 1000) / 1000;
-			results.detail[`${armName}-${round}`] = { hits: outcome.hits, points: outcome.hits.length, usage: outcome.usage, answerBytes: Buffer.byteLength(answer, "utf-8") };
+			results.detail[`${armName}-${round}`] = {
+				hits: outcome.hits,
+				points: outcome.hits.length,
+				usage: outcome.usage,
+				answerBytes: Buffer.byteLength(answer, "utf-8"),
+				normalizedBytes: Buffer.byteLength(normalized, "utf-8"),
+				...(secondOutcome !== null
+					? { secondHits: secondOutcome.hits, flips: outcome.hits.reduce((n, h, i) => n + (h !== secondOutcome.hits[i] ? 1 : 0), 0) }
+					: {}),
+			};
 			console.log(`[judge] ${armName} round ${round}: ${outcome.hits.reduce((s, h) => s + h, 0)}/${outcome.hits.length} = ${results.scores[armName][round]}`);
 		}
 	}
@@ -183,10 +224,19 @@ async function main() {
 			task: TASKS[Number(round) - 1],
 			keypoints: keypointsByTask.get(Number(round)),
 			answer: fs.readFileSync(answerFile, "utf-8"),
+			normalizedAnswer: normalizeAnswer(fs.readFileSync(answerFile, "utf-8")),
 			judge: results.detail[`${arm}-${round}`],
 		});
 	}
 	results.consistency = `待人工复核：抽样 ${sample.length} 份已写入 ${opt.out.replace(/\.json$/, "")}-human-sample.json；分歧率 >10% 时改全人工并缩样（§3）`;
+	// Self-check rollup: flips across every doubly-graded case. A flip rate
+	// above zero bounds the judge-noise floor any arm gap must be read against.
+	const selfChecked = Object.values(results.detail).filter((d) => d.flips !== undefined);
+	if (selfChecked.length > 0) {
+		const totalFlips = selfChecked.reduce((s, d) => s + d.flips, 0);
+		const totalPoints = selfChecked.reduce((s, d) => s + d.points, 0);
+		results.selfCheck = { cases: selfChecked.length, totalFlips, totalPoints, flipRate: Math.round((totalFlips / totalPoints) * 10000) / 10000 };
+	}
 	results.humanSampleFile = `${opt.out.replace(/\.json$/, "")}-human-sample.json`;
 
 	fs.writeFileSync(opt.out, `${JSON.stringify(results, null, "\t")}\n`, "utf-8");
