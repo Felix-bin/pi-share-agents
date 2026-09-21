@@ -444,7 +444,12 @@ function retrieveParamsOf(wire: EnvelopeWire): { k: number; query: string } | nu
  * handover is a shortcut rather than a second retrieval policy.
  */
 function stateHitsMessage(result: { corpusSnapshotId: string; hits: readonly StateRetrievalHit[] }): string {
-	const lines = result.hits.map((hit) => `- ${hit.path}:${hit.startLine}-${hit.endLine} (cosine ${hit.cosine.toFixed(4)})`);
+	const lines = result.hits.map((hit) => {
+		const anchor = `- ${hit.path}:${hit.startLine}-${hit.endLine} (cosine ${hit.cosine.toFixed(4)})`;
+		// A hit that names its first line lets the child recognise the region
+		// before it reads; the anchor steers the first read, it never replaces it.
+		return hit.preview ? `${anchor} — ${hit.preview}` : anchor;
+	});
 	return [
 		"The delegating agent handed over a retrieval state for the shared corpus — a query vector, not the retrieved text.",
 		`Ranking it in this session selected these chunks (corpus ${result.corpusSnapshotId.slice(0, 12)}):`,
@@ -654,7 +659,14 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 		watcherRestartTimer: null,
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	} as unknown as SubagentState;
-	if (typeof pi.registerTool === "function") registerWaitTool(pi, waitState, config.waitTool.enabled, undefined, config.waitTool.defaultTimeoutMs);
+	// A child whose wait tool is off never registers it at all: the definition
+	// (~4.4 KB of description plus schema) would be billed on every request of
+	// every retrieval-style child while there is no background work it could
+	// ever resolve. The host process keeps the registered-but-disabled shape
+	// for interactive sessions; a child only sees bg_wait when it can use it.
+	if (config.waitTool.enabled && typeof pi.registerTool === "function") {
+		registerWaitTool(pi, waitState, true, undefined, config.waitTool.defaultTimeoutMs);
+	}
 	// The child registers its own memory tools from the contract it was launched
 	// with, so a delegated agent reads and writes the project's shared memory
 	// under its own identity rather than the parent's.

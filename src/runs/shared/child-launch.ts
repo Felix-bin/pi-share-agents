@@ -192,6 +192,23 @@ function childStorage(input: BuildInProcessChildLaunchInput): ChildSessionStorag
 	return { kind: "default" };
 }
 
+/**
+ * Whether this child could ever hold background work that only a wait call can
+ * observe: async runs of its own (the subagent tool, a fanout budget), or
+ * provider jobs (a loaded extension can register provider work). A child with
+ * none of those — every retrieval-style role — can never resolve a wait, yet a
+ * registered bg_wait definition (~4.4 KB) rides along on every one of its
+ * requests, so the launch leaves the tool off and the child-side registration
+ * skips it entirely. An explicit waitToolEnabled still wins over this default.
+ */
+export function childCanHaveBackgroundWork(input: BuildInProcessChildLaunchInput): boolean {
+	if ((input.extensions ?? []).length > 0 || (input.subagentOnlyExtensions ?? []).length > 0) return true;
+	if (input.runFanoutBudget !== undefined || input.inherited?.runFanoutBudget !== undefined) return true;
+	// An unspecified tool list means the child keeps the ambient tool set, which
+	// includes subagent; only a list that names its tools can rule it out.
+	return input.tools === undefined || input.tools.includes("subagent");
+}
+
 export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput): InProcessChildLaunch {
 	// Resolved before the tool plan: the child's allowlist has to permit the
 	// memory tools, and that decision comes from configuration rather than from
@@ -292,7 +309,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		...(input.childWatchdog ? { childWatchdog: input.childWatchdog } : {}),
 		...(input.watchdogStatus ? { watchdogStatus: input.watchdogStatus } : {}),
 		waitTool: {
-			enabled: input.waitToolEnabled ?? true,
+			enabled: input.waitToolEnabled ?? childCanHaveBackgroundWork(input),
 			...(input.waitToolDefaultTimeoutMs !== undefined ? { defaultTimeoutMs: input.waitToolDefaultTimeoutMs } : {}),
 		},
 		...(input.structuredOutput
