@@ -108,6 +108,10 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 	return registerSynapseTools(pi, {
 		config: {
 			contextBudgetBytes: contract.contextBudgetBytes,
+			// This SynapseConfig only feeds register-tools.ts's memory tools, which
+			// never reads deliveryGear (envelope delivery is a different seam
+			// entirely); "file" here is a structurally required value, not a choice.
+			deliveryGear: "file",
 			embedding: null,
 			maxObjectBytes: 1024 * 1024,
 			memory: "project",

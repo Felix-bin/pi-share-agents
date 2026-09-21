@@ -56,6 +56,9 @@ const PREFIX_CATEGORIES: readonly (readonly [string, SynapseErrorCategory])[] = 
 	["k-out-of-range", "configuration"],
 	["summary-too-large", "configuration"],
 	["query-required", "configuration"],
+	// An endpoint path that cannot fit the kernel's sun_path budget is a bound
+	// violation on a derived value, the same shape as k-out-of-range above.
+	["uds-endpoint-path-too-long", "configuration"],
 	["capability-unavailable", "representation"],
 	["representation-mismatch", "representation"],
 	["maxObjectBytes exceeded", "persistence"],

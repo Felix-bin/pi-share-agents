@@ -29,6 +29,13 @@ describe("synapse error classification", () => {
 		assert.equal(classifySynapseError(new Error("namespace-mismatch: /store belongs to /other")), "configuration");
 	});
 
+	it("maps an overlong uds endpoint path to configuration, like other bound violations", () => {
+		assert.equal(
+			classifySynapseError(new Error('uds-endpoint-path-too-long: storageRoot contributes 130 of the 145 bytes in "..."')),
+			"configuration",
+		);
+	});
+
 	it("maps a missing representation capability to representation", () => {
 		assert.equal(classifySynapseError(new Error("capability-unavailable: state-retrieval is not wired in this build")), "representation");
 		assert.equal(classifySynapseError(new Error("representation-mismatch: dim 512 != 1024")), "representation");
@@ -37,6 +44,10 @@ describe("synapse error classification", () => {
 	it("maps a store that cannot accept the write to persistence", () => {
 		assert.equal(classifySynapseError(new Error("maxObjectBytes exceeded: 2097152 > 1048576")), "persistence");
 		assert.equal(classifySynapseError(new Error("persistence: disk full")), "persistence");
+	});
+
+	it("maps a uds delivery that found no listening peer to persistence, not to a silent empty success", () => {
+		assert.equal(classifySynapseError(new Error("persistence: uds delivery to /run/x.sock found no peer listening (ECONNREFUSED): connect ECONNREFUSED")), "persistence");
 	});
 
 	it("keeps cancellation and timeout distinct from failure", () => {

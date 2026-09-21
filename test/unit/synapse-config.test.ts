@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import type { CanonicalValue } from "../../src/synapse/canonical-json.ts";
-import { resolveSynapseConfig, SYNAPSE_MAX_EMBEDDING_DIM } from "../../src/synapse/config.ts";
+import { resolveSynapseConfig, SYNAPSE_DELIVERY_GEARS, SYNAPSE_MAX_EMBEDDING_DIM } from "../../src/synapse/config.ts";
 
 const HOME = path.resolve("/home/dev");
 
@@ -24,6 +24,9 @@ describe("synapse config defaults", () => {
 		assert.equal(config.memory, "off");
 		assert.equal(config.embedding, null);
 		assert.equal(config.storageRoot, null);
+		// Envelope delivery defaults to the file gear: the uds gear is one of S4's
+		// experiment conditions and must never become the default path.
+		assert.equal(config.deliveryGear, "file");
 	});
 
 	it("turns memory on with synapse mode and leaves the text baseline without it", () => {
@@ -38,6 +41,24 @@ describe("synapse config defaults", () => {
 
 	it("refuses memory while the extension is off, instead of quietly storing nothing", () => {
 		assert.throws(() => resolveSynapseConfig({ memory: "project", mode: "off" }, HOME), /must be off/);
+	});
+});
+
+describe("synapse envelope delivery gear", () => {
+	it("accepts an explicit uds gear", () => {
+		assert.equal(resolveSynapseConfig({ deliveryGear: "uds", mode: "synapse" }, HOME).deliveryGear, "uds");
+	});
+
+	it("accepts an explicit file gear", () => {
+		assert.equal(resolveSynapseConfig({ deliveryGear: "file", mode: "synapse" }, HOME).deliveryGear, "file");
+	});
+
+	it("rejects an unknown gear, naming the allowed set", () => {
+		assert.throws(() => resolveSynapseConfig({ deliveryGear: "shm" }, HOME), /synapse\.deliveryGear must be one of file \/ uds/);
+	});
+
+	it("exposes exactly the gears the design fixes", () => {
+		assert.deepEqual([...SYNAPSE_DELIVERY_GEARS], ["file", "uds"]);
 	});
 });
 

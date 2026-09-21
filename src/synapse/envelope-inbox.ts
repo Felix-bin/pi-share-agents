@@ -29,7 +29,8 @@ import type { LaunchContract } from "./lifecycle.ts";
 
 const ENVELOPES_DIR = "envelopes";
 const ENVELOPE_SUFFIX = ".json";
-const UNATTRIBUTED = "unattributed";
+/** Exported so `envelope-uds.ts` addresses the same node the same way for its own gear. */
+export const UNATTRIBUTED = "unattributed";
 
 /** Keeps a run id or child index usable as a single path component. */
 export function safeComponent(value: string): string {
