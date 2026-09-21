@@ -144,16 +144,39 @@ describe("transportBytes (Task 3, design §4.1)", () => {
 
 		const totals = aggregateMetering(readMeteringLog(logPath));
 
-		assert.equal(totals.control.transportBytes, "N/A");
-		// The rest of the aggregate is exactly what this same stream produced
-		// before this change added the new payload kind: nothing shifted merely
-		// because the type and the switch now know about "transport-bytes".
-		assert.deepEqual(totals.control, { envelopeBytes: 40, transportBytes: "N/A" });
-		assert.equal(totals.messages.delivered, 1);
-		assert.equal(totals.messages.received, 1);
-		assert.equal(totals.text.handoffBytes, 100);
-		assert.equal(totals.storage.writeBytes, 4096);
-		assert.equal(totals.model.totalCost, 0.75);
+		// Field-for-field (逐字段), not a sample of it: every leaf of
+		// MeteringTotals this stream can produce a non-default value for is
+		// named here, so a regression anywhere in aggregateMetering's other
+		// branches — not just under the new "transport-bytes" case — fails this
+		// assertion instead of slipping past a hand-picked subset of fields.
+		assert.deepEqual(totals, {
+			control: { envelopeBytes: 40, transportBytes: "N/A" },
+			duration: { byTask: {}, totalMs: 40, unfinishedTasks: [] },
+			embedding: { costUsd: 0, durationMs: 0, failed: 0, inputTokens: 0, requests: 0 },
+			errors: {},
+			memory: { crossAgentReuses: 0, hitRate: "N/A", queries: 0, reuses: 0 },
+			messages: { delivered: 1, duplicateDeliveries: 0, failed: 0, received: 1 },
+			model: {
+				child: { cacheRead: 1, cacheWrite: 2, input: 30, output: 4 },
+				complete: true,
+				parent: { cacheRead: 10, cacheWrite: 20, input: 300, output: 40 },
+				totalCost: 0.75,
+			},
+			state: { consumed: 0, failedSends: 0, prepared: 0, received: 0, receivedWithoutConsume: 0, sent: 0, sentBytes: 0 },
+			storage: { readBytes: 0, writeBytes: 4096 },
+			text: { handoffBytes: 100 },
+		});
+	});
+
+	it("(a2) reports a genuine zero byte count as 0, not N/A — the reason the accumulator starts undefined rather than 0", () => {
+		// The undefined-until-seen accumulator exists precisely to keep a
+		// reported zero distinct from nothing having been reported. Every other
+		// test in this file records a nonzero byte count, which an
+		// `if (event.bytes) total += event.bytes` bug would also pass; only a
+		// literal 0 catches that.
+		recordTransportBytes(log, identity(), 0);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.control.transportBytes, 0);
 	});
 
 	it("(b) aggregates uds-gear deliveries to the exact total frame bytes sent, header included", () => {
