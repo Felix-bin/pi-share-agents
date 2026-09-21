@@ -57,7 +57,16 @@ export type MeteringPayload =
 	| { bytes: number; direction: "read" | "write"; kind: "object-io" }
 	| { kind: "task-span"; phase: "start" | "end"; taskId: string }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" }
-	| { cgroupPath: string | null; declaredStorageRoot?: string; degradedReason?: string; kind: "process-identity"; pid: number; startTicks: number; topology: "process" | "container"; uptimeAtRecordSeconds: number };
+	| { cgroupPath: string | null; declaredStorageRoot?: string; degradedReason?: string; kind: "process-identity"; pid: number; startTicks: number; topology: "process" | "container"; uptimeAtRecordSeconds: number }
+	// Bytes actually written to a socket by a delivery gear that has a real
+	// transport to measure (today, `uds`). A column of its own, never folded
+	// into `envelopeBytes` above or into the kernel-side totals
+	// metering-kernel-io.ts keeps apart: the envelope is what the application
+	// serialised, the kernel account is what the VFS moved, and this is what
+	// actually left the process on the wire (design §4.1). The `file` gear
+	// never records this, which is why `control.transportBytes` stays `"N/A"`
+	// — never `0` — on any event stream that contains none of these.
+	| { bytes: number; kind: "transport-bytes" };
 
 export type MeteringEvent = MeteringIdentity &
 	MeteringPayload & {
@@ -233,6 +242,21 @@ export function recordProcessIdentity(log: MeteringLog, identity: MeteringIdenti
 	return log.record(identity, { kind: "process-identity", ...snapshot });
 }
 
+/**
+ * Records bytes a delivery gear actually wrote to a socket — the one place
+ * `control.transportBytes` becomes a real number instead of the `"N/A"` a
+ * gear that cannot produce this quantity (`file`) leaves it at.
+ *
+ * Not called from anywhere in this module. The call site belongs to whichever
+ * delivery path is wired to the `uds` gear (`envelope-uds.ts`'s
+ * `publishEnvelopeViaUds`, whose `bytesWritten` is already verified against a
+ * short write before it reaches here) — a follow-up task's job, not this
+ * one's. This function exists, and is tested, ahead of having a caller.
+ */
+export function recordTransportBytes(log: MeteringLog, identity: MeteringIdentity, bytes: number): MeteringEvent {
+	return log.record(identity, { bytes, kind: "transport-bytes" });
+}
+
 export function readMeteringLog(logPath: string): MeteringEvent[] {
 	let raw = "";
 	try {
@@ -261,7 +285,17 @@ export type UsageTotals = {
 };
 
 export type MeteringTotals = {
-	control: { envelopeBytes: number; transportBytes: NotApplicable };
+	/**
+	 * Two columns that are never summed, and never with the kernel-side bytes
+	 * `metering-kernel-io.ts` keeps beside them either (design §4.1, S3 design
+	 * §5.1). `envelopeBytes` is what the application serialised into the
+	 * envelope; `transportBytes` is what actually crossed a socket for it — a
+	 * few hundred bytes, not the byte reduction `text.handoffBytes` already
+	 * accounts for. `transportBytes` is `"N/A"` whenever nothing in the event
+	 * stream reported it (the `file` gear never does), and a real number only
+	 * once a `transport-bytes` event does.
+	 */
+	control: { envelopeBytes: number; transportBytes: number | NotApplicable };
 	duration: { byTask: Record<string, number | Unavailable>; totalMs: number | Unavailable; unfinishedTasks: string[] };
 	embedding: { costUsd: number | Unavailable; durationMs: number; failed: number; inputTokens: number | Unavailable; requests: number };
 	errors: Record<string, number>;
@@ -301,6 +335,10 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	let embeddingTokensMissing = false;
 	let firstMonotonic: number | null = null;
 	let lastMonotonic: number | null = null;
+	// undefined (not 0) until a "transport-bytes" event is seen, so a stream
+	// with none reports "N/A" rather than a zero that looks like a socket gear
+	// that moved nothing.
+	let transportBytesTotal: number | undefined;
 
 	const totals: MeteringTotals = {
 		control: { envelopeBytes: 0, transportBytes: "N/A" },
@@ -418,6 +456,12 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			case "process-identity":
 				// Recorded for a future kernel-side joiner only; nothing here to total.
 				break;
+			case "transport-bytes":
+				// Its own column (design §4.1): never added into control.envelopeBytes
+				// or any kernel-side total, which live in their own accumulators and
+				// are never read here.
+				transportBytesTotal = (transportBytesTotal ?? 0) + event.bytes;
+				break;
 		}
 	}
 
@@ -441,5 +485,6 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	totals.model.totalCost = totals.model.complete ? parent.cost + child.cost : "unavailable";
 
 	totals.state.receivedWithoutConsume = [...receivedStates].filter((stateId) => !consumedStates.has(stateId)).length;
+	totals.control.transportBytes = transportBytesTotal ?? "N/A";
 	return totals;
 }

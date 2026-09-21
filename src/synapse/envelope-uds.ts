@@ -262,7 +262,7 @@ export function createNodeUdsServerTransport(): UdsServerTransport {
 }
 
 export type UdsPublishResult = {
-	/** Bytes actually written to the socket, frame header included. Task 3 owns turning this into a metered counter; this module only exposes it. */
+	/** Bytes actually written to the socket, frame header included. `metering.ts`'s `recordTransportBytes` turns this into the metered `control.transportBytes`; this module only exposes it. */
 	bytesWritten: number;
 };
 
@@ -278,9 +278,10 @@ export type UdsPublishResult = {
  * rather than an unclassified exception. A transport that resolves having
  * written fewer bytes than the frame contains is a short write — the partial
  * form of the "delivered but empty" outcome spec §5 forbids — so that is
- * checked and rejected explicitly rather than trusted; Task 3 turns
- * `bytesWritten` into the metered `transportBytes`, and an unverified count
- * here would become an unverified meter there.
+ * checked and rejected explicitly rather than trusted; `metering.ts`'s
+ * `recordTransportBytes` turns `bytesWritten` into the metered
+ * `transportBytes`, and an unverified count here would become an unverified
+ * meter there.
  */
 export async function publishEnvelopeViaUds(
 	endpointPath: string,
