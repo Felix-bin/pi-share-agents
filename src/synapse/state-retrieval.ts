@@ -37,6 +37,8 @@ export type StateRetrievalHit = {
 	cosine: number;
 	endLine: number;
 	path: string;
+	/** First line of the chunk's own text: enough for the reader to recognise the region before opening it. */
+	preview: string;
 	startLine: number;
 };
 
@@ -80,8 +82,15 @@ export type StateRetrievalDeps = {
 type CorpusVectors = {
 	chunkIds: string[];
 	chunkMeta: { endLine: number; path: string; startLine: number }[];
+	previews: string[];
 	vectors: Float32Array[];
 };
+
+/** First non-empty line of a chunk's text, capped: a recognition anchor, never the body. */
+function previewOf(text: string): string {
+	const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? "";
+	return firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+}
 
 /**
  * A corpus as the ranking sees it. Exported so a caller that ranks the same
@@ -162,7 +171,7 @@ export function loadCorpusVectors(storageRoot: string, corpusSnapshotId: string,
 
 	let vectorsBytes: Buffer;
 	let chunksBytes: Buffer;
-	let chunks: { chunkId: string; endLine: number; path: string; startLine: number }[];
+	let chunks: { chunkId: string; endLine: number; path: string; startLine: number; text: string }[];
 	try {
 		vectorsBytes = fs.readFileSync(path.join(corpusDir, "vectors.f32"));
 	} catch {
@@ -205,7 +214,15 @@ export function loadCorpusVectors(storageRoot: string, corpusSnapshotId: string,
 		}
 		vectors.push(vector);
 	}
-	return { chunkIds: chunks.map((chunk) => chunk.chunkId), chunkMeta: chunks.map(({ endLine, path: chunkPath, startLine }) => ({ endLine, path: chunkPath, startLine })), vectors };
+	return {
+		chunkIds: chunks.map((chunk) => chunk.chunkId),
+		chunkMeta: chunks.map(({ endLine, path: chunkPath, startLine }) => ({ endLine, path: chunkPath, startLine })),
+		// The text rides along only as its first line: a hit renders an anchor the
+		// child can recognise before it reads, without the loader paying to keep
+		// every chunk's body in memory.
+		previews: chunks.map((chunk) => previewOf(chunk.text ?? "")),
+		vectors,
+	};
 }
 
 /**
@@ -245,7 +262,7 @@ export function rankCorpusChunks(corpus: CorpusVectors, queryVector: Float32Arra
 			throw new Error(`representation-mismatch: corpus chunk ${corpus.chunkIds[index]} holds ${vector.length} floats, the query vector holds ${queryVector.length}`);
 		}
 		const meta = corpus.chunkMeta[index]!;
-		return { chunkId: corpus.chunkIds[index]!, cosine: cosineSimilarity(queryVector, vector), endLine: meta.endLine, path: meta.path, startLine: meta.startLine };
+		return { chunkId: corpus.chunkIds[index]!, cosine: cosineSimilarity(queryVector, vector), endLine: meta.endLine, path: meta.path, preview: corpus.previews[index] ?? "", startLine: meta.startLine };
 	});
 	hits.sort((left, right) => (left.cosine !== right.cosine ? right.cosine - left.cosine : left.chunkId < right.chunkId ? -1 : 1));
 	return hits.slice(0, k);

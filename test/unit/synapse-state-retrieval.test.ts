@@ -145,6 +145,16 @@ describe("state retrieval over a published corpus (P3-4)", () => {
 		assert.equal(result.representationId, embedder.representationId);
 	});
 
+	it("carries each hit's first text line as a recognition anchor (O6)", () => {
+		const stateRef = stateRefOf(chunkVector(1));
+		const result = retrieveWithState(deps(), { corpusSnapshotId, k: 3, stateRef });
+		// The fixtures write chunks as "# <name>\n<observation>"; the preview is the
+		// first non-empty line, so a hit renders an anchor the child can recognise
+		// before it reads — never the body.
+		assert.equal(result.hits[0]?.preview, "# beta");
+		for (const hit of result.hits) assert.ok(typeof hit.preview === "string" && hit.preview.length > 0);
+	});
+
 	it("moves the top-1 when the query vector is orthogonal to the previous winner (AC-05 unit form)", () => {
 		const winner = chunkVector(1);
 		const seed = chunkVector(0);
