@@ -514,7 +514,13 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 	const runReceiverProbe = (): ProbeConsultation => {
 		const startedAt = Date.now();
 		try {
-			return { durationMs: Date.now() - startedAt, ok: input.receiverProbe?.() ?? false };
+			// The probe runs BEFORE the clock is read: an object literal evaluates its
+			// properties in source order, and timing it in the literal measured the
+			// moment before the probe instead of the probe (preregistration §16 —
+			// 60/60 events read 0 in the v3 batch; a TTL hit legitimately reads ~0,
+			// so only a correctly-timed real run can tell the two apart).
+			const ok = input.receiverProbe?.() ?? false;
+			return { durationMs: Date.now() - startedAt, ok };
 		} catch {
 			return { durationMs: Date.now() - startedAt, ok: false };
 		}

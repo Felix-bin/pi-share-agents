@@ -365,6 +365,30 @@ describe("synapse retrieve send side: probe gate traces", () => {
 		}
 	});
 
+	it("times the probe itself, not the moment before it (§16: durationMs read 0 for 60/60 real events)", async () => {
+		const contract = contractFor();
+		fs.rmSync(meteringLogPath(contract, RUN_ID), { force: true });
+		await openRetrieveDelegation({
+			contract,
+			deps: { log: createMeteringLog(meteringLogPath(contract, RUN_ID)) },
+			embedder: embedderOf(QUERY_VECTOR),
+			identity: identity(),
+			k: 3,
+			query: "what does the auth flow do",
+			receiverProbe: () => {
+				// ~30ms of measurable work: an order of magnitude above clock
+				// granularity and below anything flaky on a loaded machine.
+				const deadline = Date.now() + 30;
+				while (Date.now() < deadline) {}
+				return true;
+			},
+			worktreeRoot: worktree,
+		});
+		const probeEvents = eventsOf(readMeteringLog(meteringLogPath(contract, RUN_ID)), "capability-probe");
+		assert.equal(probeEvents.length, 1);
+		assert.ok((probeEvents[0]?.durationMs ?? 0) >= 10, `a probe that ran 30ms of work must report its cost, got ${probeEvents[0]?.durationMs}`);
+	});
+
 	it("records an unwired probe as not wired, distinguishing it from a failed one", async () => {
 		// The receiver's role declares probe items (retriever with synapse_read does),
 		// so a caller that supplies no probe negotiates to text with a FAILED verdict —
