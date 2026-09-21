@@ -28,3 +28,5 @@ tmp/
 /perf-*.md
 /pr-*-gate*.json
 /pr-*-review*.md
+scripts/p50b/__pycache__/
+scripts/p50b/.venv/
