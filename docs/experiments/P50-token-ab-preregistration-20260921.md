@@ -121,3 +121,27 @@ usage 可解析；不再要求"账本出现/task-span end"（该两事件在 tex
 3. 此前的 SYN/TXT pilot（各 2 轮）定位为**装置工程验证**（验证行缓冲/解析/取数通道），
    不作为 P50 数据进入任何表格；全量数据只含本附录冻结后以 v4 族跑出的轮次。
 4. 其余条款（§1 臂配置、§2 指标、§4 判定规则、§6 成本上限）不变。
+
+## 11. 附录（P50-B 跑数前）：框架基线 harness 细则——离线自测通过后冻结
+
+§7 的原则条款落地为以下装置（`scripts/p50b/`，uv + Python 3.12；mock 离线自测两臂各
+2/2 VALID，自测目录 `_state/p50b-mocktest/` 仅验管线不进数据）：
+
+1. **拓扑（诚实镜像）**：AutoGen（autogen-agentchat）＝ RoundRobinGroupChat[retriever(带工具),
+   summarizer]，终止＝TERMINATE 提及或 30 消息；CrewAI ＝ sequential crew[retriever(带工具)
+   → summarizer]，max_iter 12/4。两臂均为框架**原生纯文本交接**：无共享记忆、无非文本状态
+   ——架构差异即被测差异，不做提示词调优（系统提示仅声明角色职责，不喂关键点、不教检索策略）。
+2. **任务与工具**：同一 v4 族 30 题（p50-family.mjs 单一事实源，loader 校验 30 条）；
+   工具与 P50 子代理同工作树（`p45-runs/work`）：`grep_worktree`（子串检索，40 命中上限）、
+   `read_file`（行区间，12KB 上限）、`list_worktree`；路径逃逸即拒。
+3. **token 口径**：AutoGen 取 `OpenAIChatCompletionClient.total_usage()`（客户端按 API 响应
+   usage 聚合）；CrewAI 取 `CrewOutput.usage_metrics`（同样源自底层 LLM 响应）。两臂均在
+   manifest 声明"API usage 层，非框架自报"；**usage 合计为 0 的轮判 invalid**（防静默漏计）。
+4. **模型/通道**：同 P50——paratera `DeepSeek-V4-Flash`，temperature 0；密钥只经
+   `PARATERA_API_KEY` 环境变量引用。
+5. **有效性**：valid＝非空最终作答＋usage 非零＋无 harness 异常；失败轮如实记录 problems，
+   不重试超 1 次的框架性失败（框架行为本身是被测对象）。
+6. **节奏**：pilot n=3（pairs 1-3）两臂先跑，审 manifest/记录形态后再跑 n=10–15（pairs 1-15）；
+   成本上限＝2 框架 × 15 轮 × 每轮 ≤30 LLM 调用。
+7. **对比口径**：与 SYN/TXT 为**跨系统并列（非配对）**——按臂报告均值与极差，不做逐轮配对
+   bootstrap；任何"省/费"表述只相对 P50 两臂的均值，并标注 n 差异（30 vs 15）。
