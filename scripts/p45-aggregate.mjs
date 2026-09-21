@@ -254,6 +254,12 @@ for (const record of rounds) {
 			const validation = revalidate(events, record.arm);
 			problems.push(...validation.problems);
 			metrics = metricsOf(events);
+			// §15 登记三（2026-09-21，先于 v3 数据冻结）：探针事件随轮次入表，供
+			// durationMs 分布使用——"探针是否该留在 2500 ms 预算关键路径上"（K3 P1-2）
+			// 的运行期证据。分布只纳入通过证据复核的轮次。
+			metrics.probeEvents = events
+				.filter((event) => event.kind === "capability-probe")
+				.map((event) => ({ durationMs: event.durationMs ?? null, ok: event.ok, wired: event.wired ?? null }));
 			const steerText = steerFromTranscript(path.join(evidenceDir, "child-transcript.jsonl"), record.runIds[0]);
 			if (steerText === null) problems.push("steer not found in archived transcript");
 			else {
@@ -316,7 +322,7 @@ const chunkIdOf = (line) => {
 	const match = line.match(/^- (.+) \(cosine /);
 	return match === null ? line : match[1];
 };
-const agreement = { ordered: 0, top1: 0, jaccardSum: 0, compared: 0, unparsedLines: 0 };
+const agreement = { ordered: 0, top1: 0, jaccardSum: 0, compared: 0, unparsedLines: 0, nearAgree: 0 };
 const chunkPattern = /^- (.+) \(cosine /;
 for (const round of pairRounds) {
 	const s2 = perRound.S2.get(round);
@@ -328,6 +334,20 @@ for (const round of pairRounds) {
 	const r1Chunks = r1.top5.map(chunkIdOf);
 	if (s2Chunks.join("|") === r1Chunks.join("|")) agreement.ordered += 1;
 	if (s2Chunks[0] === r1Chunks[0]) agreement.top1 += 1;
+	// §15 登记二（2026-09-21，先于 v3 数据冻结）：诊断列"容许 1 位错位"——两列表等长
+	// 且 (a) Hamming 距离 ≤1 或 (b) 仅相差一次相邻交换，即记近似一致。它不参与判定，
+	// 只区分"量化造成相邻名次微调"与"排序被打乱"。
+	if (s2Chunks.length === r1Chunks.length) {
+		let mismatches = 0;
+		for (let i = 0; i < s2Chunks.length; i++) if (s2Chunks[i] !== r1Chunks[i]) mismatches += 1;
+		let swapMatch = false;
+		for (let i = 0; i + 1 < r1Chunks.length && !swapMatch; i++) {
+			const swapped = [...r1Chunks];
+			[swapped[i], swapped[i + 1]] = [swapped[i + 1], swapped[i]];
+			if (swapped.join("|") === s2Chunks.join("|")) swapMatch = true;
+		}
+		if (mismatches <= 1 || swapMatch) agreement.nearAgree += 1;
+	}
 	const setA = new Set(s2Chunks);
 	const setB = new Set(r1Chunks);
 	let intersection = 0;
@@ -382,6 +402,33 @@ for (const round of pairRounds) {
 	else trigger.fallback[metrics.fallbackReason ?? "unknown"] = (trigger.fallback[metrics.fallbackReason ?? "unknown"] ?? 0) + 1;
 }
 
+// §15 登记三：探针耗时分布（仅纳入通过证据复核的入表轮次，两臂合计）。
+const probeDurations = [];
+let probeCount = 0;
+let probeWiredTrue = 0;
+let probeOkTrue = 0;
+let probeArmRoundsWith = 0;
+for (const round of pairRounds) {
+	for (const arm of ["S2", "R1"]) {
+		const probes = perRound[arm].get(round).probeEvents ?? [];
+		if (probes.length > 0) probeArmRoundsWith += 1;
+		for (const probe of probes) {
+			probeCount += 1;
+			if (probe.wired === true) probeWiredTrue += 1;
+			if (probe.ok === true) probeOkTrue += 1;
+			if (typeof probe.durationMs === "number") probeDurations.push(probe.durationMs);
+		}
+	}
+}
+probeDurations.sort((a, b) => a - b);
+const probeDistribution = probeDurations.length === 0 ? null : {
+	count: probeDurations.length,
+	min: probeDurations[0],
+	p50: percentile(probeDurations, 0.5),
+	p90: percentile(probeDurations, 0.9),
+	max: probeDurations[probeDurations.length - 1],
+};
+
 const fmt = (value) => (value === null || value === undefined ? "—" : Math.round(value).toLocaleString("en-US"));
 const pct = (value) => (value === null || value === undefined ? "—" : `${(value * 100).toFixed(1)}%`);
 const cross = (interval) => (interval === null ? "" : crossesZero(interval) ? "（**区间跨 0**）" : "（区间不跨 0）");
@@ -425,7 +472,7 @@ report.push(`## 判定（§4 + §13，合取结构）`);
 report.push("");
 report.push(`- ②全账（状态面口径，R1−S2 配对均值）：**${fmt(pointEstimate)} B/轮**；95% 配对区间 [${fmt(intervals.table2StatePlane?.ci95[0])}, ${fmt(intervals.table2StatePlane?.ci95[1])}]${cross(intervals.table2StatePlane)}。`);
 report.push(`- ②全账（冻结口径 aggregateMetering.fullAccount）：配对均值 ${fmt(intervals.frozen2?.mean)} B/轮；95% 区间 [${fmt(intervals.frozen2?.ci95[0])}, ${fmt(intervals.frozen2?.ci95[1])}]${cross(intervals.frozen2)}。两口径差＝委派面信封（R1−S2 均值 ${fmt(delegateEnvelopeGap)} B/轮），${frozenGapCheck === true ? "已逐轮核实一致" : "**未能逐轮核实，见审计**"}。`);
-report.push(`- ③有序 top-5 一致：**${agreement.ordered}/${agreement.compared} = ${pct(agreement.compared === 0 ? null : agreement.ordered / agreement.compared)}**（Clopper-Pearson 95% 区间 [${pct(stats3?.ci95[0])}, ${pct(stats3?.ci95[1])}]；S2 即精确向量参照，故 P4-2 式 McNemar 在此退化，判据按"零不一致"执行，p0=1 二项检验已弃用——见代码注释）；top-1 = ${pct(agreement.compared === 0 ? null : agreement.top1 / agreement.compared)}；集合 Jaccard 均值 = ${agreement.compared === 0 ? "—" : (agreement.jaccardSum / agreement.compared).toFixed(3)}${agreement.unparsedLines > 0 ? `；**${agreement.unparsedLines} 行 top-5 未按预期格式解析**` : ""}。`);
+report.push(`- ③有序 top-5 一致：**${agreement.ordered}/${agreement.compared} = ${pct(agreement.compared === 0 ? null : agreement.ordered / agreement.compared)}**（Clopper-Pearson 95% 区间 [${pct(stats3?.ci95[0])}, ${pct(stats3?.ci95[1])}]；S2 即精确向量参照，故 P4-2 式 McNemar 在此退化，判据按"零不一致"执行，p0=1 二项检验已弃用——见代码注释）；top-1 = ${pct(agreement.compared === 0 ? null : agreement.top1 / agreement.compared)}；集合 Jaccard 均值 = ${agreement.compared === 0 ? "—" : (agreement.jaccardSum / agreement.compared).toFixed(3)}；容许 1 位错位（§15 诊断列，不参与判定）= ${agreement.nearAgree}/${agreement.compared}${agreement.unparsedLines > 0 ? `；**${agreement.unparsedLines} 行 top-5 未按预期格式解析**` : ""}。`);
 report.push(`- ④回退次数：S2 = ${sum("S2", "restoreCount")}，R1 = ${sum("R1", "restoreCount")}。`);
 report.push(`- **结论：${verdict}**。`);
 report.push("");
@@ -456,6 +503,7 @@ report.push(`|---|---|`);
 report.push(`| 有序 top-5 完全一致 | ${agreement.ordered}/${agreement.compared}（${pct(agreement.compared === 0 ? null : agreement.ordered / agreement.compared)}，Clopper-Pearson 95% 区间 [${pct(stats3?.ci95[0])}, ${pct(stats3?.ci95[1])}]） |`);
 report.push(`| top-1 一致（诊断） | ${pct(agreement.compared === 0 ? null : agreement.top1 / agreement.compared)} |`);
 report.push(`| 集合 Jaccard（诊断） | ${agreement.compared === 0 ? "—" : (agreement.jaccardSum / agreement.compared).toFixed(3)} |`);
+report.push(`| 容许 1 位错位（§15 登记二·诊断，**不参与判定**） | ${agreement.nearAgree}/${agreement.compared}（${pct(agreement.compared === 0 ? null : agreement.nearAgree / agreement.compared)}）——等长且 Hamming ≤1 或仅差一次相邻交换 |`);
 report.push("");
 report.push(`## 表④ 回退次数（state-restore 事件）`);
 report.push("");
@@ -463,6 +511,16 @@ report.push(`| 臂 | 总数 | 均值/轮 |`);
 report.push(`|---|---|---|`);
 report.push(`| S2 | ${sum("S2", "restoreCount")} | ${fmt(mean("S2", "restoreCount"))} |`);
 report.push(`| R1 | ${sum("R1", "restoreCount")} | ${fmt(mean("R1", "restoreCount"))} |`);
+report.push("");
+report.push(`## 探针耗时分布（§15 登记三·报告层，不改判据）`);
+report.push("");
+report.push(`| 项 | 值 |`);
+report.push(`|---|---|`);
+report.push(`| 事件数（入表轮次两臂合计） | ${probeCount}（含事件的臂·轮数 ${probeArmRoundsWith}） |`);
+report.push(`| wired=true / ok=true | ${probeWiredTrue} / ${probeOkTrue} |`);
+report.push(`| durationMs min / p50 / p90 / max | ${fmt(probeDistribution?.min)} / ${fmt(probeDistribution?.p50)} / ${fmt(probeDistribution?.p90)} / ${fmt(probeDistribution?.max)} |`);
+report.push("");
+report.push(`读法（装置构造事实）：本装置每轮一独立进程，探针缓存为进程级（TTL 300 s），每进程只委派一次——入表轮次的探针按构造**全部是真跑**（≈5.07 MB 语料同步加载），不存在 TTL 命中；TTL 命中只会在常驻进程多轮装置（批次 C，v4 条件另冻）中出现。该分布是"探针是否留在 2500 ms 状态预算关键路径上"（K3 P1-2）的运行期证据；**是否移出预算属机制变更，须用户裁决，本报告只出数**。`);
 report.push("");
 report.push(`## M8 三本账分层表（均值 B/轮；三账互不相加）`);
 report.push("");
@@ -492,6 +550,7 @@ fs.writeFileSync(
 			trigger,
 			agreement,
 			stats3,
+			probeDistribution: { ...probeDistribution, count: probeCount, armRoundsWithEvents: probeArmRoundsWith, wiredTrue: probeWiredTrue, okTrue: probeOkTrue },
 			diffs,
 			intervals,
 			crossesZero: { table2StatePlane: crossesHeadline, payload: crossesZero(intervals.payload), table1: crossesZero(intervals.table1), frozen2: crossesZero(intervals.frozen2) },
