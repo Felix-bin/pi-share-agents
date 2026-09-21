@@ -36,6 +36,20 @@ describe("synapse error classification", () => {
 		);
 	});
 
+	it("maps an oversized frame's declared length to configuration, the same shape as other bound violations", () => {
+		assert.equal(
+			classifySynapseError(new Error("frame-too-large: length prefix declares 99999999 bytes, exceeding the 1048576-byte limit")),
+			"configuration",
+		);
+	});
+
+	it("maps a frame that ended mid-stream to integrity, like other corrupted-or-incomplete data", () => {
+		assert.equal(
+			classifySynapseError(new Error("frame-truncated: stream ended with 5 buffered byte(s) short of a complete frame")),
+			"integrity",
+		);
+	});
+
 	it("maps a missing representation capability to representation", () => {
 		assert.equal(classifySynapseError(new Error("capability-unavailable: state-retrieval is not wired in this build")), "representation");
 		assert.equal(classifySynapseError(new Error("representation-mismatch: dim 512 != 1024")), "representation");

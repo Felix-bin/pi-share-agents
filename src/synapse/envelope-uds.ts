@@ -37,6 +37,22 @@ import { parseEnvelope, type Envelope } from "./envelope.ts";
  * so tests inject an in-memory fake pair that stands in for a real socket
  * file instead of skipping the behaviour the seam exists to prove.
  *
+ * The seam is drawn on the byte-stream side of `envelope-framing.ts`'s
+ * decoder, not on the message side: `UdsServerTransport.receiveOnce` hands
+ * `receiveDeliveredEnvelopeViaUds` each chunk of bytes as it arrives, and that
+ * function drives `createFrameDecoder` incrementally, exactly the way Task 1
+ * proved the decoder works. Handing the decoder one fully-accumulated buffer
+ * instead — the first version of this module did — would defeat two things
+ * at once: `SYNAPSE_MAX_FRAME_BYTES` exists so a hostile or corrupt length
+ * prefix is rejected the moment its header is read, not after every byte of
+ * an unbounded body has already been buffered; and the decoder's own
+ * reassembly-across-arbitrary-splits guarantee becomes untestable through
+ * this module if it only ever sees one pre-joined buffer. Chunk-at-a-time
+ * delivery, with `onChunk` able to signal `"stop"` as soon as one frame
+ * completes, keeps both properties reachable from a fake — no real socket
+ * required — and lets a receive finish as soon as its one frame is in, rather
+ * than waiting on the peer's `FIN`.
+ *
  * Endpoint placement: `<storageRoot>/uds/<run>/<receiver>.sock`, a new
  * top-level entry alongside `envelopes/`, `objects/` and `memory/` — not
  * nested inside `envelopes/` next to the `file` gear's `.json`, even though
@@ -47,16 +63,22 @@ import { parseEnvelope, type Envelope } from "./envelope.ts";
  * by `openat`/`renameat2` paths, and `bind`/`connect` never produce those
  * (spec §4.1), so nothing on this path is attributed either way until S3
  * extends its wire protocol to observe socket syscalls at all. What is not
- * theoretical is the sun_path budget below: measured against this repo's own
- * layout (`resolveStorageRoot` in `namespace.ts`, `<agentDir>/synapse/<16-hex
- * namespace id>`), `envelopes/` (10 bytes) vs. `uds/` (3 bytes) is a 7-byte
- * difference on the one segment this module controls, and real paths in this
- * measurement landed close enough to 107 that 7 bytes decided whether an
- * ordinary home directory fit at all (see the task report for the numbers).
- * A directory name shorter by construction beats a classification benefit
- * that does not exist yet, so `uds/` won. `trace-classify.ts`'s own header
- * already documents a new top-level entry landing in `unclassified` as
- * visible-but-expected, not a bug this module needs to work around.
+ * theoretical is the sun_path budget below: counting the leading separator
+ * consistently, `/envelopes` is 10 bytes and `/uds` is 4, a 6-byte saving on
+ * the one segment this module controls. `runId` is a `randomUUID()` (36
+ * bytes, hyphens included, `safeComponent` leaves it untouched) — measured
+ * against this repo's own layout (`resolveStorageRoot` in `namespace.ts`,
+ * `<agentDir>/synapse/<16-hex namespace id>`, `agentDir` typically
+ * `~/.pi/agent`), the fixed cost below `storageRoot` is 48 bytes
+ * (`/uds/` + a 36-byte runId + `/` + a 1-byte childIndex + `.sock`), so
+ * `storageRoot` itself must stay at or under 59 bytes for the path to fit —
+ * `/home/<user>/.pi/agent/synapse/<16-hex>` works through an 18-character
+ * `<user>` and overflows at 19 (see the task report for the worked table).
+ * That 6-byte saving is genuinely load-bearing at this margin, not padding:
+ * it is the difference between an 18-character username fitting and not.
+ * `trace-classify.ts`'s own header already documents a new top-level entry
+ * landing in `unclassified` as visible-but-expected, not a bug this module
+ * needs to work around.
  *
  * `sockaddr_un.sun_path` is a fixed 108-byte kernel buffer, and one of those
  * bytes is the NUL terminator the kernel itself appends, so the path text has
@@ -143,12 +165,19 @@ function errorCodeOf(cause: unknown): string | undefined {
  * "delivered but empty". Pure — it inspects only the error it is given, so
  * every branch is testable with a synthetic cause, no socket required.
  *
- * `classifySynapseError` (errors.ts) routes a `persistence:`-prefixed message
- * to the `persistence` category, the same bucket `maxObjectBytes exceeded`
- * and `disk full` already use: in all three cases the sink could not accept
- * what was handed to it.
+ * A cause already named by `envelope-framing.ts` (`frame-too-large` from
+ * `encodeFrame`) is passed through unchanged rather than re-wrapped: it is
+ * already precise, and `errors.ts` classifies that exact prefix to
+ * `configuration` directly. Everything else is a genuine transport failure,
+ * which `classifySynapseError` (errors.ts) routes via the `persistence:`
+ * prefix to the `persistence` category — the same bucket `maxObjectBytes
+ * exceeded` and `disk full` already use: in all these cases the sink could
+ * not accept what was handed to it.
  */
 export function classifyUdsSendFailure(cause: unknown, endpointPath: string): Error {
+	if (cause instanceof Error && cause.message.startsWith("frame-too-large")) {
+		return cause;
+	}
 	const code = errorCodeOf(cause);
 	const detail = cause instanceof Error ? cause.message : String(cause);
 	if (code === "ECONNREFUSED" || code === "ENOENT" || code === "ENOTSOCK") {
@@ -167,8 +196,17 @@ export type UdsClientTransport = {
 };
 
 export type UdsServerTransport = {
-	/** Binds `endpointPath`, accepts exactly one connection, and resolves with every byte received before the peer closed it. */
-	receiveOnce: (endpointPath: string) => Promise<Buffer>;
+	/**
+	 * Binds `endpointPath`, accepts exactly one connection, and delivers each
+	 * chunk of bytes to `onChunk` as it arrives — not accumulated first — so a
+	 * caller driving `envelope-framing.ts`'s incremental decoder can reject an
+	 * oversized or corrupt frame the moment its header is read, and can stop
+	 * reading before the peer closes by returning `"stop"`. Resolves once
+	 * `onChunk` returns `"stop"`, or once the peer's stream ends on its own;
+	 * rejects on a transport-level failure (before any chunk decided the
+	 * outcome).
+	 */
+	receiveOnce: (endpointPath: string, onChunk: (chunk: Buffer) => "continue" | "stop") => Promise<void>;
 };
 
 /** The real transport: a `node:net` AF_UNIX client. Not exercised by this repo's own tests — see the module header. */
@@ -189,25 +227,34 @@ export function createNodeUdsClientTransport(): UdsClientTransport {
 /** The real transport: a `node:net` AF_UNIX server. Not exercised by this repo's own tests — see the module header. */
 export function createNodeUdsServerTransport(): UdsServerTransport {
 	return {
-		receiveOnce(endpointPath) {
+		receiveOnce(endpointPath, onChunk) {
 			return new Promise((resolve, reject) => {
 				fs.mkdirSync(path.dirname(endpointPath), { recursive: true });
 				// A socket file left behind by a process that never cleaned up after
 				// itself must not make this bind look like the address is in use.
 				fs.rmSync(endpointPath, { force: true });
+				let settled = false;
+				const finish = (error?: Error): void => {
+					if (settled) return;
+					settled = true;
+					server.close(() => fs.rmSync(endpointPath, { force: true }));
+					if (error === undefined) resolve();
+					else reject(error);
+				};
 				const server = net.createServer((socket) => {
-					const chunks: Buffer[] = [];
-					socket.on("data", (chunk: Buffer) => chunks.push(chunk));
-					socket.once("end", () => {
-						server.close(() => fs.rmSync(endpointPath, { force: true }));
-						resolve(Buffer.concat(chunks));
+					socket.on("data", (chunk: Buffer) => {
+						if (settled) return;
+						// Handed straight to the caller's decoder as it arrives, not
+						// accumulated here — see the module header on why.
+						if (onChunk(chunk) === "stop") {
+							socket.destroy();
+							finish();
+						}
 					});
-					socket.once("error", (error) => {
-						server.close(() => fs.rmSync(endpointPath, { force: true }));
-						reject(error);
-					});
+					socket.once("end", () => finish());
+					socket.once("error", finish);
 				});
-				server.once("error", reject);
+				server.once("error", finish);
 				server.listen(endpointPath);
 			});
 		},
@@ -225,23 +272,33 @@ export type UdsPublishResult = {
  * (`JSON.stringify(envelope.wire)`), so the frame body and the accounted
  * envelope size can never silently diverge.
  *
- * Throws a classified error (via `classifyUdsSendFailure`) rather than
- * returning a result the caller could mistake for success — matching how the
- * `file` gear's `publishEnvelope` also throws on an I/O failure rather than
- * reporting a partial or empty delivery.
+ * Both `encodeFrame` (which can reject an oversized envelope with
+ * `frame-too-large`) and the transport write sit inside the classified
+ * region: either failure reaches the caller as a named, classified error
+ * rather than an unclassified exception. A transport that resolves having
+ * written fewer bytes than the frame contains is a short write — the partial
+ * form of the "delivered but empty" outcome spec §5 forbids — so that is
+ * checked and rejected explicitly rather than trusted; Task 3 turns
+ * `bytesWritten` into the metered `transportBytes`, and an unverified count
+ * here would become an unverified meter there.
  */
 export async function publishEnvelopeViaUds(
 	endpointPath: string,
 	envelope: Envelope,
 	transport: UdsClientTransport = createNodeUdsClientTransport(),
 ): Promise<UdsPublishResult> {
-	const frame = encodeFrame(Buffer.from(JSON.stringify(envelope.wire), "utf-8"));
+	let frame: Buffer;
+	let bytesWritten: number;
 	try {
-		const bytesWritten = await transport.send(endpointPath, frame);
-		return { bytesWritten };
+		frame = encodeFrame(Buffer.from(JSON.stringify(envelope.wire), "utf-8"));
+		bytesWritten = await transport.send(endpointPath, frame);
 	} catch (cause) {
 		throw classifyUdsSendFailure(cause, endpointPath);
 	}
+	if (bytesWritten !== frame.byteLength) {
+		throw new Error(`persistence: uds delivery to ${endpointPath} wrote ${bytesWritten} of ${frame.byteLength} bytes, a short write`);
+	}
+	return { bytesWritten };
 }
 
 /**
@@ -251,6 +308,17 @@ export async function publishEnvelopeViaUds(
  * transport, framing, JSON, or schema — comes back as `status: "rejected"`
  * rather than a thrown exception, mirroring `readDeliveredEnvelope`'s shape
  * so a caller that already handles that union does not need a second one.
+ *
+ * The frame decoder is fed one chunk at a time, as `UdsServerTransport`
+ * delivers them, rather than from one buffer accumulated after the
+ * connection closes — see the module header. `onChunk` decides the outcome
+ * (`result`) and tells the transport to stop as soon as it can: the instant a
+ * declared length is too large (rejected before any body byte is read), the
+ * instant one full frame is decoded, or the instant more than one frame
+ * appears in a single delivery (a well-behaved sender writes exactly one).
+ * If the transport instead ends the stream on its own without `onChunk` ever
+ * deciding — nothing arrived, or what arrived stopped short of a full frame
+ * — `decoder.end()` is what surfaces that as `frame-truncated`.
  *
  * There is no `"absent"` outcome here, unlike the file gear. Absence for
  * `file` means "the parent never wrote a file, which is a normal skip"; a
@@ -262,33 +330,55 @@ export async function receiveDeliveredEnvelopeViaUds(
 	endpointPath: string,
 	transport: UdsServerTransport = createNodeUdsServerTransport(),
 ): Promise<DeliveredEnvelope> {
-	let received: Buffer;
+	const decoder = createFrameDecoder();
+	let result: DeliveredEnvelope | null = null;
+
+	const onChunk = (chunk: Buffer): "continue" | "stop" => {
+		let frames: Buffer[];
+		try {
+			frames = decoder.push(chunk);
+		} catch (error) {
+			result = { reason: error instanceof Error ? error.message : String(error), status: "rejected" };
+			return "stop";
+		}
+		if (frames.length === 0) return "continue";
+		if (frames.length > 1) {
+			result = { reason: `envelope at ${endpointPath} expected exactly one frame, got ${frames.length}`, status: "rejected" };
+			return "stop";
+		}
+		let parsed: CanonicalValue;
+		try {
+			// SAFETY: frames.length === 1 was just checked, so frames[0] is defined.
+			parsed = JSON.parse((frames[0] as Buffer).toString("utf-8"));
+		} catch {
+			result = { reason: `envelope at ${endpointPath} is not valid JSON`, status: "rejected" };
+			return "stop";
+		}
+		try {
+			result = { status: "ready", wire: parseEnvelope(parsed) };
+		} catch (error) {
+			result = { reason: error instanceof Error ? error.message : String(error), status: "rejected" };
+		}
+		return "stop";
+	};
+
 	try {
-		received = await transport.receiveOnce(endpointPath);
+		await transport.receiveOnce(endpointPath, onChunk);
 	} catch (cause) {
+		// A transport-level failure while a chunk had already decided the
+		// outcome is still that outcome: the decision was made from bytes that
+		// really arrived, and a teardown error afterward does not undo it.
+		if (result !== null) return result;
 		return { reason: `envelope at ${endpointPath} could not be received: ${cause instanceof Error ? cause.message : String(cause)}`, status: "rejected" };
 	}
-	const decoder = createFrameDecoder();
-	let frames: Buffer[];
+
+	if (result !== null) return result;
+
+	// The connection ended on its own — onChunk never saw a complete frame.
 	try {
-		frames = decoder.push(received);
 		decoder.end();
 	} catch (error) {
 		return { reason: error instanceof Error ? error.message : String(error), status: "rejected" };
 	}
-	if (frames.length !== 1) {
-		return { reason: `envelope at ${endpointPath} expected exactly one frame, got ${frames.length}`, status: "rejected" };
-	}
-	let parsed: CanonicalValue;
-	try {
-		// SAFETY: frames[0] exists — the length check above guarantees exactly one element.
-		parsed = JSON.parse((frames[0] as Buffer).toString("utf-8"));
-	} catch {
-		return { reason: `envelope at ${endpointPath} is not valid JSON`, status: "rejected" };
-	}
-	try {
-		return { status: "ready", wire: parseEnvelope(parsed) };
-	} catch (error) {
-		return { reason: error instanceof Error ? error.message : String(error), status: "rejected" };
-	}
+	return { reason: `envelope at ${endpointPath} closed before a full frame was received`, status: "rejected" };
 }
