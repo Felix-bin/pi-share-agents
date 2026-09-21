@@ -83,3 +83,41 @@
 
 - 未覆盖 M7 式"连续任务记忆复用"（另立实验线）；未覆盖多子会话/多轮委派拓扑（本装置一轮一
   委派）；未覆盖 A2A（用户裁决暂不做）；判分器为 LLM（方法与一致性检查见 §3）。
+
+## 9. 附录（跑数前）：TXT 臂无计量账本的发现与指标来源修正
+
+pilot 装置验证（2026-09-21，2 轮 TXT 试跑）发现：**`synapse.mode=text` 下被测系统不落任何
+`model-usage` 计量账本**（存储目录只有语料与命名空间，无 metering/）——账本写入只发生在
+synapse 模式的状态通路。因此指标来源按臂修正如下（先于全量数据冻结）：
+
+| 指标 | SYN 臂来源 | TXT 臂来源 |
+|---|---|---|
+| ① token（input/output/cacheRead/cost/turns） | `model-usage` 计量事件 | RPC 日志最终 `subagent-slash-result` 行内嵌 `Return:` JSON 的 `usage` 字段（与 API usage 同源，同为子会话口径） |
+| ⑤ 耗时 | task-span start→end monotonicMs | **墙钟**（委派发出→`Workflow completed` 日志行出现）；SYN 臂同列墙钟，两臂同口径并列 |
+| 作答文本 | 转录最后一条 assistant 消息（不变） | 同上（另存 evidence/answer.md） |
+
+TXT 轮有效性随之修正为：`Workflow completed` 出现＋零 error 行＋记忆零漂移（空库）＋最终
+usage 可解析；不再要求"账本出现/task-span end"（该两事件在 text 模式不存在）。SYN 臂有效性
+规则不变（§5）。此修正只改**取数通道**，不改指标定义（①仍=子会话 input+output，cacheRead
+单列不入合计）。
+
+## 10. 附录（跑数前）：任务族 v4 更换——v3 族系 TS 移植口径，与受测代码树不符
+
+**发现（2026-09-21 跑数前的语料落地审计）**：P4-5 任务族（p45-family.mjs，下称 v3）的预期
+事实按 TypeScript 插件移植版书写（grid 127、stride 3、cosine 0.99、float32 信封、vectorCache
+开关、inbox 布局等标识符）。而本实验子代理实际搜索与语料排序的对象是 **synapse 仓 master
+3491b37**（语料快照 sourceCommit，与子代理工作树逐字节一致）——Python 实现：quant_grid 默认
+64、verify_threshold 默认 0.97、stride 按索引宽自适应，且不存在上述 TS 标识符。P4-5 只测
+字节，可答性无关紧要；P50 要以 LLM judge 评作答质量，沿用 v3 会把"如实报告 Python 事实的
+正确作答"判错、并让两臂为不存在的标识符空耗检索轮次（噪声，非被测差异）。
+
+**处置（先于任何全量数据）**：
+
+1. P50 启用新任务族 **`scripts/p50-family.mjs`（v4，30 题）**：每题均对照 3491b37 真实代码
+   落地，任务文本不预设任何实现名/常数值；配对的判分关键点
+   **`docs/experiments/p50-grading-keypoints.json`（95 点，含逐题文件锚点）**同刻冻结，
+   §3 第 1 条所指文件即此件。
+2. v3 族文件保留不动，仅供 P4-5 字节线溯源；**两族数字永不并列、永不混算**。
+3. 此前的 SYN/TXT pilot（各 2 轮）定位为**装置工程验证**（验证行缓冲/解析/取数通道），
+   不作为 P50 数据进入任何表格；全量数据只含本附录冻结后以 v4 族跑出的轮次。
+4. 其余条款（§1 臂配置、§2 指标、§4 判定规则、§6 成本上限）不变。

@@ -125,8 +125,8 @@ function writeSynapseConfig(agentDir, arm, storageRoot) {
 	fs.writeFileSync(path.join(dir, "config.json"), `${JSON.stringify({ synapse: synapseConfigFor(arm, storageRoot) }, null, "\t")}\n`, "utf-8");
 }
 
-/** One pi RPC process, one prompt pair — identical mechanics to the p45 device. */
-function runPiRound({ agentDir, tempRoot, task, meteringDir, known, roundLog }) {
+/** One pi RPC process, one prompt pair — identical mechanics to the p45 device, plus text-mode support. */
+function runPiRound({ agentDir, tempRoot, task, meteringDir, known, roundLog, mode }) {
 	fs.rmSync(tempRoot, { force: true, recursive: true });
 	fs.mkdirSync(tempRoot, { recursive: true });
 	const lines = [];
@@ -135,8 +135,16 @@ function runPiRound({ agentDir, tempRoot, task, meteringDir, known, roundLog }) 
 		[CLI, "-e", path.join(REPO, "index.ts"), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc", "--provider", MODEL.provider, "--model", MODEL.id],
 		{ cwd: WORK_DIR, env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENTS_TEMP_ROOT: tempRoot }, stdio: ["pipe", "pipe", "pipe"] },
 	);
+	// Line-buffered: a chunk boundary can split a long RPC line (the final
+	// result runs to tens of KB) and appending the halves separately makes both
+	// unparseable — hold the partial tail until its newline arrives.
+	let carry = "";
 	const append = (prefix, chunk) => {
-		for (const line of String(chunk).split("\n")) {
+		carry += String(chunk);
+		let at;
+		while ((at = carry.indexOf("\n")) !== -1) {
+			const line = carry.slice(0, at);
+			carry = carry.slice(at + 1);
 			if (line.trim().length === 0) continue;
 			lines.push(`${prefix}${line}`);
 			fs.appendFileSync(roundLog, `${prefix}${line}\n`, "utf-8");
@@ -167,13 +175,36 @@ function runPiRound({ agentDir, tempRoot, task, meteringDir, known, roundLog }) 
 			child.stdout.on("data", onData);
 		});
 	return (async () => {
-		const result = { setup: false, runId: null, completed: false };
+		const result = { setup: false, runId: null, completed: false, okFalse: false, wallMs: null, finalLine: null };
 		try {
 			await sleep(6_000);
 			child.stdin.write(`${JSON.stringify({ id: "setup", message: "/synapse-setup", type: "prompt" })}\n`);
 			result.setup = await awaitResponse("setup", SETUP_TIMEOUT_MS);
 			if (!result.setup) return result;
+			const runSentAt = Date.now();
 			child.stdin.write(`${JSON.stringify({ id: "run", message: `/run ${task}`, type: "prompt" })}\n`);
+			// Text mode writes NO metering ledger at all (probe, 2026-09-21: store
+			// holds only corpus + namespace) — completion, usage and the final
+			// answer all come from the RPC log's final subagent-slash-result.
+			if (mode === "txt") {
+				const endDeadline = Date.now() + ROUND_TIMEOUT_MS;
+				while (Date.now() < endDeadline) {
+					await sleep(1_500);
+					const raw = fs.existsSync(roundLog) ? fs.readFileSync(roundLog, "utf-8") : "";
+					const finalLine = raw.split("\n").filter((l) => l.includes("subagent-slash-result") && l.includes("Workflow completed")).pop();
+					if (finalLine !== undefined) {
+						result.completed = true;
+						result.finalLine = finalLine;
+						break;
+					}
+					if (raw.split("\n").some((l) => l.includes("subagent-slash-result") && l.includes('"ok":false'))) {
+						result.okFalse = true;
+						break;
+					}
+				}
+				result.wallMs = Date.now() - runSentAt;
+				return result;
+			}
 			const startDeadline = Date.now() + 90_000;
 			while (Date.now() < startDeadline) {
 				await sleep(1_000);
@@ -198,12 +229,80 @@ function runPiRound({ agentDir, tempRoot, task, meteringDir, known, roundLog }) 
 					// Not written yet; the start poll saw it, so this is a race on flush.
 				}
 			}
-			await sleep(1_500);
+			// SYN: the host's final result message (with the child's answer for the
+			// judge) lands shortly after the span ends — give it a short window
+			// before the kill takes the process down.
+			const answerDeadline = Date.now() + 30_000;
+			while (Date.now() < answerDeadline) {
+				await sleep(1_000);
+				const raw = fs.existsSync(roundLog) ? fs.readFileSync(roundLog, "utf-8") : "";
+				const finalLine = raw.split("\n").filter((l) => l.includes("subagent-slash-result") && l.includes("Workflow completed")).pop();
+				if (finalLine !== undefined) {
+					result.finalLine = finalLine;
+					break;
+				}
+			}
+			result.wallMs = Date.now() - runSentAt;
 			return result;
 		} finally {
 			child.kill();
 		}
 	})();
+}
+
+/** The child's final answer + usage from the host's final subagent-slash-result line (both arms, same source). */
+function parseFinalResult(finalLine) {
+	if (finalLine === null || finalLine === undefined) return null;
+	let message;
+	try {
+		message = JSON.parse(finalLine).message;
+	} catch {
+		return null;
+	}
+	if (message === undefined || typeof message !== "object") return null;
+	// Belt and braces: some message shapes carry usage outside the content string.
+	const detailUsage = message.details?.result?.details?.results?.[0]?.usage ?? null;
+	const content = typeof message.content === "string" ? message.content : "";
+	// The content embeds "Return:\n{…}" as text; extract that JSON object with a
+	// string-aware brace count (the output field itself may contain braces).
+	const returnAt = content.indexOf("Return:");
+	if (returnAt === -1) return { runId: null, usage: detailUsage, output: null };
+	const start = content.indexOf("{", returnAt);
+	if (start === -1) return { runId: null, usage: detailUsage, output: null };
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let end = -1;
+	for (let index = start; index < content.length; index += 1) {
+		const ch = content[index];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === "\\") escaped = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === "{") depth += 1;
+		else if (ch === "}") {
+			depth -= 1;
+			if (depth === 0) {
+				end = index;
+				break;
+			}
+		}
+	}
+	if (end === -1) return { runId: null, usage: detailUsage, output: null };
+	let returned;
+	try {
+		returned = JSON.parse(content.slice(start, end + 1));
+	} catch {
+		return { runId: null, usage: detailUsage, output: null };
+	}
+	return {
+		runId: typeof returned.runId === "string" ? returned.runId : null,
+		usage: returned.usage ?? detailUsage,
+		output: typeof returned.output === "string" ? returned.output : null,
+	};
 }
 
 function listFiles(dir) {
@@ -307,8 +406,8 @@ async function cmdRun(expDir, options) {
 	if (arm !== "SYN" && arm !== "TXT") throw new Error(`--arm must be SYN or TXT (got ${arm})`);
 	const seedStore = path.join(expDir, "store-seed");
 	if (!fs.existsSync(seedStore)) throw new Error(`seed store missing — run the seed command first (${seedStore})`);
-	const { TASKS, AGENT } = await import(SCRIPT_SRC("p45-family.mjs"));
-	const familySha = sha256File(path.join(REPO, "scripts", "p45-family.mjs"));
+	const { TASKS, AGENT } = await import(SCRIPT_SRC("p50-family.mjs"));
+	const familySha = sha256File(path.join(REPO, "scripts", "p50-family.mjs"));
 	const seedMemoryDir = path.join(seedStore, "memory");
 	const seedMemoryFiles = fs.existsSync(seedMemoryDir) ? listFiles(seedMemoryDir) : [];
 	if (seedMemoryFiles.length > 0) throw new Error(`seed store must hold ZERO memory records for the A/B (found ${seedMemoryFiles.length}); re-run seed`);
@@ -337,7 +436,7 @@ async function cmdRun(expDir, options) {
 				worktreePath: WORK_DIR.replaceAll("\\", "/"),
 				familySha256: familySha,
 				scripts: {
-					"p45-family.mjs": familySha,
+					"p50-family.mjs": familySha,
 					"p50-runner.mjs": sha256File(path.join(REPO, "scripts", "p50-runner.mjs")),
 				},
 				seedIdentity: { seedManifestSha256: sha256File(path.join(expDir, "seed-manifest.json")), seedMemorySha256: sha256(seedMemoryFiles.map((file) => `${path.basename(file)}:${sha256File(file)}`).sort().join("\n")) },
@@ -393,15 +492,36 @@ async function cmdRun(expDir, options) {
 				meteringDir,
 				known,
 				roundLog,
+				mode: arm === "SYN" ? "syn" : "txt",
 			});
-			const record = { arm, round, attempt, taskIndex: round - 1, startedAt: attemptStartedAt.toISOString(), runIds: [], valid: false, problems: [], steer: null };
+			const final = parseFinalResult(outcome.finalLine);
+			const record = { arm, round, attempt, taskIndex: round - 1, startedAt: attemptStartedAt.toISOString(), runIds: [], valid: false, problems: [], steer: null, wallMs: outcome.wallMs, usage: final?.usage ?? null, answerBytes: final?.output === null || final?.output === undefined ? null : Buffer.byteLength(final.output, "utf-8") };
+			const runId = outcome.runId ?? final?.runId;
+			if (final?.output !== null && final?.output !== undefined) fs.writeFileSync(path.join(evidenceDir, "answer.md"), `${final.output}\n`, "utf-8");
 			try {
 				if (!outcome.setup) {
 					record.problems.push("/synapse-setup did not answer");
+				} else if (outcome.okFalse) {
+					record.problems.push("host reported the run as ok:false");
+				} else if (arm === "TXT") {
+					// Text mode meters nothing (no ledger by design); validity is the
+					// completion signal itself (preregistration §9 addendum).
+					if (!outcome.completed) record.problems.push("no Workflow-completed within budget");
+					if (runId !== null) record.runIds.push(runId);
+					if (final === null || final.usage === null) record.problems.push("usage not present in the final result");
+					if (final?.output === null || final?.output === undefined) record.problems.push("final answer not present in the final result");
+					const drift = memoryDrift();
+					if (drift.length > 0) {
+						record.problems.push(`memory drift in the empty store: ${drift.join("; ")}`);
+						fs.rmSync(path.join(expDir, `store-${arm}`, "memory"), { force: true, recursive: true });
+					}
+					const childLog = listFiles(path.join(expDir, "tmp", `${arm}-${round}-${attempt}`)).find((file) => path.basename(file).startsWith("subagent-log-"));
+					if (childLog !== undefined) fs.copyFileSync(childLog, path.join(evidenceDir, path.basename(childLog)));
+					fs.copyFileSync(path.join(expDir, `agent-${arm}`, "extensions", "subagent", "config.json"), path.join(evidenceDir, "synapse-config.json"));
+					record.valid = record.problems.length === 0;
 				} else if (outcome.runId === null) {
 					record.problems.push("no metering ledger appeared (child did not start)");
 				} else {
-					const runId = outcome.runId;
 					record.runIds.push(runId);
 					const meteringFile = path.join(meteringDir, `${runId}.jsonl`);
 					const events = await readEvents(meteringFile);
@@ -411,9 +531,10 @@ async function cmdRun(expDir, options) {
 					}
 					if (!outcome.completed) record.problems.push("no task-span end within budget (ledger may be truncated)");
 					record.problems.push(...validateRound(events, arm).problems);
-					const steer = arm === "SYN" ? extractSteer(path.join(expDir, "tmp", `${arm}-${round}-${attempt}`), runId) : null;
-					if (arm === "SYN" && steer === null && record.problems.length === 0) record.problems.push("steer message not found in transcript");
+					const steer = extractSteer(path.join(expDir, "tmp", `${arm}-${round}-${attempt}`), runId);
+					if (steer === null && record.problems.length === 0) record.problems.push("steer message not found in transcript");
 					record.steer = steer === null ? null : { bytes: Buffer.byteLength(steer.text, "utf-8") };
+					if (final === null || final.usage === null) record.problems.push("usage not present in the final result");
 					const drift = memoryDrift();
 					if (drift.length > 0) {
 						record.problems.push(`memory drift in the empty store: ${drift.join("; ")}`);
@@ -425,22 +546,6 @@ async function cmdRun(expDir, options) {
 					if (steer !== null) {
 						fs.writeFileSync(path.join(evidenceDir, "steer-message.txt"), `${steer.record}\n`, "utf-8");
 						fs.copyFileSync(steer.transcript, path.join(evidenceDir, "child-transcript.jsonl"));
-					} else {
-						// TXT rounds keep the transcript too: the judge reads the final
-						// assistant message from it (preregistration §3).
-						for (const file of listFiles(path.join(expDir, "tmp", `${arm}-${round}-${attempt}`))) {
-							if (fs.statSync(file).size > 50 * 1024 * 1024) continue;
-							let raw;
-							try {
-								raw = fs.readFileSync(file, "utf-8");
-							} catch {
-								continue;
-							}
-							if (raw.includes(runId) && raw.includes('"assistant"')) {
-								fs.copyFileSync(file, path.join(evidenceDir, "child-transcript.jsonl"));
-								break;
-							}
-						}
 					}
 					fs.copyFileSync(path.join(expDir, `agent-${arm}`, "extensions", "subagent", "config.json"), path.join(evidenceDir, "synapse-config.json"));
 					record.valid = record.problems.length === 0;
