@@ -28,7 +28,7 @@ S3 的线协议。
 
 ### Task 1: 长度前缀 framing 的编解码纯函数
 
-- [ ] Change: 新增 framing 模块，导出 `encodeFrame(bytes)` 与一个增量 `FrameDecoder`
+- [x] Change: 新增 framing 模块，导出 `encodeFrame(bytes)` 与一个增量 `FrameDecoder`
       （喂任意切分的字节块，吐出零到多条完整帧）。4 字节大端无符号长度 + UTF-8 JSON 帧体
       （spec §3.1）。超过上限的长度前缀在读到前缀时即拒绝，**不分配缓冲区**；截断帧在流结束时
       是错误而不是静默丢弃。
@@ -40,7 +40,7 @@ S3 的线协议。
 
 ### Task 2: AF_UNIX 投递档位
 
-- [ ] Change: `envelope-inbox.ts` 的发布/读取扩展出第二档：`uds` 走 AF_UNIX `SOCK_STREAM`
+- [x] Change: `envelope-inbox.ts` 的发布/读取扩展出第二档：`uds` 走 AF_UNIX `SOCK_STREAM`
       + Task 1 的 framing，`file` 保持今天的原子写文件。档位由 `config.ts` 新增的键选择
       （schema 显式加键，否则会被既有的未知键拒绝逻辑挡下）。socket 端点路径与生命周期由
       本任务确定；I/O 走可注入接缝，选档与错误分类保持纯函数。
@@ -54,7 +54,7 @@ S3 的线协议。
 
 ### Task 3: `transportBytes` 进计量
 
-- [ ] Change: `MeteringTotals.control.transportBytes` 的类型从 `NotApplicable` 放宽为
+- [x] Change: `MeteringTotals.control.transportBytes` 的类型从 `NotApplicable` 放宽为
       `number | NotApplicable`，并新增一条记录实际过 socket 字节的 payload。
       `file` 档仍报 `"N/A"`，`uds` 档报数字。内核字节、`envelopeBytes` 与 `transportBytes`
       三者**分栏，互不相加**（spec §4.1，承 S3 §5.1 的纪律）。
@@ -70,7 +70,7 @@ S3 的线协议。
 > 路径，于是这个档位存在但没有人走。后果不是少一个功能，而是 `transportBytes` 在真实运行里
 > 恒为零，spec §4.1 的对账——S2 自称的核心验收——根本无从发生。
 
-- [ ] Change: `LaunchContract` 携带传输档位，使子侧知道该从哪里收；`delegation.ts` 的
+- [x] Change: `LaunchContract` 携带传输档位，使子侧知道该从哪里收；`delegation.ts` 的
       `publishEnvelope` 调用点按档位分流；`subagent-prompt-runtime.ts` 的信封校验从同步
       `readFileSync` 改为可等待的接收。**接收端必须早绑定**——惰性绑定会让父侧先发、子侧后听，
       信封落空。`file` 档的行为与时序必须逐字不变。
@@ -83,7 +83,7 @@ S3 的线协议。
 
 ### Task 4: 句柄兑现
 
-- [ ] Change: `subagent-prompt-runtime.ts` 的信封处理保留 `delivered.wire` 而不是校验后丢弃；
+- [x] Change: `subagent-prompt-runtime.ts` 的信封处理保留 `delivered.wire` 而不是校验后丢弃；
       子进程启动时按 `memoryRefs` 用**它自己已注册的 MemoryService** 读取正文并拼进提示词
       （spec §4.2，确定性兑现，不依赖模型调工具）。`delegation.ts` 的提示词拼装在 synapse 档
       不再携带摘要行。兑现路径不得绕开 MemoryService 直接读 CAS 文件。
@@ -141,14 +141,14 @@ S3 的线协议。
 
 ## Open Questions
 
-- **socket 端点放在存储根内还是根外？**
-  放在 `<storageRoot>/sockets/` 之下会成为 `trace-classify.ts` 的一个新顶层条目，按其表注释
-  的语义先落进 `unclassified`——可见但未归类，是它设计好的行为，代价是首条真机 trace 的
-  `unclassified` 会变大，读报告的人需要知道原因。放在根外则完全不进 S3 的账。
-  我倾向**放在根内并接受 `unclassified`**：端点文件本身几乎不产生字节，而把它挪到根外等于
-  在存储布局上开一个例外，那比一个已知的非零 `unclassified` 更难解释。
-  这条会与 `sun_path` 的 108 字节预算相互作用（Task 2）——若存储根本身较长，可能被迫选根外。
-  真正的取舍要等 Task 2 量出实际路径长度。
+- ~~**socket 端点放在存储根内还是根外？**~~ **已由 Task 2 回答：根内，`<storageRoot>/uds/`。**
+  结论与原先的倾向一致，但理由不是原先那个。原以为取舍是"归类收益 vs 布局例外"；实测后发现
+  归类收益是理论上的——`trace-classify.ts` 那张表按 `openat`/`renameat2` 的路径分类，
+  `bind`/`connect` 从不产生这类事件，在 S3 补上 socket 事件之前两种放法都不会进 envelope 类目。
+  真正起作用的是字节预算：`sun_path` 只有 108 字节（含内核 NUL 终止符，实际可用 107），
+  `envelopes/`（10 字节）比 `uds/`（3 字节）多出的 7 字节足以让普通 home 目录下的部署路径超预算。
+  于是选了更短的独立顶层目录，而不是嵌进 `envelopes/`。超预算是 `udsEndpointPath` 的一次具名
+  拒绝（指出 storageRoot/runId/childIndex 哪一段最费字节），不是内核的截断。
 
 - **验收 4（A/B 可复现）属于 S2 还是 S4？**
   spec §6.2 把它列进 S2 的真机层，但"同任务、同模型、同种子"这套条件控制是 S4 实验框架的
