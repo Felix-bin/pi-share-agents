@@ -103,72 +103,16 @@ function listFiles(dir) {
 }
 
 // ---------------------------------------------------------------------------
-// Device distiller (preregistration §3 — rule-based, frozen, no LLM).
+// Device distillation (preregistration §3 — rule-based, frozen, no LLM).
+// The rule itself lives in the product (src/synapse/auto-distill.ts) so the
+// arms and the shipped mechanism cannot drift apart; the runner imports it and
+// only decides WHERE each arm's distillate lands (nothing for B — the product
+// writes on delegation close; notes.md for C; wipe for A).
 // ---------------------------------------------------------------------------
 
-/** The ESTABLISHED lines of a round's evidence; falls back to its bullet list. */
-function distillLines(evidenceText) {
-	const lines = evidenceText.split(/\r?\n/);
-	const establishedAt = lines.findIndex((line) => /^ESTABLISHED:/i.test(line.trim()));
-	const picked = [];
-	if (establishedAt >= 0) {
-		// The status block runs to NOT ESTABLISHED or end of file; each non-empty
-		// continuation is one memory-worthy fact.
-		for (const line of lines.slice(establishedAt)) {
-			if (/^NOT ESTABLISHED:/i.test(line.trim())) break;
-			const text = line.replace(/^ESTABLISHED:/i, "").replace(/^[-*\s]+/, "").trim();
-			if (text.length > 0) picked.push(text);
-		}
-	} else {
-		for (const line of lines) {
-			const match = line.match(/^\s*[-*]\s+(.{20,})$/);
-			if (match !== null) picked.push(match[1].trim());
-		}
-	}
-	return picked.map((text) => (text.length > DISTILL_MAX_CHARS ? `${text.slice(0, DISTILL_MAX_CHARS - 1)}…` : text)).slice(0, 12);
-}
-
-async function embedText(text, key) {
-	const resp = await fetch(EMBEDDING.endpoint, {
-		method: "POST",
-		headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-		body: JSON.stringify({ model: EMBEDDING.model, input: [text] }),
-	});
-	if (!resp.ok) throw new Error(`embedding API ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
-	const data = await resp.json();
-	const vector = data?.data?.[0]?.embedding;
-	if (!Array.isArray(vector) || vector.length !== EMBEDDING.dim) throw new Error(`embedding returned ${Array.isArray(vector) ? vector.length : "no"} dims, expected ${EMBEDDING.dim}`);
-	return vector;
-}
-
-/**
- * Arm B: write the distilled lines into the shared memory store through the
- * production schema (memory-store publish + content-store bodies + a real
- * embedding so later rounds can recall them semantically).
- */
-async function distillIntoMemory(storeRoot, taskIndex, round, lines, key) {
-	const { createContentStore } = await import(SRC("content-store.ts"));
-	const { createMemoryStore } = await import(SRC("memory-store.ts"));
-	const contentStore = createContentStore(storeRoot);
-	const memoryStore = createMemoryStore(storeRoot, { contentStore });
-	for (const line of lines) {
-		const contentId = contentStore.put(new TextEncoder().encode(line), "text/markdown");
-		const vector = await embedText(line, key);
-		const buffer = Buffer.alloc(vector.length * 4);
-		for (const [index, value] of vector.entries()) buffer.writeFloatLE(value, index * 4);
-		const objectId = contentStore.put(new Uint8Array(buffer), "application/octet-stream");
-		memoryStore.publish({
-			assurance: "observation",
-			contentId,
-			embedding: { dim: EMBEDDING.dim, objectId, representationId: EMBEDDING.representationId },
-			kind: "evidence",
-			operationId: `p50m-round-${round}`,
-			provenance: { agent: "device-distiller", attempt: 1, runId: `p50m-r${round}`, sessionId: `p50m-task-${taskIndex + 1}` },
-			summary: `task ${taskIndex + 1}: ${line.split(/\s+/).slice(0, 12).join(" ")}`,
-			tags: ["p50m"],
-			taskTopic: `p50m-task-${taskIndex + 1}`,
-		});
-	}
+async function loadDistillMemoryLines() {
+	const { distillMemoryLines } = await import(SRC("auto-distill.ts"));
+	return distillMemoryLines;
 }
 
 /** Arm C: the same lines as an append-only plain-text notes file. */
@@ -433,15 +377,18 @@ function writeModelsJson(agentDir) {
 }
 
 function synapseConfigFor(arm, store) {
-	// A and B differ only in what the DEVICE does between rounds, never in the
-	// plugin configuration the child runs under; C is the text-mode baseline
-	// with the notes hint carried by the task text instead.
+	// A and B differ only in what happens between rounds; C is the text-mode
+	// baseline with the notes hint carried by the task text instead. B's memory
+	// writes go through the PRODUCT mechanism (synapse.autoDistill on the host's
+	// delegation close), so the experiment measures the shipped capability, not
+	// a runner-side stand-in for it.
 	if (arm === "C") {
 		return { mode: "text", memory: "off", storageRoot: store.replaceAll("\\", "/") };
 	}
 	return {
 		mode: "synapse",
 		memory: "project",
+		autoDistill: arm === "B",
 		storageRoot: store.replaceAll("\\", "/"),
 		embedding: { provider: EMBEDDING.provider, endpoint: EMBEDDING.endpoint, model: EMBEDDING.model, dim: EMBEDDING.dim, apiKeyEnv: EMBEDDING.keyEnv },
 		corpusSnapshotId: CORPUS_ID,
@@ -458,7 +405,7 @@ async function cmdRun(expDir, options) {
 	ensureKey(loadDotEnv(ENV_FILE));
 	const arm = options.arm;
 	if (!["A", "B", "C"].includes(arm)) throw new Error(`--arm must be A, B, or C (got ${arm})`);
-	const key = process.env[EMBEDDING.keyEnv];
+	const distillMemoryLines = await loadDistillMemoryLines();
 	const seedStore = path.join(expDir, "store-seed");
 	if (!fs.existsSync(seedStore)) throw new Error(`seed store missing — run the seed command first (${seedStore})`);
 	const { TASKS, AGENT } = await import(SCRIPT_SRC("p50-family.mjs"));
@@ -497,7 +444,7 @@ async function cmdRun(expDir, options) {
 					"p50m-preregistration": sha256File(path.join(REPO, "docs", "experiments", "P50M-memory-reuse-preregistration-20260921.md")),
 				},
 				sequence: { passes: 2, tasksPerPass: TASKS.length, replay: "runs 31-60 replay tasks 1-30 verbatim" },
-				distiller: { mode: "rule-based (no LLM)", maxCharsPerLine: DISTILL_MAX_CHARS, maxLinesPerRound: 12, source: "ESTABLISHED block, else evidence bullets" },
+				distiller: { mode: "rule-based (no LLM)", source: "src/synapse/auto-distill.ts (product) — ESTABLISHED block, else output bullets", armB: "product switch synapse.autoDistill on delegation close", armC: "runner appends the same rule's lines to notes.md", armA: "device wipes memory after every round" },
 				n: options.n,
 				roundsPlanned: rounds,
 				switches: {
@@ -598,18 +545,17 @@ async function cmdRun(expDir, options) {
 				record.problems.push(`runner exception: ${String(error?.message ?? error).slice(0, 200)}`);
 			}
 			// The device-side memory step runs on the first VALID attempt's own
-			// products only: a failed attempt never distills (preregistration §3).
+			// products only (preregistration §3). Arm B needs nothing here: the
+			// product's autoDistill switch already wrote on delegation close.
 			if (record.valid) {
 				const answerFile = path.join(evidenceDir, "answer.md");
 				const evidenceText = fs.existsSync(answerFile) ? fs.readFileSync(answerFile, "utf-8") : "";
-				// The child's product IS its evidence/answer output; the ESTABLISHED
-				// status block the distiller keys on comes from the O5 output contract.
-				const lines = distillLines(evidenceText);
+				const lines = distillMemoryLines(evidenceText);
 				record.distilled = lines.length;
 				if (arm === "A") {
+					// The product never wrote (its switch is off for A); the wipe is a
+					// belt-and-braces guard against any stray record.
 					wipeMemory(path.join(expDir, `store-${arm}`));
-				} else if (arm === "B" && lines.length > 0) {
-					await distillIntoMemory(path.join(expDir, `store-${arm}`), taskIndex, round, lines, key);
 				} else if (arm === "C") {
 					distillIntoNotes(taskIndex, round, lines);
 				}

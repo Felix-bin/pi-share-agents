@@ -28,14 +28,17 @@
 
 公平性：A/B 差异仅"记忆存在与否"；B/C 差异仅"记忆供给机制"（结构化召回 vs 文件读取）；C 的附加行与 B 的召回注入是各自机制的固有成本。三臂同 CLI/模型/嵌入/语料/角色提示（含 O1-O6 改动）。
 
-## 3. 装置蒸馏规则（冻结；不经 LLM，规则式）
+## 3. 记忆写入机制（冻结；不经 LLM，规则式）
 
-- 输入：该轮（第一遍 attempt 的）`evidence.md` 与 `answer.md`。
-- 提取：evidence.md 中 `ESTABLISHED:` 段的每一行（O5 引入的完成声明）为一条记忆；无该段时退化为 evidence 的每个列表行。每条截断至 400 字符。
-- B 臂写入：`kind: "evidence"`、`assurance: "observation"`、`taskTopic: "p50m-task-<N>-<题号>"`、`summary: 题号+该条前 12 词`、`tags: ["p50m"]`、正文为该条全文；**embedding 由装置调用与主实验相同的嵌入端点计算**（representationId 一致，保证可被召回排名）。
-- C 臂写入：同样条目以 `- [task N] <条目>` 追加进 notes.md。
+> **修订记录（2026-09-21，任何 P50M 数据产生前）**：B 臂的蒸馏写入从"runner 脚本侧"升级为**产品机制**（`synapse.autoDistill` 开关，宿主在委派收尾时蒸馏子代理产物写入，`src/synapse/auto-distill.ts`）。理由：P50 实证模型从不主动写记忆（0 条记录），若实验用脚本代写而产品没有该能力，实验测的就不是产品能力。修订后 B 臂直接打开产品开关，实验测量的是交付能力本身；提取规则单一源头在产品模块，C 臂 runner 复用同一函数保持三臂规则一致。
+
+- 输入：该轮（第一遍 attempt 的）子代理最终输出（`answer.md`，即 evidence 正文）。
+- 提取（`src/synapse/auto-distill.ts` 的 `distillMemoryLines`，冻结）：`ESTABLISHED:` 状态段（O5 输出契约）的每一行为一条；无该段时回退为输出的每个列表行（≥20 字符）。每条截断 400 字符、每轮至多 12 条。
+- B 臂写入（产品机制）：宿主在委派 `close` 且 outcome=completed 时自动执行——`kind: "evidence"`、`assurance: "observation"`、`taskTopic`=任务文本前 80 字符、`summary`=该条前 12 词、`tags: ["auto-distill"]`、正文为该条全文；embedding 用与主实验相同端点/表示（provider 失败时该条降级为无向量记录+warning，关键词/标签仍可召回）。
+- C 臂写入（装置侧）：同样条目以 `- [task N] <条目>` 追加进 notes.md。
 - 第二遍（run 31-60）**蒸馏照常**（记忆继续累积，模拟持续沉淀）。
-- 不蒸馏 answer.md 正文本身（防止"答案开卷"虚高；记忆=证据要点而非答案文本——answer 与 evidence 高度相关，如实声明该相关性残留）。
+- 不蒸馏 answer.md 之外的最终答案转述；answer 与 evidence 高度相关，如实声明该相关性残留。
+- 蒸馏器代码 SHA 与配置（autoDistill=true）入 manifest；`A 臂 autoDistill=false 且装置轮后清空（双保险）。
 
 ## 4. 指标
 
