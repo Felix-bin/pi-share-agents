@@ -33,6 +33,7 @@ function input(overrides: Partial<ResolveChildContractInput> = {}): ResolveChild
 		cwd: overrides.cwd ?? worktree,
 		extensionConfig: overrides.extensionConfig === undefined ? { mode: "synapse" } : overrides.extensionConfig,
 		agentDir: overrides.agentDir ?? agentDir,
+		placedOnAnotherMachine: overrides.placedOnAnotherMachine ?? false,
 		runId: overrides.runId ?? "run-1",
 		sessionId: overrides.sessionId ?? "sess-child",
 	};
@@ -83,6 +84,39 @@ describe("child contract resolution", () => {
 		assert.equal(resolveSynapseChildContract(input())?.contract.deliveryGear, "file");
 		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "uds", mode: "synapse" } }))?.contract.deliveryGear, "uds");
 		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "file", mode: "synapse" } }))?.contract.deliveryGear, "file");
+	});
+
+	it("degrades uds to file for a child placed on another machine, and says so", () => {
+		// An AF_UNIX endpoint is a path in one kernel's filesystem. Carried across a
+		// machine boundary unchanged, every delivery fails as a `persistence` error
+		// and every child waits out its whole receive deadline before running
+		// anyway — with nothing naming the cause.
+		const remote = resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "uds", mode: "synapse" }, placedOnAnotherMachine: true }));
+		assert.equal(remote?.contract.deliveryGear, "file");
+		assert.match(String(remote?.deliveryGearNote), /uds.*degraded to "file"/);
+	});
+
+	it("leaves a local child's gear alone, and never notes a substitution that did not happen", () => {
+		const local = resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "uds", mode: "synapse" }, placedOnAnotherMachine: false }));
+		assert.equal(local?.contract.deliveryGear, "uds");
+		assert.equal(local?.deliveryGearNote, undefined);
+		// `file` on a remote child is not a degradation either: it already works
+		// there, so a note would name a substitution nobody made.
+		const remoteFile = resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "file", mode: "synapse" }, placedOnAnotherMachine: true }));
+		assert.equal(remoteFile?.contract.deliveryGear, "file");
+		assert.equal(remoteFile?.deliveryGearNote, undefined);
+	});
+
+	it("gives the degraded contract the identity of the gear it will really use", () => {
+		// The gear takes part in `contractId`. If the degrade had been applied only
+		// at the delivery call site and not here, the contract would carry the id of
+		// a `uds` launch while the run wrote files — a condition disagreeing with its
+		// own manifest, which is precisely what S4 compares runs by.
+		const degraded = resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "uds", mode: "synapse" }, placedOnAnotherMachine: true }));
+		const honestFile = resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "file", mode: "synapse" }, placedOnAnotherMachine: true }));
+		const undegradedUds = resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "uds", mode: "synapse" } }));
+		assert.equal(degraded?.contract.contractId, honestFile?.contract.contractId);
+		assert.notEqual(degraded?.contract.contractId, undegradedUds?.contract.contractId);
 	});
 
 	it("gives a read-only child read-only memory", () => {

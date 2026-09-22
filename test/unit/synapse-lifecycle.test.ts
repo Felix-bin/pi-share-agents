@@ -120,6 +120,19 @@ describe("rehydration after reload or resume (AC-14)", () => {
 		assert.equal(result.category, "integrity");
 	});
 
+	it("refuses a parseable contract that is missing a field, rather than throwing", () => {
+		// The shape a build from before `deliveryGear` existed would have written.
+		// Recomputing the digest over an absent value throws inside `canonicalJson`,
+		// and every other rejection in this function is a returned refusal — a
+		// caller that handles `refused` does not handle a throw.
+		const contract = resolveLaunchContract(contractInput());
+		const { deliveryGear: _dropped, ...withoutGear } = contract;
+		const result = rehydrateLaunchContract(JSON.stringify(withoutGear), checks());
+		assert.equal(result.status, "refused");
+		if (result.status !== "refused") return;
+		assert.equal(result.category, "integrity");
+	});
+
 	it("refuses unreadable persisted state instead of starting from defaults", () => {
 		const result = rehydrateLaunchContract("{ not json", checks());
 		assert.equal(result.status, "refused");

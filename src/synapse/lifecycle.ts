@@ -153,7 +153,18 @@ export function rehydrateLaunchContract(serialised: string, checks: RehydrationC
 		// silently run the task under conditions nobody chose.
 		return { category: "integrity", reason: "persisted contract is not valid JSON", status: "refused" };
 	}
-	const recomputed = resolveLaunchContract(parsed);
+	let recomputed: LaunchContract;
+	try {
+		recomputed = resolveLaunchContract(parsed);
+	} catch {
+		// Parseable JSON is not yet a contract. A persisted body missing a field —
+		// most plausibly one written by a build from before that field existed —
+		// makes `canonicalJson` throw on the absent value, and an exception here
+		// would escape a function whose every other rejection is a returned
+		// refusal. Callers that handle `refused` would not handle a throw, so a
+		// stale contract would crash a resume instead of declining it.
+		return { category: "integrity", reason: "persisted contract is missing or malformed fields", status: "refused" };
+	}
 	if (recomputed.contractId !== parsed.contractId) {
 		return { category: "integrity", reason: "contract id does not match its content", status: "refused" };
 	}

@@ -426,6 +426,12 @@ export type SubagentPromptRuntimeDeps = {
 function beginEnvelopeReceipt(config: ChildRuntimeConfig, deps: SubagentPromptRuntimeDeps): EnvelopeReceipt {
 	const synapse = config.synapse;
 	if (!synapse) return { kind: "none" };
+	if (synapse.deliveryGearNote !== undefined) {
+		// The contract already carries the substituted gear, so nothing below
+		// behaves differently; this is the only place that says a substitution
+		// happened at all.
+		console.warn(`[pi-subagents] synapse: ${synapse.deliveryGearNote}`);
+	}
 	let route: ReturnType<typeof selectEnvelopeRoute>;
 	try {
 		route = selectEnvelopeRoute({

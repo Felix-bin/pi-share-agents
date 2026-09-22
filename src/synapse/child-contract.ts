@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import { getAgentDir } from "../shared/utils.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { representationIdOf, resolveSynapseConfig, type UnvalidatedJson } from "./config.ts";
+import { representationIdOf, resolveSynapseConfig, type SynapseDeliveryGear, type UnvalidatedJson } from "./config.ts";
 import { resolveLaunchContract, type LaunchContract } from "./lifecycle.ts";
 import { deriveNamespaceId, resolveStorageRoot } from "./namespace.ts";
 import { registerSynapseTools, type SynapseToolHost, type SynapseToolsRegistration } from "./register-tools.ts";
@@ -27,6 +27,12 @@ export type SynapseChildContract = {
 	/** Budget for the recalled memory section the child is handed at launch. */
 	contextBudgetBytes: number;
 	contract: LaunchContract;
+	/**
+	 * Why the contract's gear is not the configured one. Present only when the
+	 * gear was degraded, so that the substitution is something a reader of a run
+	 * can see rather than infer.
+	 */
+	deliveryGearNote?: string;
 	runId: string;
 	sessionId: string;
 };
@@ -38,9 +44,47 @@ export type ResolveChildContractInput = {
 	extensionConfig: UnvalidatedJson;
 	/** Overrides the resolved Pi agent directory; tests supply their own. */
 	agentDir?: string;
+	/**
+	 * Whether this child will run on a different machine than its parent. An
+	 * AF_UNIX endpoint is a path in one kernel's filesystem, so the `uds` gear
+	 * has no meaning across that boundary.
+	 */
+	placedOnAnotherMachine?: boolean;
 	runId: string;
 	sessionId: string;
 };
+
+export type EffectiveDeliveryGear = {
+	gear: SynapseDeliveryGear;
+	/** Set only when `gear` differs from what was configured. */
+	note?: string;
+};
+
+/**
+ * Which gear will actually carry the envelope, as opposed to which one was asked
+ * for.
+ *
+ * `uds` across a machine boundary cannot work and cannot be made to work: the
+ * parent would bind a path in its own filesystem and the child would connect to
+ * an unrelated path in another, or to nothing. Left alone, that produces the
+ * worst available outcome — the parent's send fails as a `persistence` error and
+ * the child waits out the full receive deadline before running anyway, once per
+ * child, with nothing naming the cause.
+ *
+ * So the gear is degraded here, and the degraded value is what enters the
+ * contract. That matters more than it looks: the gear takes part in
+ * `contractId`, so a contract must not claim a transport the run will not use —
+ * S4 compares runs by their conditions, and a run labelled `uds` that actually
+ * wrote files is a condition that disagrees with its own manifest. The
+ * substitution is named in `note` rather than being silent.
+ */
+export function resolveEffectiveDeliveryGear(input: { configured: SynapseDeliveryGear; placedOnAnotherMachine: boolean }): EffectiveDeliveryGear {
+	if (input.configured !== "uds" || !input.placedOnAnotherMachine) return { gear: input.configured };
+	return {
+		gear: "file",
+		note: "deliveryGear \"uds\" degraded to \"file\": an AF_UNIX endpoint is a path in one kernel's filesystem and this child runs on another machine",
+	};
+}
 
 /**
  * Whether this configuration will give children a memory contract. Answered
@@ -77,6 +121,10 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 	const sessionId = input.sessionId.trim().length > 0 ? input.sessionId : "unattributed-session";
 	const agent = input.agentName.trim().length > 0 ? input.agentName : "unattributed-agent";
 	const representationId = representationIdOf(config);
+	const effectiveGear = resolveEffectiveDeliveryGear({
+		configured: config.deliveryGear,
+		placedOnAnotherMachine: input.placedOnAnotherMachine ?? false,
+	});
 	return {
 		agent,
 		contextBudgetBytes: config.contextBudgetBytes,
@@ -87,11 +135,13 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			// that still takes part in the contract id.
 			capabilityId: capabilityForAgent({ agent, childTools: input.childTools, representationId }).capabilityId,
 			corpusSnapshotId: "unset",
-			// The one place the configured gear enters the contract. Both sides of
-			// the delivery read it from here afterwards, so the address the parent
-			// sends to and the address the child listens on are derived from one
-			// value rather than resolved twice from configuration.
-			deliveryGear: config.deliveryGear,
+			// The one place the gear enters the contract. Both sides of the delivery
+			// read it from here afterwards, so the address the parent sends to and
+			// the address the child listens on are derived from one value rather
+			// than resolved twice from configuration. It is the *effective* gear,
+			// never the configured one, so the contract cannot promise a transport
+			// this launch will not use.
+			deliveryGear: effectiveGear.gear,
 			memoryRefs: [],
 			mode: config.mode,
 			namespaceId: deriveNamespaceId(input.cwd),
@@ -99,6 +149,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			scope: { pathPrefixes: [""], write: childMayWrite(input.childTools) },
 			storageRoot: resolved.root,
 		}),
+		...(effectiveGear.note === undefined ? {} : { deliveryGearNote: effectiveGear.note }),
 		runId,
 		sessionId,
 	};
