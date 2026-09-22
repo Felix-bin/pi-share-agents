@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { childConsumesState } from "../../synapse/child-contract.ts";
 import type { SynapseChildContract } from "../../synapse/child-contract.ts";
 import { classifySynapseError } from "../../synapse/errors.ts";
 import { clearStateEnvelope, nodeIdFor } from "../../synapse/envelope-inbox.ts";
 import { meteringLogPath, modelUsageFrom, openDelegation, openRetrieveDelegation, type CloseDelegationInput, type OpenDelegation, type RetrieveSendResult, type SendDeps } from "../../synapse/delegation.ts";
-import { autoDistillOutput } from "../../synapse/auto-distill.ts";
 import { createCapabilityProbeCache, stateRetrievalProbeCheck } from "../../synapse/capability-probe.ts";
 import { createMeteringLog, type MeteringIdentity } from "../../synapse/metering.ts";
 import { createMemoryService } from "../../synapse/memory-service.ts";
@@ -335,7 +336,7 @@ export type ChildStateDelegation = {
  * was still thinking when the child started"; that ambiguity is the one thing the
  * pre-registration forbids.
  */
-export const SYNAPSE_STATE_BUDGET_MS = 2500;
+export const SYNAPSE_STATE_BUDGET_MS = 8000;
 
 /**
  * The state half under the budget. A launch must not be held hostage to a
@@ -428,29 +429,33 @@ export function closeChildDelegation(delegation: OpenDelegation | null, input: C
 		warn("child", "delegation receipt", error instanceof Error ? error.message : String(error));
 	}
 	// Memory sedimentation is a side condition of the run, never a result of it:
-	// only a completed delegation distills, and any failure of the distiller
-	// itself is a warning on this close path, not a failed delegation.
+	// only a completed delegation distills. The host does NOT run the distiller
+	// inline — in the headless rpc host the event loop was observed to stall
+	// after the final result (probe 2026-09-22: a pending embedding fetch and
+	// its own abort timer never fired), so an in-process distill would be cut
+	// off. Instead the host persists the distill INTENT (outbox pattern): one
+	// JSON file per completed delegation under <storeRoot>/distill-pending/,
+	// written synchronously so it survives even an immediate host exit. Any
+	// surviving process (an experiment runner, a later session's host) picks
+	// pending files up and runs autoDistillOutput — the extraction, embedding
+	// and store writes stay product code in auto-distill.ts either way.
 	const contract = input.runtime?.synapse;
 	if (outcome === "completed" && contract?.autoDistill === true) {
-		void (async () => {
-			try {
-				const embedder = resolveConfiguredEmbedder(contract.embedding, contract.contract.storageRoot);
-				const result = await autoDistillOutput(
-					{
-						contract,
-						embedder:
-							embedder === undefined
-								? null
-								: { embed: async (text) => (await embedder.embedQuery(text)).vector, representationId: embedder.representationId },
-						provenance: { agent: contract.agent, attempt: 1, runId: contract.runId, sessionId: contract.sessionId },
-						taskText: input.taskText ?? "",
-					},
-					input.finalOutput,
-				);
-				if (result.written > 0) console.log(`[pi-subagents] synapse: auto-distilled ${result.written} memory line(s)${result.withoutVector > 0 ? ` (${result.withoutVector} without a vector)` : ""}`);
-			} catch (error) {
-				warn(contract.agent, "auto-distill", error instanceof Error ? error.message : String(error));
-			}
-		})();
+		try {
+			const pendingDir = path.join(contract.contract.storageRoot, "distill-pending");
+			fs.mkdirSync(pendingDir, { recursive: true });
+			const pending = {
+				finalOutput: input.finalOutput,
+				provenance: { agent: contract.agent, attempt: 1, runId: contract.runId, sessionId: contract.sessionId },
+				taskText: input.taskText ?? "",
+				embeddingConfig: contract.embedding,
+				closedAt: new Date().toISOString(),
+			};
+			const pendingFile = path.join(pendingDir, `${contract.runId}-${contract.agent}.json`);
+			fs.writeFileSync(pendingFile, `${JSON.stringify(pending, null, "\t")}\n`, "utf-8");
+			console.log(`[pi-subagents] synapse: distill intent queued for ${contract.agent} (${path.basename(pendingFile)})`);
+		} catch (error) {
+			warn(contract.agent, "auto-distill queue", error instanceof Error ? error.message : String(error));
+		}
 	}
 }

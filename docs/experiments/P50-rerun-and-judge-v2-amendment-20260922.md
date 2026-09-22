@@ -31,7 +31,8 @@ O4 判分口径变更见 §2。除上表外，装置（CLI 0.85.1 同版、模�
 - 披露规则：新旧数字**并列分列**，不混池、不做跨池配对；结论表述注明各自装置版本。
 - 熔断：沿用原 §（连续 5 次 provider 失败或 403 即停）；跑数期间禁改 `pi-share-agents` 的 `src/**` 与 `index.ts`（子进程从仓库现场加载）。
 
-## 4. 开跑前置检查记录
+## 4. 装置缺陷修复（2026-09-22 smoke 阶段发现，先于任何复跑/P50M 数据）
 
-- [x] 单轮 E2E smoke（p50m-runner --arm B --pairs 1）：autoDistill 在真实 /run 通道触发且蒸馏落库（含向量对象）——见 `_state/p50m-smoke-20260922/`。
-- [x] API key 在本地环境可用（服务器连通性已于 09-22 实测）。
+1. **状态预算上调 2500→8000 ms**：单轮 smoke 六轮中两次 `state budget expired after 2500 ms`（paratera 嵌入延迟波动，原 P50 时期嵌入稳定 <2.5s）。该预算只决定"宿主为嵌入等多久"，不影响计量口径与臂间对称（TXT 本无状态平面）；不修复会产生大量非代码性报废轮。两 runner manifest 同步记录 8000。
+2. **autoDistill 执行语义改 outbox（B 臂/P50M 专属）**：宿主 rpc 进程在 final result 后 event loop 停滞（文件探针实证：pending 嵌入 fetch 及其 abort timer 均不再触发），进程内执行蒸馏必被截断。改为：宿主 close 时**同步写蒸馏意图**至 `<storeRoot>/distill-pending/`（outbox，进程退出也不丢），由装置 runner 在进程结束后调用产品函数 `executePendingDistill` 执行（提取/嵌入/写库仍全部是 `auto-distill.ts` 产品代码）。交互式会话（宿主长活）不受此限制；pending 文件在向量齐全后删除，部分失败保留重试。
+3. smoke 验证（`_state/p50m-smoke-20260922/`）：委派完成→意图排队→runner 执行→记忆记录含 dim1024 向量落库全链路通过后，方开跑全量。

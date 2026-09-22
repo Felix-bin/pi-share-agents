@@ -448,7 +448,7 @@ async function cmdRun(expDir, options) {
 					"synapse.delta": "key omitted in both arms (default false — the residual line is closed)",
 					"synapse.stateVerify": "key omitted (default off)",
 					"synapse.vectorCache": "key omitted (default off)",
-					SYNAPSE_STATE_BUDGET_MS: 2500,
+					SYNAPSE_STATE_BUDGET_MS: 8000,
 				},
 				retryPolicy: "up to 3 attempts per round; every attempt kept under evidence/; first valid attempt enters the tables",
 				statsPlan: "① paired differences (TXT−SYN at aggregation): percentile bootstrap B=10000 seed 20260921; intervals beside every difference; crossing zero must be stated",

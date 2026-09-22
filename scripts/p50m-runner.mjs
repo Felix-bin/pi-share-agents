@@ -48,8 +48,8 @@ const EMBEDDING = {
 	model: "GLM-Embedding-3",
 	dim: 1024,
 	keyEnv: "PARATERA_API_KEY",
-	representationId: "paratera/GLM-Embedding-3/1024",
 };
+const REPRESENTATION_ID = `${EMBEDDING.provider}/${EMBEDDING.model}/${EMBEDDING.dim}`;
 const MODEL = { provider: "paratera", id: "DeepSeek-V4-Flash" };
 const STEER_PREFIX = "The delegating agent handed over a retrieval state";
 const NOTES_HINT = "Previous findings from earlier runs are in notes.md — read it if useful.";
@@ -82,7 +82,7 @@ const sha256 = (text) => createHash("sha256").update(text, "utf-8").digest("hex"
 const sha256File = (file) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
 function copyTree(src, dst) {
-	fs.mkdirSync(path.dirname(dst), { recursive: true });
+	fs.mkdirSync(dst, { recursive: true });
 	for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
 		const from = path.join(src, entry.name);
 		const to = path.join(dst, entry.name);
@@ -115,6 +115,11 @@ async function loadDistillMemoryLines() {
 	return distillMemoryLines;
 }
 
+async function loadExecutePendingDistill() {
+	const mod = await import(SRC("auto-distill.ts"));
+	return mod.executePendingDistill;
+}
+
 /** Arm C: the same lines as an append-only plain-text notes file. */
 function distillIntoNotes(taskIndex, round, lines) {
 	if (lines.length === 0) return;
@@ -134,20 +139,37 @@ function wipeMemory(storeRoot) {
 // completion detection per mode, final-answer extraction).
 // ---------------------------------------------------------------------------
 
-function runPiRound({ agentDir, tempRoot, task, meteringDir, known, roundLog, mode }) {
+function runPiRound({ agentDir, tempRoot, task, meteringDir, known, roundLog, mode, onBeforeKill }) {
 	fs.rmSync(tempRoot, { force: true, recursive: true });
 	fs.mkdirSync(tempRoot, { recursive: true });
-	const child = spawn(process.execPath, [CLI, "--agent-dir", agentDir, "--temp-root", tempRoot, "--mode", "headless", "--no-session", "--no-skills", "--auto-install"], {
-		cwd: WORK_DIR,
-		env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
-		stdio: ["pipe", "pipe", "pipe"],
-		windowsHide: true,
-	});
+	// Spawn shape is the p50 device verbatim (rpc mode, the extension loaded via
+	// -e, agent dir and temp root by env) — an earlier hand-rolled spawn here
+	// used different flags and never reached /synapse-setup, which is exactly
+	// the failure the single-round smoke exists to catch.
+	const lines = [];
+	const child = spawn(
+		process.execPath,
+		[CLI, "-e", path.join(REPO, "index.ts"), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc", "--provider", MODEL.provider, "--model", MODEL.id],
+		{ cwd: WORK_DIR, env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENTS_TEMP_ROOT: tempRoot }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+	);
+	// Line-buffered: a chunk boundary can split a long RPC line (the final
+	// result runs to tens of KB) and appending the halves separately makes both
+	// unparseable — hold the partial tail until its newline arrives.
+	let carry = "";
 	const append = (prefix, chunk) => {
-		for (const line of String(chunk).split("\n").slice(0, -1)) fs.appendFileSync(roundLog, `${prefix}${line}\n`, "utf-8");
+		carry += String(chunk);
+		let at;
+		while ((at = carry.indexOf("\n")) !== -1) {
+			const line = carry.slice(0, at);
+			carry = carry.slice(at + 1);
+			if (line.trim().length === 0) continue;
+			lines.push(`${prefix}${line}`);
+			fs.appendFileSync(roundLog, `${prefix}${line}\n`, "utf-8");
+		}
 	};
 	child.stdout.on("data", (chunk) => append("", chunk));
 	child.stderr.on("data", (chunk) => append("ERR ", chunk));
+	child.on("exit", (code) => fs.appendFileSync(roundLog, `CHILD-EXIT at ${new Date().toISOString()} code=${code}\n`, "utf-8"));
 	const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 	const awaitResponse = (id, timeoutMs) =>
 		new Promise((resolve) => {
@@ -232,6 +254,12 @@ function runPiRound({ agentDir, tempRoot, task, meteringDir, known, roundLog, mo
 					break;
 				}
 			}
+			// The host distills on delegation close AFTER the final result message
+			// lands (fire-and-forget embedding calls) — killing here would cut the
+			// writes off mid-flight. The arm's grace hook decides when the host has
+			// had long enough; interactive sessions never face this because the
+			// host outlives the delegation.
+			if (onBeforeKill) await onBeforeKill();
 			result.wallMs = Date.now() - runSentAt;
 			return result;
 		} finally {
@@ -368,32 +396,48 @@ function parseRange(spec, max) {
 }
 
 function writeModelsJson(agentDir) {
-	fs.mkdirSync(path.join(agentDir, "models"), { recursive: true });
-	fs.writeFileSync(
-		path.join(agentDir, "models", "models.json"),
-		`${JSON.stringify({ [`${MODEL.provider}/${MODEL.id}`]: { provider: MODEL.provider, api: "openai-completions", baseUrl: "https://llmapi.paratera.com/v1", apiKeyEnv: "PARATERA_API_KEY", models: { [MODEL.id]: { contextWindow: 131072, maxTokens: 8192, reasoning: false } } } }, null, "\t")}\n`,
-		"utf-8",
-	);
+	// The p50 device's models.json verbatim (providers map at the agentDir root).
+	const models = {
+		providers: {
+			paratera: {
+				name: "Paratera (并行智算云)",
+				baseUrl: "https://llmapi.paratera.com/v1",
+				api: "openai-completions",
+				apiKey: `$${EMBEDDING.keyEnv}`,
+				compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
+				models: [
+					{
+						id: MODEL.id,
+						name: "DeepSeek V4 Flash (Paratera)",
+						reasoning: false,
+						input: ["text"],
+						contextWindow: 128000,
+						maxTokens: 16384,
+						cost: { input: 0.14, output: 0.28, cacheRead: 0.03, cacheWrite: 0.14 },
+					},
+				],
+			},
+		},
+	};
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "models.json"), `${JSON.stringify(models, null, "\t")}\n`, "utf-8");
 }
 
 function synapseConfigFor(arm, store) {
-	// A and B differ only in what happens between rounds; C is the text-mode
-	// baseline with the notes hint carried by the task text instead. B's memory
-	// writes go through the PRODUCT mechanism (synapse.autoDistill on the host's
-	// delegation close), so the experiment measures the shipped capability, not
-	// a runner-side stand-in for it.
-	if (arm === "C") {
-		return { mode: "text", memory: "off", storageRoot: store.replaceAll("\\", "/") };
-	}
-	return {
-		mode: "synapse",
-		memory: "project",
+	// The p50 device's arm config verbatim; the ONLY intended differences are
+	// B's autoDistill switch (the product mechanism under test) and C being the
+	// text-mode baseline. No extra keys: the plugin's config validator is
+	// fail-fast on unknown fields.
+	const config = {
+		mode: arm === "C" ? "text" : "synapse",
 		autoDistill: arm === "B",
-		storageRoot: store.replaceAll("\\", "/"),
-		embedding: { provider: EMBEDDING.provider, endpoint: EMBEDDING.endpoint, model: EMBEDDING.model, dim: EMBEDDING.dim, apiKeyEnv: EMBEDDING.keyEnv },
 		corpusSnapshotId: CORPUS_ID,
-		search: { k: 5 },
+		storageRoot: store.replaceAll("\\", "/"),
+		embedding: { ...EMBEDDING },
 	};
+	if (arm !== "C") config.memory = "project";
+	// C: memory omitted — config.ts defaults text mode to memory off (the M3 baseline).
+	return config;
 }
 
 function writeSynapseConfig(agentDir, arm, store) {
@@ -406,6 +450,7 @@ async function cmdRun(expDir, options) {
 	const arm = options.arm;
 	if (!["A", "B", "C"].includes(arm)) throw new Error(`--arm must be A, B, or C (got ${arm})`);
 	const distillMemoryLines = await loadDistillMemoryLines();
+	const executePendingDistill = await loadExecutePendingDistill();
 	const seedStore = path.join(expDir, "store-seed");
 	if (!fs.existsSync(seedStore)) throw new Error(`seed store missing — run the seed command first (${seedStore})`);
 	const { TASKS, AGENT } = await import(SCRIPT_SRC("p50-family.mjs"));
@@ -434,7 +479,7 @@ async function cmdRun(expDir, options) {
 				pi: { cli: CLI, version: piVersion.stdout?.trim() ?? null },
 				node: process.version,
 				model: `${MODEL.provider}/${MODEL.id}`,
-				embedding: { ...EMBEDDING, representationId: EMBEDDING.representationId },
+				embedding: { ...EMBEDDING, representationId: REPRESENTATION_ID },
 				corpusSnapshotId: CORPUS_ID,
 				worktreePath: WORK_DIR.replaceAll("\\", "/"),
 				familySha256: familySha,
@@ -452,7 +497,7 @@ async function cmdRun(expDir, options) {
 					"synapse.stateVerify": "key omitted (default off)",
 					"synapse.vectorCache": "key omitted (default off)",
 					"synapse.search.k": 5,
-					SYNAPSE_STATE_BUDGET_MS: 2500,
+					SYNAPSE_STATE_BUDGET_MS: 8000,
 				},
 				retryPolicy: "up to 3 attempts per round; every attempt kept under evidence/; first valid attempt enters the tables",
 				statsPlan: "paired differences (arm vs arm at aggregation): percentile bootstrap B=10000 seed 20260921; intervals beside every difference; crossing zero must be stated",
@@ -545,19 +590,44 @@ async function cmdRun(expDir, options) {
 				record.problems.push(`runner exception: ${String(error?.message ?? error).slice(0, 200)}`);
 			}
 			// The device-side memory step runs on the first VALID attempt's own
-			// products only (preregistration §3). Arm B needs nothing here: the
-			// product's autoDistill switch already wrote on delegation close.
+			// products only (preregistration §3). Arm B's memory writes go through
+			// the PRODUCT path in two hops: the host queued the distill intent at
+			// delegation close (outbox, synapse.autoDistill), and the runner now
+			// EXECUTES it via the product's executePendingDistill — extraction,
+			// embedding and store writes are product code either way.
 			if (record.valid) {
 				const answerFile = path.join(evidenceDir, "answer.md");
 				const evidenceText = fs.existsSync(answerFile) ? fs.readFileSync(answerFile, "utf-8") : "";
 				const lines = distillMemoryLines(evidenceText);
 				record.distilled = lines.length;
 				if (arm === "A") {
-					// The product never wrote (its switch is off for A); the wipe is a
+					// The product never queued (its switch is off for A); the wipe is a
 					// belt-and-braces guard against any stray record.
 					wipeMemory(path.join(expDir, `store-${arm}`));
 				} else if (arm === "C") {
 					distillIntoNotes(taskIndex, round, lines);
+				} else if (arm === "B") {
+					const pendingDir = path.join(expDir, "store-B", "distill-pending");
+					for (const pendingFile of fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir).filter((name) => name.endsWith(".json")) : []) {
+						const full = path.join(pendingDir, pendingFile);
+						const result = await executePendingDistill(full, {
+							embed: async (text) => {
+								const resp = await fetch(EMBEDDING.endpoint, {
+									method: "POST",
+									headers: { "content-type": "application/json", authorization: `Bearer ${process.env[EMBEDDING.keyEnv] ?? ""}` },
+									body: JSON.stringify({ model: EMBEDDING.model, input: [text], dimensions: EMBEDDING.dim }),
+									signal: AbortSignal.timeout(30_000),
+								});
+								if (!resp.ok) throw new Error(`embedding API ${resp.status}`);
+								const data = await resp.json();
+								const vector = data?.data?.[0]?.embedding;
+								if (!Array.isArray(vector) || vector.length !== EMBEDDING.dim) throw new Error(`embedding returned ${Array.isArray(vector) ? vector.length : "no"} dims, expected ${EMBEDDING.dim}`);
+								return Float32Array.from(vector);
+							},
+							representationId: REPRESENTATION_ID,
+						});
+						log(`arm B executed distill intent ${pendingFile}: ${result.written} line(s), ${result.withoutVector} without vector`);
+					}
 				}
 			}
 			fs.appendFileSync(roundsPath, `${JSON.stringify(record)}\n`, "utf-8");

@@ -1,3 +1,5 @@
+import * as path from "node:path";
+import * as fs from "node:fs";
 import type { SynapseChildContract } from "./child-contract.ts";
 import { createContentStore } from "./content-store.ts";
 import { createMemoryStore, type MemoryProvenance } from "./memory-store.ts";
@@ -120,4 +122,38 @@ export async function autoDistillOutput(input: AutoDistillInput, output: string)
 		});
 	}
 	return { written: lines.length, withoutVector };
+}
+
+/**
+ * Executes one queued distill intent, as the host's close path left it under
+ * <storeRoot>/distill-pending/ (outbox pattern — see the close path in
+ * synapse-delegation.ts for why execution is decoupled from the host). The
+ * caller supplies a live embedder; the extraction rule, store writes and
+ * record schema are the same product code an inline execution would have run.
+ * The pending file is removed only when every line landed WITH its vector, so
+ * a partial or vector-less application keeps the intent queued for a retry
+ * rather than silently dropping the semantic half of the memory.
+ */
+export async function executePendingDistill(pendingFile: string, embedder: DistillEmbedder | null): Promise<AutoDistillResult & { storeRoot: string }> {
+	const intent = JSON.parse(fs.readFileSync(pendingFile, "utf-8")) as {
+		finalOutput: string;
+		provenance: MemoryProvenance;
+		taskText: string;
+		embeddingConfig: { dim: number } | null;
+	};
+	// The pending file lives at <storeRoot>/distill-pending/<name>.json, so the
+	// store root is exactly one directory up from the pending directory — the
+	// same root the queuing host resolved from its contract.
+	const storeRoot = path.resolve(path.dirname(pendingFile), "..");
+	const result = await autoDistillOutput(
+		{
+			contract: { autoDistill: true, contract: { storageRoot: storeRoot } } as SynapseChildContract,
+			embedder,
+			provenance: intent.provenance,
+			taskText: intent.taskText,
+		},
+		intent.finalOutput,
+	);
+	if (result.withoutVector === 0) fs.rmSync(pendingFile, { force: true });
+	return { ...result, storeRoot };
 }
