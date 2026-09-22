@@ -281,6 +281,37 @@ describe("a malformed report is rejected rather than defaulted to a pass", () =>
 	});
 });
 
+describe("the shape s2-acceptance.sh actually emits", () => {
+	/**
+	 * Copied from a real run of the collector on a host with no reachable engine,
+	 * no Linux strace and no tmpfs — the case its own verify item names. If the
+	 * script's JSON and this parser ever drift apart, a report brought back from
+	 * openEuler is rejected on arrival, which is the most expensive place to find
+	 * out.
+	 */
+	const COLLECTED = JSON.stringify({
+		checks: [
+			{ detail: "the docker engine is on PATH but not reachable: Server: failed to connect", id: "cross-container-visibility", outcome: "unavailable" },
+			{ detail: "the traced probe did not complete, so no sequence was observed", id: "socket-syscall-trace", outcome: "unavailable" },
+			{ detail: "S3's collector emits no socket events yet", id: "transport-bytes-reconciliation", outcome: "unavailable", reconciliation: { applicationBytes: null, kernelBytes: null } },
+			{ detail: "a gear ran but did not deliver, so there is no round to compare", id: "single-round-gear-comparison", outcome: "unavailable" },
+		],
+		engine: { id: "docker", version: "Docker version 29.1.2" },
+		kernel: "MINGW64_NT-10.0-26200",
+		preflight: { availableBytes: null, detail: "undetermined: this host offers neither a POSIX f_type nor /proc/mounts", sharedMemory: "refused" },
+		schemaVersion: 1,
+	});
+
+	it("parses, and judges as incomplete rather than as a failure", () => {
+		const verdict = judge(COLLECTED);
+		assert.equal(verdict.verdict, "incomplete");
+		assert.deepEqual(verdict.failed, [], "a host that could not run the checks has not failed them");
+		assert.equal(verdict.notRun.length, 4);
+		assert.equal(verdict.blocksS4, true);
+		assert.equal(s2AcceptanceExitCode({ ok: true, verdict: verdict.verdict }), 2);
+	});
+});
+
 describe("the check set", () => {
 	it("puts the strace observation before the reconciliation it decides the shape of", () => {
 		const trace = S2_ACCEPTANCE_CHECK_IDS.indexOf("socket-syscall-trace");
