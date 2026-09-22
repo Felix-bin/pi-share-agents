@@ -25,6 +25,16 @@ const MUTATING_TOOLS = new Set(["bash", "edit", "powershell", "write"]);
 export type SynapseChildContract = {
 	agent: string;
 	/**
+	 * Whether the host distills this child's completed output into shared
+	 * memory. Carried beside `delta` and `vectorCache` because it reaches the
+	 * same close-of-delegation seam: memory reuse is a host decision made after
+	 * the child finishes, and models rarely remember on their own (P50,
+	 * 2026-09-21: zero voluntary writes in thirty rounds). Defaults to false so
+	 * existing configurations keep a store that only changes when a tool call
+	 * or an explicit experiment changes it.
+	 */
+	autoDistill: boolean;
+	/**
 	 * Every tool this child will actually have: what its role declared plus what
 	 * the extension registers. The extension's tools reach the child through
 	 * `permittedRuntimeTools`, a different channel from the role's declared
@@ -137,6 +147,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 	const capabilityTools = [...input.childTools, ...(input.extensionTools ?? [])];
 	return {
 		agent,
+		autoDistill: config.autoDistill,
 		contextBudgetBytes: config.contextBudgetBytes,
 		contract: resolveLaunchContract({
 			// The capability is the receiving role's own declaration, so the contract
@@ -172,6 +183,10 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 	let operations = 0;
 	return registerSynapseTools(pi, {
 		config: {
+			// Inert on this path rather than copied: distillation runs on the host
+			// after this child completes, so the child's own tool runtime never
+			// distills and the value here stays false whatever the launch set.
+			autoDistill: false,
 			contextBudgetBytes: contract.contextBudgetBytes,
 			corpusSnapshotId: contract.contract.corpusSnapshotId === "unset" ? null : contract.contract.corpusSnapshotId,
 			// Inert on this path rather than copied: the child's own tools never

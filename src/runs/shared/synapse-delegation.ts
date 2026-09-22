@@ -4,6 +4,7 @@ import type { SynapseChildContract } from "../../synapse/child-contract.ts";
 import { classifySynapseError } from "../../synapse/errors.ts";
 import { clearStateEnvelope, nodeIdFor } from "../../synapse/envelope-inbox.ts";
 import { meteringLogPath, modelUsageFrom, openDelegation, openRetrieveDelegation, type CloseDelegationInput, type OpenDelegation, type RetrieveSendResult, type SendDeps } from "../../synapse/delegation.ts";
+import { autoDistillOutput } from "../../synapse/auto-distill.ts";
 import { createCapabilityProbeCache, stateRetrievalProbeCheck } from "../../synapse/capability-probe.ts";
 import { createMeteringLog, type MeteringIdentity } from "../../synapse/metering.ts";
 import { createMemoryService } from "../../synapse/memory-service.ts";
@@ -404,6 +405,10 @@ export type CloseChildDelegationInput = {
 	cancelled: boolean;
 	cause?: unknown;
 	finalOutput: string;
+	/** The child's runtime config, when the caller holds it: its synapse contract carries the distill switch. */
+	runtime?: ChildRuntimeConfig;
+	/** The delegated task text, when the caller has it: the distillate's topic. */
+	taskText?: string;
 	/** A timeout is a failure the host observed rather than an error it caught. */
 	timedOut: boolean;
 	usage: Usage;
@@ -421,5 +426,31 @@ export function closeChildDelegation(delegation: OpenDelegation | null, input: C
 		delegation.close(closeInput);
 	} catch (error) {
 		warn("child", "delegation receipt", error instanceof Error ? error.message : String(error));
+	}
+	// Memory sedimentation is a side condition of the run, never a result of it:
+	// only a completed delegation distills, and any failure of the distiller
+	// itself is a warning on this close path, not a failed delegation.
+	const contract = input.runtime?.synapse;
+	if (outcome === "completed" && contract?.autoDistill === true) {
+		void (async () => {
+			try {
+				const embedder = resolveConfiguredEmbedder(contract.embedding, contract.contract.storageRoot);
+				const result = await autoDistillOutput(
+					{
+						contract,
+						embedder:
+							embedder === undefined
+								? null
+								: { embed: async (text) => (await embedder.embedQuery(text)).vector, representationId: embedder.representationId },
+						provenance: { agent: contract.agent, attempt: 1, runId: contract.runId, sessionId: contract.sessionId },
+						taskText: input.taskText ?? "",
+					},
+					input.finalOutput,
+				);
+				if (result.written > 0) console.log(`[pi-subagents] synapse: auto-distilled ${result.written} memory line(s)${result.withoutVector > 0 ? ` (${result.withoutVector} without a vector)` : ""}`);
+			} catch (error) {
+				warn(contract.agent, "auto-distill", error instanceof Error ? error.message : String(error));
+			}
+		})();
 	}
 }

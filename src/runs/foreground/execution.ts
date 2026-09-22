@@ -1391,8 +1391,13 @@ async function runSingleAttempt(
 		// delegation the success path would have closed.
 		let delegation: OpenDelegation | null = null;
 		void (async () => {
+			// Kept reachable from the catch path: a failed delegation still closes
+			// its synapse bookkeeping, and the close needs the runtime to reach the
+			// child's contract (the auto-distill switch lives there).
+			let childRuntime: import("../shared/child-runtime-config.ts").ChildRuntimeConfig | undefined;
 			try {
 				const input = createReportedChildSessionInput(launch, shared.transcriptWriter);
+				childRuntime = input.runtime;
 				requestReadonlySessionEvidence(input, shared.readonlyExpected);
 				if (shared.readonlyHandoffAllowed && !shared.readonlyHandoffAllowed()) throw new Error("Read-only continuation handoff vetoed.");
 				const created = await childSessions.create(input);
@@ -1441,6 +1446,8 @@ async function runSingleAttempt(
 				closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
 					finalOutput: result.finalOutput ?? "",
+					runtime: childRuntime,
+					taskText: task,
 					timedOut: result.timedOut === true,
 					usage: result.usage,
 				});
@@ -1450,6 +1457,8 @@ async function runSingleAttempt(
 					cancelled: abortedBySignal || interruptedByControl,
 					cause: error,
 					finalOutput: result.finalOutput ?? "",
+					runtime: childRuntime,
+					taskText: task,
 					timedOut: result.timedOut === true,
 					usage: result.usage,
 				});

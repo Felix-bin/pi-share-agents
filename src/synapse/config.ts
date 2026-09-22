@@ -52,6 +52,7 @@ export const SYNAPSE_MAX_EMBEDDING_DIM = 8192;
  * pays off; the CCF-A acceptance card rules on that question with data.
  */
 export const SYNAPSE_DEFAULT_DELTA = false;
+export const SYNAPSE_DEFAULT_AUTO_DISTILL = false;
 
 /**
  * Whether a process keeps memory-record vectors in memory between rankings.
@@ -121,6 +122,13 @@ export type SynapseEmbeddingConfig = {
 };
 
 export type SynapseConfig = {
+	/**
+	 * Whether the host distills a completed delegation's output into shared
+	 * memory. Off by default: the measured behaviour (P50, 2026-09-21) is that
+	 * models rarely call the memory tool on their own, so memory reuse depends
+	 * on a deterministic host-side write rather than on model goodwill.
+	 */
+	autoDistill: boolean;
 	contextBudgetBytes: number;
 	/** Set by experiments to the id a `build-corpus` run produced; null keeps the "unset" placeholder. */
 	corpusSnapshotId: string | null;
@@ -155,6 +163,7 @@ const RawConfigSchema = Type.Object(
 		corpusSnapshotId: Type.Optional(
 			Type.String({ minLength: 1, pattern: "^[0-9a-f]{64}$", description: "64-hex id from a build-corpus run" }),
 		),
+		autoDistill: Type.Optional(Type.Boolean({ description: "distill a completed delegation's output into shared memory on the host side; the deterministic path to memory reuse" })),
 		delta: Type.Optional(Type.Boolean({ description: "send residuals instead of full vectors; off unless an experiment asks for it" })),
 		embedding: Type.Optional(EmbeddingSchema),
 		maxObjectBytes: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -256,6 +265,7 @@ export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = o
 		throw new Error("synapse.memory must be off when synapse.mode is off");
 	}
 	return {
+		autoDistill: raw.autoDistill ?? SYNAPSE_DEFAULT_AUTO_DISTILL,
 		contextBudgetBytes: raw.contextBudgetBytes ?? SYNAPSE_DEFAULT_CONTEXT_BUDGET_BYTES,
 		corpusSnapshotId: raw.corpusSnapshotId ?? null,
 		delta: raw.delta ?? SYNAPSE_DEFAULT_DELTA,
