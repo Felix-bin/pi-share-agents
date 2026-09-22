@@ -97,7 +97,7 @@ S3 的线协议。
 
 ### Task 5: tmpfs preflight 与 bind mount 交付物
 
-- [ ] Change: 新增 preflight：判定 `<storageRoot>/objects` 是否落在 tmpfs 上
+- [x] Change: 新增 preflight：判定 `<storageRoot>/objects` 是否落在 tmpfs 上
       （`statfs` 的 `f_type` 或解析 `/proc/mounts`），判不出就拒绝启用共享内存档并**在产物中标记**
       （spec §5 第一行）。同时给出 bind mount 的交付物（脚本或手册），并在其中明确
       **必须用 mount 而非 symlink**——symlink 会被解析成 `/dev/shm/...` 而落进 `outside-root`，
@@ -109,7 +109,7 @@ S3 的线协议。
 
 ### Task 6: S2 验收报告的形状与判定
 
-- [ ] Change: 定义 S2 验收报告的 JSON 形状与判定纯函数，沿用 S1 的三态纪律
+- [x] Change: 定义 S2 验收报告的 JSON 形状与判定纯函数，沿用 S1 的三态纪律
       （`pass` / `fail` / `unavailable`，`unavailable` 既不判通过也不判失败）。
       复用 `scripts/synapse/judge-s1-report.ts` 已确立的模式，不重新发明一套。
       对账条目须同时携带应用层自报字节与内核侧观测字节，以及两者的差——**判定依据是差值**，
@@ -120,7 +120,7 @@ S3 的线协议。
 
 ### Task 7: 真机采集脚本
 
-- [ ] Change: 新增 `scripts/synapse/s2-acceptance.sh`，一次执行依次采集 spec §6.2 的四条，
+- [x] Change: 新增 `scripts/synapse/s2-acceptance.sh`，一次执行依次采集 spec §6.2 的四条，
       输出 Task 6 定义形状的 JSON。脚本只采集事实，不做判定。
       **验收 2（strace 观测）排在验收 3 之前**：它记录 Node 24 在 AF_UNIX 流上实际发出的
       syscall 序列，其输出决定 S3 要补哪些事件（spec §4.1）。须自包含到可直接 `scp` 执行。
