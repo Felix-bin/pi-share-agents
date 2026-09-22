@@ -74,6 +74,17 @@ describe("child contract resolution", () => {
 		assert.equal(contract?.contract.storageRoot, isolated);
 	});
 
+	it("carries the configured delivery gear into the contract both sides read", () => {
+		// The gear has to travel in the contract, not be re-resolved from config on
+		// each side: the parent's send address and the child's bind address are
+		// derived from this one field. A resolver that hardcoded "file" here would
+		// leave `synapse.deliveryGear: "uds"` configurable and unreachable — which
+		// is the exact gap Task 3a closes — while passing every other assertion.
+		assert.equal(resolveSynapseChildContract(input())?.contract.deliveryGear, "file");
+		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "uds", mode: "synapse" } }))?.contract.deliveryGear, "uds");
+		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { deliveryGear: "file", mode: "synapse" } }))?.contract.deliveryGear, "file");
+	});
+
 	it("gives a read-only child read-only memory", () => {
 		// Shared memory projects the authorisation the child already holds; a child
 		// with no mutating tool must not gain one by way of the memory store.

@@ -6,7 +6,9 @@ import {
 	publishEnvelopeViaUds,
 	receiveDeliveredEnvelopeViaUds,
 	SYNAPSE_MAX_UDS_ENDPOINT_PATH_BYTES,
+	SYNAPSE_UDS_DEADLINE_MS,
 	udsEndpointPath,
+	withUdsDeadline,
 	type UdsClientTransport,
 	type UdsServerTransport,
 } from "../../src/synapse/envelope-uds.ts";
@@ -30,6 +32,7 @@ function contractFor(): LaunchContract {
 	return resolveLaunchContract({
 		capabilityId: CAPABILITY_ID,
 		corpusSnapshotId: "unset",
+		deliveryGear: "file",
 		memoryRefs: [],
 		mode: "synapse",
 		namespaceId: NAMESPACE_ID,
@@ -221,7 +224,78 @@ describe("uds endpoint path budget (verify d)", () => {
 	});
 });
 
+describe("uds deadlines", () => {
+	/** A promise that models the failure mode the deadline exists for: a peer that neither answers nor closes. */
+	function neverSettles<T>(): Promise<T> {
+		return new Promise<T>(() => {});
+	}
+
+	it("names the operation and the endpoint when the peer never answers, and tears it down", async () => {
+		let torndown = 0;
+		await assert.rejects(
+			withUdsDeadline(neverSettles<number>(), { endpointPath: ENDPOINT, onExpire: () => (torndown += 1), operation: "delivery", timeoutMs: 1 }),
+			(error) => {
+				assert.ok(error instanceof Error);
+				assert.match(error.message, /^timeout: uds delivery at .* did not complete within 1ms$/);
+				// A stalled peer is neither a refusal nor corruption; misfiling it as
+				// `persistence` would put it in the same bucket as a full disk.
+				assert.equal(classifySynapseError(error), "timeout");
+				return true;
+			},
+		);
+		// Left listening or left connected, the handle would outlive the failure
+		// and the next attempt would collide with it.
+		assert.equal(torndown, 1);
+	});
+
+	it("names the receive side distinctly, so a log says which half of the exchange stalled", async () => {
+		await assert.rejects(
+			withUdsDeadline(neverSettles<void>(), { endpointPath: ENDPOINT, onExpire: () => {}, operation: "receive", timeoutMs: 1 }),
+			/^Error: timeout: uds receive at /,
+		);
+	});
+
+	it("leaves an operation that finishes in time completely untouched", async () => {
+		let torndown = 0;
+		const value = await withUdsDeadline(Promise.resolve(42), { endpointPath: ENDPOINT, onExpire: () => (torndown += 1), operation: "delivery", timeoutMs: 1 });
+		assert.equal(value, 42);
+		// Given 1ms, a deadline that fired anyway would be a deadline that keeps
+		// firing after its operation settled — the bug this asserts against.
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(torndown, 0);
+	});
+
+	it("passes a real transport failure through as itself rather than reporting a timeout", async () => {
+		let torndown = 0;
+		// SAFETY: constructed here to carry the `code` a real refused connect has.
+		const refused = new Error(`connect ECONNREFUSED ${ENDPOINT}`) as NodeJS.ErrnoException;
+		refused.code = "ECONNREFUSED";
+		await assert.rejects(
+			withUdsDeadline(Promise.reject(refused), { endpointPath: ENDPOINT, onExpire: () => (torndown += 1), operation: "delivery", timeoutMs: 1 }),
+			(error) => {
+				assert.equal(error, refused, "the original cause must reach classifyUdsSendFailure unchanged");
+				return true;
+			},
+		);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(torndown, 0);
+	});
+
+	it("uses a default deadline rather than waiting forever when a caller names none", () => {
+		// The constant is what a live delegation gets; a test that only ever
+		// passed its own timeoutMs would not notice the default going missing.
+		assert.equal(SYNAPSE_UDS_DEADLINE_MS, 5_000);
+	});
+});
+
 describe("uds send failure classification", () => {
+	it("passes a deadline failure through unchanged instead of re-filing it as persistence", () => {
+		const expired = new Error(`timeout: uds delivery at ${ENDPOINT} did not complete within 5000ms`);
+		const classified = classifyUdsSendFailure(expired, ENDPOINT);
+		assert.equal(classified, expired);
+		assert.equal(classifySynapseError(classified), "timeout");
+	});
+
 	it("names a refused connection as a persistence failure, not a silent empty delivery", () => {
 		// SAFETY: constructed here purely to carry a `code`, the same shape Node
 		// attaches to a real ECONNREFUSED — see the identical note above.

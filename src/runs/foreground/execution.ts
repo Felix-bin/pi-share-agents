@@ -1429,6 +1429,10 @@ async function runSingleAttempt(
 					receiverSessionId: created.sessionId,
 					runtime: input.runtime,
 				});
+				// See run-child-session.ts: the `uds` gear's send must land before
+				// the child's first agent turn verifies the envelope, and the
+				// `file` gear leaves this undefined so its path is unchanged.
+				if (delegation?.envelopeDelivery !== undefined) await delegation.envelopeDelivery;
 				await created.prompt(delegation?.prompt ?? message);
 				closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,

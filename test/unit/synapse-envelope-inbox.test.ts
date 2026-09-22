@@ -34,6 +34,7 @@ function contractFor(overrides: ContractOverrides = {}): LaunchContract {
 	return resolveLaunchContract({
 		capabilityId: overrides.capabilityId ?? CAPABILITY_ID,
 		corpusSnapshotId: "unset",
+		deliveryGear: "file",
 		memoryRefs: [],
 		mode: "synapse",
 		namespaceId: overrides.namespaceId ?? NAMESPACE_ID,

@@ -1,5 +1,5 @@
 import { canonicalDigest, canonicalJson, type CanonicalValue } from "./canonical-json.ts";
-import type { SynapseMode } from "./config.ts";
+import type { SynapseDeliveryGear, SynapseMode } from "./config.ts";
 import type { SynapseErrorCategory } from "./errors.ts";
 
 /**
@@ -30,6 +30,14 @@ export type ContractScope = {
 export type LaunchContractInput = {
 	capabilityId: string;
 	corpusSnapshotId: string;
+	/**
+	 * Which transport carries the envelope to this child (design §3.1, §4.3).
+	 * It travels in the contract rather than being read from configuration on
+	 * each side, because the sender and the receiver must address the same
+	 * endpoint: a child that resolved its own gear could bind a socket while
+	 * the parent wrote a file, and the envelope would simply never arrive.
+	 */
+	deliveryGear: SynapseDeliveryGear;
 	memoryRefs: readonly string[];
 	mode: SynapseMode;
 	namespaceId: string;
@@ -42,6 +50,7 @@ export type LaunchContract = {
 	capabilityId: string;
 	contractId: string;
 	corpusSnapshotId: string;
+	deliveryGear: SynapseDeliveryGear;
 	memoryRefs: string[];
 	mode: SynapseMode;
 	namespaceId: string;
@@ -93,6 +102,10 @@ function contractBody(input: LaunchContractInput): CanonicalValue {
 	return {
 		capabilityId: input.capabilityId,
 		corpusSnapshotId: input.corpusSnapshotId,
+		// Part of the identity, not merely carried alongside it: the gear is one of
+		// S4's experiment conditions, and two runs that differ in it are not the
+		// same launch even when every permission matches.
+		deliveryGear: input.deliveryGear,
 		memoryRefs: [...new Set(input.memoryRefs)].sort(),
 		mode: input.mode,
 		namespaceId: input.namespaceId,
@@ -108,6 +121,7 @@ export function resolveLaunchContract(input: LaunchContractInput): LaunchContrac
 		capabilityId: input.capabilityId,
 		contractId: canonicalDigest(contractBody(input)),
 		corpusSnapshotId: input.corpusSnapshotId,
+		deliveryGear: input.deliveryGear,
 		memoryRefs: [...new Set(input.memoryRefs)].sort(),
 		mode: input.mode,
 		namespaceId: input.namespaceId,

@@ -87,6 +87,11 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 			// that still takes part in the contract id.
 			capabilityId: capabilityForAgent({ agent, childTools: input.childTools, representationId }).capabilityId,
 			corpusSnapshotId: "unset",
+			// The one place the configured gear enters the contract. Both sides of
+			// the delivery read it from here afterwards, so the address the parent
+			// sends to and the address the child listens on are derived from one
+			// value rather than resolved twice from configuration.
+			deliveryGear: config.deliveryGear,
 			memoryRefs: [],
 			mode: config.mode,
 			namespaceId: deriveNamespaceId(input.cwd),

@@ -33,6 +33,7 @@ function childContract(): SynapseChildContract {
 			capabilityId: capabilityForAgent({ agent: "retriever", childTools: ["read"], representationId: "unavailable" }).capabilityId,
 			memoryRefs: [],
 			corpusSnapshotId: "unset",
+			deliveryGear: "file",
 			mode: "synapse",
 			namespaceId: deriveNamespaceId(worktree),
 			representationId: "unavailable",

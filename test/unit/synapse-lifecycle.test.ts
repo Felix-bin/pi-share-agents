@@ -15,6 +15,7 @@ import {
 function contractInput(overrides: Partial<LaunchContractInput> = {}): LaunchContractInput {
 	return {
 		capabilityId: overrides.capabilityId ?? "c".repeat(64),
+		deliveryGear: overrides.deliveryGear ?? "file",
 		memoryRefs: overrides.memoryRefs ?? ["a".repeat(64)],
 		corpusSnapshotId: overrides.corpusSnapshotId ?? "corpus-1",
 		mode: overrides.mode ?? "synapse",
@@ -46,6 +47,12 @@ describe("launch contract parity (AC-10)", () => {
 		assert.notEqual(resolveLaunchContract(contractInput({ scope: { pathPrefixes: [""], write: false } })).contractId, base);
 		assert.notEqual(resolveLaunchContract(contractInput({ memoryRefs: ["b".repeat(64)] })).contractId, base);
 		assert.notEqual(resolveLaunchContract(contractInput({ mode: "text" })).contractId, base);
+		// The gear is part of the identity, not merely carried beside it: two runs
+		// that differ only in how the envelope crossed are different launches (it
+		// is one of S4's experiment conditions). Without this, a contract that
+		// carried `deliveryGear` as a field but left it out of `contractBody`
+		// would pass every other assertion in this file.
+		assert.notEqual(resolveLaunchContract(contractInput({ deliveryGear: "uds" })).contractId, base);
 	});
 
 	it("does not depend on the order permissions or references were collected in", () => {

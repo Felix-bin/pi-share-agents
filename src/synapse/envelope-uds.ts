@@ -97,18 +97,80 @@ import { parseEnvelope, type Envelope } from "./envelope.ts";
  * delivery that hangs or, worse, is recorded as having succeeded with
  * nothing actually sent.
  *
- * Not wired into `delegation.ts` or `subagent-prompt-runtime.ts` by this
- * module. `LaunchContract` carries no delivery gear today, and the child-side
- * read happens synchronously at the first agent turn
- * (`subagent-prompt-runtime.ts`'s `verifyDeliveredEnvelope`), which cannot
- * await a socket without changing that call site's own signature — a change
- * outside this task's stated scope (`envelope-inbox.ts` + `config.ts`). Both
- * call sites keep using the unmodified `file`-only functions.
+ * This module still chooses nothing. Which gear a delegation uses, and where
+ * `bytesWritten` is metered, belong to `envelope-gear.ts`, which maps
+ * `LaunchContract.deliveryGear` to an address and drives one of the two
+ * gears; keeping selection out of here is what lets the choice be a pure
+ * function tested without a socket.
  */
 
 /** A new top-level storage-root entry, deliberately shorter than `envelopes/` — see the module header. */
 const UDS_DIR = "uds";
 const UDS_SUFFIX = ".sock";
+
+/**
+ * How long a real socket operation may take before it is abandoned with a
+ * named failure.
+ *
+ * Neither direction can be allowed to wait forever. A client connecting to a
+ * path that is bound but whose owner never accepts, and a server whose peer
+ * connects and then neither sends nor closes, both hang with nothing in any
+ * log to say why — tolerable in a unit test, not in a live delegation path.
+ *
+ * Five seconds rather than a generous minute because of what the wait costs.
+ * The parent binds the receiver before it sends and sends before it prompts,
+ * so a healthy delivery never approaches this; the only run that waits the
+ * full deadline is one where the envelope is never coming (the parent skipped
+ * delegation, spec §5), and that run pays the deadline before it starts the
+ * task upstream would have sent.
+ */
+export const SYNAPSE_UDS_DEADLINE_MS = 5_000;
+
+export type UdsDeadlineInput = {
+	endpointPath: string;
+	/** Tears the socket or server down when the deadline wins; the operation itself can no longer be abandoned from outside. */
+	onExpire: () => void;
+	/** Named in the failure, so a reader learns which half of the exchange stalled. */
+	operation: string;
+	timeoutMs?: number;
+};
+
+/**
+ * Bounds one socket operation by a deadline and names the failure when the
+ * deadline wins.
+ *
+ * The prefix is `timeout:`, which `errors.ts` already classifies as `timeout`
+ * — a stalled peer is neither a `persistence` failure (the sink did accept
+ * nothing, but it did not refuse either) nor an `integrity` one.
+ *
+ * Injected timers are not needed to prove this: the operation is a plain
+ * Promise, so a test drives both outcomes with a promise that never settles
+ * and a millisecond deadline, or with one that settles first. That is why the
+ * deadline lives here rather than inline in each transport, where it could
+ * only be exercised against a real socket this repository cannot bind.
+ */
+export function withUdsDeadline<T>(operation: Promise<T>, input: UdsDeadlineInput): Promise<T> {
+	const timeoutMs = input.timeoutMs ?? SYNAPSE_UDS_DEADLINE_MS;
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			input.onExpire();
+			reject(new Error(`timeout: uds ${input.operation} at ${input.endpointPath} did not complete within ${timeoutMs}ms`));
+		}, timeoutMs);
+		// A pending deadline must never be the reason a process stays alive: the
+		// operation it guards is already holding whatever handle matters.
+		timer.unref?.();
+		const settle = (apply: () => void): void => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			apply();
+		};
+		operation.then((value) => settle(() => resolve(value)), (error: unknown) => settle(() => reject(error)));
+	});
+}
 
 /** `sockaddr_un.sun_path`'s fixed size on Linux (and the comparable buffer on other POSIX platforms). */
 export const SYNAPSE_SUN_PATH_BYTES = 108;
@@ -175,7 +237,11 @@ function errorCodeOf(cause: unknown): string | undefined {
  * not accept what was handed to it.
  */
 export function classifyUdsSendFailure(cause: unknown, endpointPath: string): Error {
-	if (cause instanceof Error && cause.message.startsWith("frame-too-large")) {
+	// `frame-too-large` comes from encodeFrame and `timeout:` from
+	// withUdsDeadline; both are already named exactly, and errors.ts maps them
+	// to `configuration` and `timeout` respectively. Re-wrapping either under
+	// the `persistence:` prefix below would move it into the wrong bucket.
+	if (cause instanceof Error && (cause.message.startsWith("frame-too-large") || cause.message.startsWith("timeout:"))) {
 		return cause;
 	}
 	const code = errorCodeOf(cause);
@@ -209,26 +275,47 @@ export type UdsServerTransport = {
 	receiveOnce: (endpointPath: string, onChunk: (chunk: Buffer) => "continue" | "stop") => Promise<void>;
 };
 
+export type NodeUdsTransportOptions = {
+	/** Overrides `SYNAPSE_UDS_DEADLINE_MS` for this transport; the default is what a live delegation uses. */
+	timeoutMs?: number;
+};
+
 /** The real transport: a `node:net` AF_UNIX client. Not exercised by this repo's own tests — see the module header. */
-export function createNodeUdsClientTransport(): UdsClientTransport {
+export function createNodeUdsClientTransport(options: NodeUdsTransportOptions = {}): UdsClientTransport {
 	return {
 		send(endpointPath, frame) {
-			return new Promise((resolve, reject) => {
-				const socket = net.createConnection({ path: endpointPath });
+			const socket = net.createConnection({ path: endpointPath });
+			const connected = new Promise<number>((resolve, reject) => {
 				socket.once("error", reject);
 				socket.once("connect", () => {
 					socket.end(frame, () => resolve(frame.byteLength));
 				});
+			});
+			// The deadline covers connect *and* write together: a peer that accepts
+			// and then never drains is the same stall, from the sender's side, as
+			// one that never accepts at all.
+			return withUdsDeadline(connected, {
+				endpointPath,
+				onExpire: () => socket.destroy(),
+				operation: "delivery",
+				...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
 			});
 		},
 	};
 }
 
 /** The real transport: a `node:net` AF_UNIX server. Not exercised by this repo's own tests — see the module header. */
-export function createNodeUdsServerTransport(): UdsServerTransport {
+export function createNodeUdsServerTransport(options: NodeUdsTransportOptions = {}): UdsServerTransport {
 	return {
 		receiveOnce(endpointPath, onChunk) {
-			return new Promise((resolve, reject) => {
+			// Bind happens while this executor runs, which is to say synchronously
+			// inside the `receiveOnce` call: `net.Server.listen` on a pipe path
+			// binds and listens before it returns and only defers its "listening"
+			// event. That is what lets a caller treat "receiveOnce has been called"
+			// as "the endpoint is addressable", which is the whole point of binding
+			// the receiver early.
+			let abandon = (): void => {};
+			const accepted = new Promise<void>((resolve, reject) => {
 				fs.mkdirSync(path.dirname(endpointPath), { recursive: true });
 				// A socket file left behind by a process that never cleaned up after
 				// itself must not make this bind look like the address is in use.
@@ -256,6 +343,18 @@ export function createNodeUdsServerTransport(): UdsServerTransport {
 				});
 				server.once("error", finish);
 				server.listen(endpointPath);
+				// Closing the server is what makes an expired deadline release the
+				// bound path instead of leaving a listener nobody is reading.
+				abandon = () => {
+					settled = true;
+					server.close(() => fs.rmSync(endpointPath, { force: true }));
+				};
+			});
+			return withUdsDeadline(accepted, {
+				endpointPath,
+				onExpire: () => abandon(),
+				operation: "receive",
+				...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
 			});
 		},
 	};

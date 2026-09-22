@@ -18,7 +18,9 @@ import type { ChildWatchdogConfig } from "../../watchdog/child-status.ts";
 import { requestWatchdogPermission, type WatchdogPermissionRequest, type WatchdogPermissionResult } from "../../watchdog/permission-arbiter.ts";
 import { SUBAGENT_WATCHDOG_WARNING_TYPE } from "../../watchdog/types.ts";
 import { registerSynapseChildTools } from "../../synapse/child-contract.ts";
-import { envelopeInboxPath, readDeliveredEnvelope, verifyEnvelopeAgainstContract } from "../../synapse/envelope-inbox.ts";
+import { receiveEnvelopeViaUdsRoute, selectEnvelopeRoute } from "../../synapse/envelope-gear.ts";
+import { readDeliveredEnvelope, verifyEnvelopeAgainstContract, type DeliveredEnvelope } from "../../synapse/envelope-inbox.ts";
+import type { UdsServerTransport } from "../../synapse/envelope-uds.ts";
 import { registerWaitTool } from "../background/wait-tool.ts";
 import { drainOutstandingWork } from "../background/auto-drain.ts";
 import {
@@ -382,6 +384,74 @@ export function registerPermissionGate(
 }
 
 /**
+ * How this child will receive its envelope, decided once at registration.
+ *
+ * `none` covers every case in which nothing can arrive — no SYNAPSE contract,
+ * or a `uds` endpoint this host cannot even address — and is therefore the
+ * absent case, not a refusal.
+ */
+type EnvelopeReceipt =
+	| { inbox: string; kind: "file" }
+	| { kind: "none" }
+	| { kind: "uds"; received: Promise<DeliveredEnvelope> };
+
+export type SubagentPromptRuntimeDeps = {
+	/**
+	 * The AF_UNIX server the `uds` gear listens on. Unset in production, where
+	 * the gear builds the real `node:net` one; supplied by tests, because this
+	 * repository's sandbox cannot bind an AF_UNIX path at all.
+	 */
+	udsServerTransport?: UdsServerTransport;
+};
+
+/**
+ * Opens the receiving end of the envelope delivery, before anything else this
+ * child does.
+ *
+ * **The bind has to happen here, at registration, not at the first agent
+ * turn.** The parent creates this child's session, publishes the envelope, and
+ * only then prompts it; the `file` gear tolerates that order because a file
+ * written before anyone reads it is still there to be read, but a socket does
+ * not — bind late and the parent's connect has already failed, and the
+ * envelope is gone with nothing to say so. Registration is the last moment
+ * that is still strictly earlier than the parent's send. `receiveOnce` binds
+ * synchronously inside the call this makes, so returning from here means the
+ * endpoint is live.
+ *
+ * A gear that cannot be addressed at all degrades to `none` rather than
+ * throwing: this runs during extension registration, where a throw would take
+ * the child down before it ever started, and the outcome an unaddressable
+ * endpoint produces is precisely "no envelope will arrive".
+ */
+function beginEnvelopeReceipt(config: ChildRuntimeConfig, deps: SubagentPromptRuntimeDeps): EnvelopeReceipt {
+	const synapse = config.synapse;
+	if (!synapse) return { kind: "none" };
+	let route: ReturnType<typeof selectEnvelopeRoute>;
+	try {
+		route = selectEnvelopeRoute({
+			childIndex: config.childIndex,
+			deliveryGear: synapse.contract.deliveryGear,
+			runId: synapse.runId,
+			storageRoot: synapse.contract.storageRoot,
+		});
+	} catch (error) {
+		console.warn(`[pi-subagents] synapse: envelope receipt skipped: ${error instanceof Error ? error.message : String(error)}`);
+		return { kind: "none" };
+	}
+	if (route.gear === "file") return { inbox: route.address, kind: "file" };
+	const received = receiveEnvelopeViaUdsRoute(route.address, deps.udsServerTransport).then((outcome) => {
+		// Downgraded to absent because no byte ever arrived. Visible, because a
+		// parent that meant to deliver and could not is worth seeing in a log,
+		// but not fatal: an envelope that never came is upstream's own task.
+		if (outcome.silentReason !== null) {
+			console.warn(`[pi-subagents] synapse: no envelope arrived at ${route.address}: ${outcome.silentReason}`);
+		}
+		return outcome.delivered;
+	});
+	return { kind: "uds", received };
+}
+
+/**
  * Verifies the structured envelope the parent addressed to this child.
  *
  * An absent envelope is not a failure: the parent skips delegation whenever
@@ -389,12 +459,25 @@ export function registerPermissionGate(
  * exactly the task upstream would have sent. An envelope that is present but
  * does not describe this launch is a divergence, and the child refuses rather
  * than running work under a contract nobody chose.
+ *
+ * Returns nothing on the `file` gear and a promise on `uds`, rather than being
+ * uniformly async. The distinction is load-bearing: a socket receive genuinely
+ * cannot be awaited without one, while the `file` gear's read, its refusal and
+ * the throw that carries it must stay exactly as synchronous as they were —
+ * an `async` wrapper would turn that throw into a rejected promise and leave
+ * the default path's refusal depending on whether the host happens to await
+ * its event handlers.
  */
-function verifyDeliveredEnvelope(config: ChildRuntimeConfig): void {
+function verifyDeliveredEnvelope(config: ChildRuntimeConfig, receipt: EnvelopeReceipt): void | Promise<void> {
+	if (receipt.kind === "none") return;
+	if (receipt.kind === "file") return checkDeliveredEnvelope(config, readDeliveredEnvelope(receipt.inbox));
+	return receipt.received.then((delivered) => checkDeliveredEnvelope(config, delivered));
+}
+
+/** The decision itself, identical for both gears: absent runs, rejected refuses, ready is checked against the contract. */
+function checkDeliveredEnvelope(config: ChildRuntimeConfig, delivered: DeliveredEnvelope): void {
 	const synapse = config.synapse;
 	if (!synapse) return;
-	const inbox = envelopeInboxPath(synapse.contract.storageRoot, synapse.runId, config.childIndex);
-	const delivered = readDeliveredEnvelope(inbox);
 	if (delivered.status === "absent") return;
 	if (delivered.status === "rejected") throw new Error(`SYNAPSE envelope rejected: ${delivered.reason}`);
 	const mismatch = verifyEnvelopeAgainstContract({ contract: synapse.contract, wire: delivered.wire });
@@ -463,7 +546,12 @@ function registerStructuredOutputTool(pi: ExtensionAPI, structured: NonNullable<
 }
 
 /** Register every child-side hook the prompt runtime owns for one child session. */
-export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?: ChildRuntimeConfig, drainObservation?: import("./readonly-drain-observation.ts").ReadonlyDrainObservation): void {
+export default function registerSubagentPromptRuntime(
+	pi: ExtensionAPI,
+	config?: ChildRuntimeConfig,
+	drainObservation?: import("./readonly-drain-observation.ts").ReadonlyDrainObservation,
+	deps: SubagentPromptRuntimeDeps = {},
+): void {
 	// A path-based load has no ChildRuntimeConfig. This can happen if an
 	// ambient-extension discovery path finds the runtime module in addition to
 	// the configured inline factory. It must be inert rather than crashing the
@@ -499,11 +587,22 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 	// the task is sent, so it is checked at the first agent turn rather than at
 	// session start, when the inbox is still empty. The flag is set only after a
 	// clean check: a rejected envelope must keep refusing every later turn.
+	//
+	// Receiving, unlike checking, cannot wait for the first turn: see
+	// beginEnvelopeReceipt. The `file` gear's receipt is just the inbox path, so
+	// opening it here reads nothing and changes nothing about when it is read.
+	const envelopeReceipt = beginEnvelopeReceipt(config, deps);
 	let envelopeVerified = false;
-	const verifyEnvelopeOnce = (): void => {
+	const verifyEnvelopeOnce = (): void | Promise<void> => {
 		if (envelopeVerified) return;
-		verifyDeliveredEnvelope(config);
-		envelopeVerified = true;
+		const pending = verifyDeliveredEnvelope(config, envelopeReceipt);
+		if (pending === undefined) {
+			envelopeVerified = true;
+			return;
+		}
+		return pending.then(() => {
+			envelopeVerified = true;
+		});
 	};
 	const supervisorMetadata = childSupervisorMetadata(config);
 	let nativeSupervisorClientRegistered = false;
@@ -518,12 +617,20 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 		waitState.currentSessionId = sessionManager ? resolveCurrentSessionId(sessionManager) : null;
 		registerNativeSupervisorClientOnce();
 	});
-	onRuntimeEvent("agent_start", () => {
-		verifyEnvelopeOnce();
+	const checkRequiredTools = (): undefined => {
 		if (!config.requiredTools) return;
 		const diagnostic = evaluateChildToolDiagnostic(config, pi.getAllTools().map((tool) => tool.name));
 		config.toolDiagnostic?.(diagnostic);
 		if (diagnostic) throw new Error(formatChildToolDiagnostic(diagnostic));
+		return;
+	};
+	onRuntimeEvent("agent_start", () => {
+		const pending = verifyEnvelopeOnce();
+		// Only the `uds` gear produces a promise here. Returning one where none
+		// existed before would make this handler asynchronous for every child,
+		// including the ones whose refusals are raised synchronously today.
+		if (pending !== undefined) return pending.then(checkRequiredTools);
+		return checkRequiredTools();
 	});
 	onRuntimeEvent("agent_end", async (_event: unknown, ctx: unknown) => {
 		if ((ctx as { hasUI?: boolean } | undefined)?.hasUI === true) drainObservation?.deny();

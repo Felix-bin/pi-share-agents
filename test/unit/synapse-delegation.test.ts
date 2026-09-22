@@ -48,6 +48,7 @@ function contractFor(mode: SynapseMode, pathPrefixes: string[] = [""]): LaunchCo
 		capabilityId: capabilityForAgent({ agent: "retriever", childTools: ["read"], representationId: "unavailable" }).capabilityId,
 		memoryRefs: [],
 		corpusSnapshotId: "unset",
+		deliveryGear: "file",
 		mode,
 		namespaceId: deriveNamespaceId(worktree),
 		representationId: "unavailable",
