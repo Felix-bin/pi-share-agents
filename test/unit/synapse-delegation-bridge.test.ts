@@ -111,7 +111,10 @@ describe("synapse delegation bridge", () => {
 	it("hands the recalled memory to the child and meters the delivery", () => {
 		const delegation = openFor(childContract(), "Task: explain the auth flow");
 		assert.ok(delegation);
-		assert.match(delegation.prompt, /login is verified in src\/auth\.ts/);
+		// The handle is handed over, the summary is not: under `synapse` the prompt
+		// carries the task alone and the child redeems the body locally.
+		assert.equal(delegation.prompt, "Task: explain the auth flow");
+		assert.deepEqual(delegation.envelope.memoryRefs.length, 1);
 		assert.equal(totals().messages.delivered, 1);
 		assert.equal(totals().memory.reuses, 1);
 	});

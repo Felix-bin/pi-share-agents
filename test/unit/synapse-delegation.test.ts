@@ -115,7 +115,12 @@ describe("synapse delegation", () => {
 		assert.ok(delegation, "an authorised delegation must open");
 
 		assert.ok(delegation.prompt.startsWith("Task: explain the auth flow"), "the task is never rewritten");
-		assert.match(delegation.prompt, /login is verified in src\/auth\.ts/);
+		// Under `synapse` the recalled memory reaches the child as handles in the
+		// envelope, not as text in the prompt — not even the summary line. The
+		// child redeems the bodies from the shared store itself, which is the only
+		// way the bytes are actually saved rather than merely moved.
+		assert.equal(delegation.prompt, "Task: explain the auth flow");
+		assert.doesNotMatch(delegation.prompt, /login is verified in src\/auth\.ts/);
 		assert.deepEqual(delegation.handoff.refs, [memoryId]);
 		assert.equal(delegation.handoff.carriedBodies, false, "synapse mode hands over references, not bodies");
 		assert.deepEqual(delegation.envelope.memoryRefs, [memoryId]);

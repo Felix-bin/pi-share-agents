@@ -6,7 +6,8 @@ import { selectEnvelopeRoute, verifiedTransportByteCount } from "./envelope-gear
 import { nodeIdFor, publishEnvelope, safeComponent } from "./envelope-inbox.ts";
 import { publishEnvelopeViaUds, type UdsClientTransport } from "./envelope-uds.ts";
 import { classifySynapseError } from "./errors.ts";
-import { buildReceipt, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
+import type { SynapseMode } from "./config.ts";
+import { buildReceipt, MEMORY_SECTION_HEADER, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
 import type { LaunchContract } from "./lifecycle.ts";
 import { createMemoryService, type MemoryService } from "./memory-service.ts";
 import { createMeteringLog, recordProcessIdentity, recordTransportBytes, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
@@ -173,9 +174,25 @@ function candidatesFor(service: MemoryService, message: string): HandoffCandidat
 	}));
 }
 
-const MEMORY_SECTION_HEADER = "Shared memory recalled for this task (read-only unless you record a new finding):";
-
-function promptWith(message: string, handoff: HandoffContext): string {
+/**
+ * The task as the child receives it.
+ *
+ * Under `text` the recalled memory travels inside the prompt, which is what the
+ * baseline costs and is left exactly as it was. Under `synapse` it does not:
+ * the envelope carries the handles and the child redeems the bodies from the
+ * shared store itself (design §4.2). Leaving the section here as well would
+ * send every body over the wire *and* read it again on the other side, which is
+ * the one outcome worse than either gear alone — and it would make the byte
+ * saving this whole plane exists for unmeasurable, because `textBytes` would
+ * still carry it.
+ *
+ * `handoff.text` is still built under `synapse`, and still discarded here. It
+ * is not waste: the budget is applied to those lines, so which handles are
+ * handed over stays decided the same way it always was. Only where the bodies
+ * are read changes.
+ */
+function promptWith(message: string, handoff: HandoffContext, mode: SynapseMode): string {
+	if (mode === "synapse") return message;
 	if (handoff.text.length === 0) return message;
 	return `${message}\n\n${MEMORY_SECTION_HEADER}\n${handoff.text}`;
 }
@@ -339,7 +356,7 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 	} catch (error) {
 		console.warn(`[pi-subagents] synapse: envelope delivery skipped for ${identity.agent}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	const prompt = promptWith(input.message, handoff);
+	const prompt = promptWith(input.message, handoff, contract.mode);
 	deps.log.record(boundIdentity, {
 		envelopeBytes: envelope.envelopeBytes,
 		kind: "message-delivered",

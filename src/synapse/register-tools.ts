@@ -107,7 +107,18 @@ export type SynapseToolCall<TInput> = (params: TInput) => Promise<AgentToolResul
  */
 export type SynapseToolsRegistration =
 	| { registered: false }
-	| { read: SynapseToolCall<SynapseReadInput>; registered: true; write: SynapseToolCall<SynapseWriteInput> };
+	| {
+		read: SynapseToolCall<SynapseReadInput>;
+		registered: true;
+		/**
+		 * The very service the two tools dispatch to, built from this caller's own
+		 * config and scope. Exposed so that handle redemption reads bodies through
+		 * the same authorisation the tools are subject to; reading the CAS files
+		 * directly would work and would quietly drop that projection.
+		 */
+		service: () => MemoryService;
+		write: SynapseToolCall<SynapseWriteInput>;
+	};
 
 export type SynapseService = {
 	service: MemoryService;
@@ -217,5 +228,5 @@ export function registerSynapseTools(pi: SynapseToolHost, options: SynapseToolsO
 
 	pi.registerTool(readTool);
 	pi.registerTool(writeTool);
-	return { read, registered: true, write };
+	return { read, registered: true, service: currentService, write };
 }

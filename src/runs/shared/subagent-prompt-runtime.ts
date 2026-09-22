@@ -18,8 +18,11 @@ import type { ChildWatchdogConfig } from "../../watchdog/child-status.ts";
 import { requestWatchdogPermission, type WatchdogPermissionRequest, type WatchdogPermissionResult } from "../../watchdog/permission-arbiter.ts";
 import { SUBAGENT_WATCHDOG_WARNING_TYPE } from "../../watchdog/types.ts";
 import { registerSynapseChildTools } from "../../synapse/child-contract.ts";
+import type { SynapseToolsRegistration } from "../../synapse/register-tools.ts";
 import { receiveEnvelopeViaUdsRoute, selectEnvelopeRoute } from "../../synapse/envelope-gear.ts";
 import { readDeliveredEnvelope, verifyEnvelopeAgainstContract, type DeliveredEnvelope } from "../../synapse/envelope-inbox.ts";
+import type { EnvelopeWire } from "../../synapse/envelope.ts";
+import { redeemMemoryRefs, type RedemptionResult } from "../../synapse/redemption.ts";
 import type { UdsServerTransport } from "../../synapse/envelope-uds.ts";
 import { registerWaitTool } from "../background/wait-tool.ts";
 import { drainOutstandingWork } from "../background/auto-drain.ts";
@@ -474,20 +477,70 @@ function beginEnvelopeReceipt(config: ChildRuntimeConfig, deps: SubagentPromptRu
  * the default path's refusal depending on whether the host happens to await
  * its event handlers.
  */
-function verifyDeliveredEnvelope(config: ChildRuntimeConfig, receipt: EnvelopeReceipt): void | Promise<void> {
-	if (receipt.kind === "none") return;
+function verifyDeliveredEnvelope(config: ChildRuntimeConfig, receipt: EnvelopeReceipt): EnvelopeWire | null | Promise<EnvelopeWire | null> {
+	if (receipt.kind === "none") return null;
 	if (receipt.kind === "file") return checkDeliveredEnvelope(config, readDeliveredEnvelope(receipt.inbox));
 	return receipt.received.then((delivered) => checkDeliveredEnvelope(config, delivered));
 }
 
-/** The decision itself, identical for both gears: absent runs, rejected refuses, ready is checked against the contract. */
-function checkDeliveredEnvelope(config: ChildRuntimeConfig, delivered: DeliveredEnvelope): void {
+/**
+ * The decision itself, identical for both gears: absent runs, rejected refuses,
+ * ready is checked against the contract.
+ *
+ * The accepted wire is returned rather than dropped. It is the only thing that
+ * names which memories this task was handed — the parent no longer puts them in
+ * the prompt under the `synapse` gear — so discarding it after the check would
+ * leave the child with nothing to redeem. `null` means there is nothing to
+ * redeem, which an absent envelope genuinely is.
+ */
+function checkDeliveredEnvelope(config: ChildRuntimeConfig, delivered: DeliveredEnvelope): EnvelopeWire | null {
 	const synapse = config.synapse;
-	if (!synapse) return;
-	if (delivered.status === "absent") return;
+	if (!synapse) return null;
+	if (delivered.status === "absent") return null;
 	if (delivered.status === "rejected") throw new Error(`SYNAPSE envelope rejected: ${delivered.reason}`);
 	const mismatch = verifyEnvelopeAgainstContract({ contract: synapse.contract, wire: delivered.wire });
 	if (mismatch !== null) throw new Error(`SYNAPSE envelope rejected: ${mismatch}`);
+	return delivered.wire;
+}
+
+/**
+ * Reads the bodies this task's handles name, through this child's own tools.
+ *
+ * Only the `synapse` mode redeems: under `text` the parent already put the
+ * bodies in the prompt, and reading them again here would double both the bytes
+ * and the section.
+ *
+ * The reader is the service the child's own memory tools dispatch to, so the
+ * scope `isReadable` checks is the child's. Refusals are classified by
+ * `redeemMemoryRefs` and surfaced here; none of them stops the run, because a
+ * store wiped by a reboot (design §4.4) and a handle the parent recalled beyond
+ * this child's reach are both facts about the material, not failures of the
+ * task that was asked for.
+ */
+function redeemEnvelopeMemories(config: ChildRuntimeConfig, wire: EnvelopeWire, registration: SynapseToolsRegistration | undefined): RedemptionResult | undefined {
+	const synapse = config.synapse;
+	if (!synapse || synapse.contract.mode !== "synapse") return undefined;
+	if (wire.memoryRefs.length === 0) return undefined;
+	if (registration === undefined || !registration.registered) {
+		// The handles arrived but this child has no memory tools to read them
+		// with. Saying so beats a silently empty section: the parent stopped
+		// sending bodies on the assumption that this side could fetch them.
+		console.warn(`[pi-subagents] synapse: ${wire.memoryRefs.length} handle(s) could not be redeemed: memory tools are not registered in this child`);
+		return undefined;
+	}
+	const budgetBytes = synapse.contextBudgetBytes;
+	const result = redeemMemoryRefs({
+		budgetBytes,
+		memoryRefs: wire.memoryRefs,
+		readBody: (memoryId) => registration.service().get({ limitBytes: budgetBytes, memoryId }).text,
+	});
+	for (const refusal of result.refusals) {
+		console.warn(`[pi-subagents] synapse: handle ${refusal.memoryId} not redeemed (${refusal.category}): ${refusal.reason}`);
+	}
+	if (result.omitted > 0) {
+		console.warn(`[pi-subagents] synapse: ${result.omitted} redeemed body/bodies did not fit the ${budgetBytes}-byte context budget`);
+	}
+	return result;
 }
 
 function registerToolBudget(pi: ExtensionAPI, budget: ResolvedToolBudget | undefined): void {
@@ -586,8 +639,9 @@ export default function registerSubagentPromptRuntime(
 	// The child registers its own memory tools from the contract it was launched
 	// with, so a delegated agent reads and writes the project's shared memory
 	// under its own identity rather than the parent's.
+	let synapseRegistration: SynapseToolsRegistration | undefined;
 	if (config.synapse && typeof pi.registerTool === "function") {
-		registerSynapseChildTools(pi, config.synapse, process.cwd());
+		synapseRegistration = registerSynapseChildTools(pi, config.synapse, process.cwd());
 	}
 	// The envelope is published after this session exists and immediately before
 	// the task is sent, so it is checked at the first agent turn rather than at
@@ -599,16 +653,22 @@ export default function registerSubagentPromptRuntime(
 	// opening it here reads nothing and changes nothing about when it is read.
 	const envelopeReceipt = beginEnvelopeReceipt(config, deps);
 	let envelopeVerified = false;
+	let redemption: RedemptionResult | undefined;
+	// Redemption is what the child does with an accepted envelope, so it belongs
+	// to the same "once" as the check: a second turn must neither re-verify nor
+	// pay to read the bodies again.
+	const acceptEnvelope = (wire: EnvelopeWire | null): void => {
+		envelopeVerified = true;
+		if (wire !== null) redemption = redeemEnvelopeMemories(config, wire, synapseRegistration);
+	};
 	const verifyEnvelopeOnce = (): void | Promise<void> => {
 		if (envelopeVerified) return;
 		const pending = verifyDeliveredEnvelope(config, envelopeReceipt);
-		if (pending === undefined) {
-			envelopeVerified = true;
+		if (!(pending instanceof Promise)) {
+			acceptEnvelope(pending);
 			return;
 		}
-		return pending.then(() => {
-			envelopeVerified = true;
-		});
+		return pending.then(acceptEnvelope);
 	};
 	const supervisorMetadata = childSupervisorMetadata(config);
 	let nativeSupervisorClientRegistered = false;
@@ -669,6 +729,13 @@ export default function registerSubagentPromptRuntime(
 	onRuntimeEvent("before_agent_start", async (event: unknown) => {
 		if (!event || typeof event !== "object" || !("systemPrompt" in event) || typeof event.systemPrompt !== "string") return undefined;
 		registerNativeSupervisorClientOnce();
+		// Redemption has to happen here rather than at `agent_start`, because this
+		// is the last event that can still change what the model reads and it
+		// fires first. Under `synapse` that pulls the envelope check forward with
+		// it — bodies must never be spliced in from an envelope that has not been
+		// matched against the contract. Under every other mode the check stays
+		// exactly where it was, at `agent_start`, synchronous throw included.
+		if (config.synapse?.contract.mode === "synapse") await verifyEnvelopeOnce();
 		// The intercom target is a routing address and always wins; the display
 		// name (agent + task excerpt, computed by the parent at launch) only
 		// applies when the bridge is not addressing this child.
@@ -688,6 +755,12 @@ export default function registerSubagentPromptRuntime(
 				fanoutChild,
 				structuredOutput: Boolean(config.structuredOutput),
 			});
+		}
+		// The redeemed section is appended last so it cannot be rearranged by the
+		// inheritance rewrite above, and so its absence leaves that rewrite's
+		// output byte-identical to what it produced before redemption existed.
+		if (redemption !== undefined && redemption.section.length > 0) {
+			rewritten = `${rewritten}\n\n${redemption.section}`;
 		}
 		if (rewritten === event.systemPrompt) return;
 		return { systemPrompt: rewritten };
