@@ -639,6 +639,10 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		// Declared outside the attempt so the failure path closes the same
 		// delegation the success path would have closed.
 		let delegation: OpenDelegation | null = null;
+		// Kept reachable from the catch path: a failed delegation still closes its
+		// synapse bookkeeping, and the close needs the runtime to reach the child's
+		// contract (the auto-distill switch lives there).
+		let delegationRuntime: import("../shared/child-runtime-config.ts").ChildRuntimeConfig | undefined;
 		void (async () => {
 			try {
 				const continuation = input.readonlyContinuation;
@@ -651,6 +655,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				};
 				checkContinuation();
 				const createInput = createReportedChildSessionInput(input.launch, input.transcriptWriter);
+				delegationRuntime = createInput.runtime;
 				if (input.collectReadonlyEvidence || continuation) requestReadonlySessionEvidence(createInput, continuation?.expected);
 				const created = await input.factory.create(createInput);
 				if (settled) {
@@ -713,6 +718,8 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				closeChildDelegation(delegation, {
 					cancelled: interrupted || stopped,
 					finalOutput: getFinalOutput(messages),
+					runtime: delegationRuntime,
+					taskText: input.prompt,
 					timedOut,
 					usage,
 				});
@@ -723,6 +730,8 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 					cancelled: interrupted || stopped,
 					cause: promptError,
 					finalOutput: getFinalOutput(messages),
+					runtime: delegationRuntime,
+					taskText: input.prompt,
 					timedOut,
 					usage,
 				});
