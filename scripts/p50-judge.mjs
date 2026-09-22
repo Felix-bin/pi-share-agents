@@ -118,7 +118,16 @@ async function judgeOnce(key, task, keypoints, answer) {
 async function main() {
 	const argv = process.argv.slice(2);
 	const opt = { out: null, pairs: null };
-	for (let i = 0; i < argv.length; i += 2) opt[argv[i].slice(2)] = argv[i + 1];
+	for (let i = 0; i < argv.length; i += 1) {
+		// --self-check is a boolean flag: it takes no value, so the parser must
+		// not swallow the argument after it (that silently disabled the feature).
+		if (argv[i] === "--self-check") {
+			opt["self-check"] = true;
+			continue;
+		}
+		opt[argv[i].slice(2)] = argv[i + 1];
+		i += 1;
+	}
 	// Two ways to name the arms: the P50 pair (--syn/--txt) or an explicit list
 	// (--arms "AUTOGEN=<dir>,CREWAI=<dir>") for the §11 framework baselines.
 	// Both go through the identical frozen prompt and scoring.
