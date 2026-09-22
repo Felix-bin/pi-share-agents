@@ -160,14 +160,15 @@ async function main() {
 			}
 			const answer = fs.readFileSync(answerFile, "utf-8");
 			const normalized = normalizeAnswer(answer);
-			const keypoints = keypointsByTask.get(round);
+			const taskIndex = ((round - 1) % 30) + 1; // P50M replays rounds 31-60 over tasks 1-30
+			const keypoints = keypointsByTask.get(taskIndex);
 			if (keypoints === undefined) throw new Error(`no keypoints for task ${round}`);
 			let outcome = null;
 			let secondOutcome = null;
 			let lastError = null;
 			for (let attempt = 1; attempt <= 2 && outcome === null; attempt += 1) {
 				try {
-					outcome = await judgeOnce(key, TASKS[round - 1], keypoints, normalized);
+					outcome = await judgeOnce(key, TASKS[taskIndex - 1], keypoints, normalized);
 				} catch (error) {
 					lastError = error;
 				}
@@ -178,7 +179,7 @@ async function main() {
 			// could be judge noise rather than answer quality.
 			if (opt["self-check"] && outcome !== null) {
 				try {
-					secondOutcome = await judgeOnce(key, TASKS[round - 1], keypoints, normalized);
+					secondOutcome = await judgeOnce(key, TASKS[taskIndex - 1], keypoints, normalized);
 				} catch {
 					secondOutcome = null;
 				}
@@ -221,8 +222,8 @@ async function main() {
 		sample.push({
 			arm,
 			round: Number(round),
-			task: TASKS[Number(round) - 1],
-			keypoints: keypointsByTask.get(Number(round)),
+			task: TASKS[(Number(round) - 1) % 30],
+			keypoints: keypointsByTask.get(((Number(round) - 1) % 30) + 1),
 			answer: fs.readFileSync(answerFile, "utf-8"),
 			normalizedAnswer: normalizeAnswer(fs.readFileSync(answerFile, "utf-8")),
 			judge: results.detail[`${arm}-${round}`],
