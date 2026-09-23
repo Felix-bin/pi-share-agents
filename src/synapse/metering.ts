@@ -55,7 +55,8 @@ export type MeteringPayload =
 	| { kind: "memory-reuse"; memoryId: string; sourceAgent: string }
 	| { bytes: number; direction: "read" | "write"; kind: "object-io" }
 	| { kind: "task-span"; phase: "start" | "end"; taskId: string }
-	| { category: SynapseErrorClassification; detail: string; kind: "error" };
+	| { category: SynapseErrorClassification; detail: string; kind: "error" }
+	| { kind: "process-identity"; pid: number; startTicks: number; uptimeAtRecordSeconds: number };
 
 export type MeteringEvent = MeteringIdentity &
 	MeteringPayload & {
@@ -93,6 +94,72 @@ export function createMeteringLog(logPath: string, options: MeteringLogOptions =
 			return event;
 		},
 	};
+}
+
+export type ProcessIdentitySnapshot = { pid: number; startTicks: number; uptimeAtRecordSeconds: number };
+
+export type ProcessIdentityOptions = {
+	pid?: number;
+	readFile?: (filePath: string) => string;
+};
+
+/**
+ * Field 22 of /proc/self/stat: process start time in clock ticks since boot.
+ * Field 2 (comm) is parenthesised and may itself contain spaces and closing
+ * parentheses, so this parses from the LAST ")" rather than splitting the
+ * whole line on whitespace, which would misplace every field that follows.
+ */
+function parseStartTicks(stat: string): number | null {
+	const closeParen = stat.lastIndexOf(")");
+	if (closeParen === -1) return null;
+	const fieldsAfterComm = stat.slice(closeParen + 1).trim().split(/\s+/);
+	// fieldsAfterComm[0] is field 3 (state); field 22 is index 22 - 3 = 19.
+	const raw = fieldsAfterComm[19];
+	if (raw === undefined) return null;
+	const value = Number(raw);
+	return Number.isFinite(value) ? value : null;
+}
+
+/** The first whitespace-separated field of /proc/uptime: seconds since boot. */
+function parseUptimeSeconds(uptime: string): number | null {
+	const [first] = uptime.trim().split(/\s+/);
+	if (first === undefined) return null;
+	const value = Number(first);
+	return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Reads this process's OS identity from /proc, when it exists. A platform
+ * without /proc — and any read that fails for another reason — has nothing to
+ * bind, so the caller gets null rather than a guess. The file reader is
+ * injectable so the field parsing can be proven correct in CI, which runs
+ * this file's tests on platforms that never have /proc at all; production
+ * code leaves it unset and gets the real filesystem.
+ */
+export function readProcessIdentity(options: ProcessIdentityOptions = {}): ProcessIdentitySnapshot | null {
+	const pid = options.pid ?? process.pid;
+	const readFile = options.readFile ?? ((filePath: string) => fs.readFileSync(filePath, "utf-8"));
+	try {
+		const startTicks = parseStartTicks(readFile("/proc/self/stat"));
+		const uptimeAtRecordSeconds = parseUptimeSeconds(readFile("/proc/uptime"));
+		if (startTicks === null || uptimeAtRecordSeconds === null) return null;
+		return { pid, startTicks, uptimeAtRecordSeconds };
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Binds this process's OS identity to a SYNAPSE run identity, when the OS
+ * identity is available at all. This is the one event a future kernel-side
+ * collector needs to attribute its own records back to a run; it does not
+ * participate in any of the totals below (see the guard in aggregateMetering)
+ * because it measures process identity, not application work.
+ */
+export function recordProcessIdentity(log: MeteringLog, identity: MeteringIdentity, options?: ProcessIdentityOptions): MeteringEvent | null {
+	const snapshot = readProcessIdentity(options);
+	if (snapshot === null) return null;
+	return log.record(identity, { kind: "process-identity", ...snapshot });
 }
 
 export function readMeteringLog(logPath: string): MeteringEvent[] {
@@ -179,8 +246,13 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	let memoryHits = 0;
 
 	for (const event of events) {
-		firstMonotonic = firstMonotonic === null ? event.monotonicMs : Math.min(firstMonotonic, event.monotonicMs);
-		lastMonotonic = lastMonotonic === null ? event.monotonicMs : Math.max(lastMonotonic, event.monotonicMs);
+		// process-identity binds an OS process to a run for a future kernel-side
+		// joiner; it carries no application work and must not shift the span a
+		// log without it would produce.
+		if (event.kind !== "process-identity") {
+			firstMonotonic = firstMonotonic === null ? event.monotonicMs : Math.min(firstMonotonic, event.monotonicMs);
+			lastMonotonic = lastMonotonic === null ? event.monotonicMs : Math.max(lastMonotonic, event.monotonicMs);
+		}
 
 		switch (event.kind) {
 			case "message-delivered": {
@@ -271,6 +343,9 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 				break;
 			case "error":
 				errors[event.category] = (errors[event.category] ?? 0) + 1;
+				break;
+			case "process-identity":
+				// Recorded for a future kernel-side joiner only; nothing here to total.
 				break;
 		}
 	}
