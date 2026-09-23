@@ -43,10 +43,42 @@ describe("synapse roles", () => {
 		assert.equal(unknown.declaration.consumesState, false);
 	});
 
-	it("reports no state consumption while no tool decodes a state", () => {
-		assert.equal(consumesState(["read", "grep", "bash", "synapse_read"]), false);
-		assert.equal(capability("retriever", ["read", "synapse_read"]).declaration.consumesState, false);
+	it("derives state consumption from the granted tools, not from the role's claims", () => {
+		assert.equal(consumesState(["read", "grep", "bash"]), false);
+		assert.equal(consumesState(["read", "synapse_read"]), true);
+		assert.equal(capability("retriever", ["read", "synapse_read"]).declaration.consumesState, true);
+		// A child without the memory tools keeps consuming nothing, and the host
+		// still cannot be the peer that makes a vector path appear.
+		assert.equal(capability("retriever", ["read"]).declaration.consumesState, false);
 		assert.equal(hostCapability(REPRESENTATION).declaration.consumesState, false);
+	});
+
+	it("selects the state path when every negotiation condition holds (P3-4)", () => {
+		const receiver = capability("retriever", ["read", "synapse_read"]).declaration;
+		const sender = { ...receiver, agent: "parent" };
+		const result = negotiate({
+			action: "retrieve",
+			allowTextFallback: true,
+			mode: "synapse",
+			receiver,
+			receiverMayRead: true,
+			sender,
+		});
+		assert.deepEqual(result, { capabilityId: capability("retriever", ["read", "synapse_read"]).capabilityId, encoding: "float32-vector", outcome: "state" });
+	});
+
+	it("falls back to text with a named reason when the receiver holds no consuming tool (AC-05 unit form)", () => {
+		const receiver = capability("retriever", ["read"]).declaration;
+		const sender = { ...receiver, agent: "parent" };
+		const result = negotiate({
+			action: "retrieve",
+			allowTextFallback: true,
+			mode: "synapse",
+			receiver,
+			receiverMayRead: true,
+			sender,
+		});
+		assert.deepEqual(result, { capabilityId: capability("retriever", ["read"]).capabilityId, outcome: "text", reason: "receiver-cannot-consume-state" });
 	});
 
 	it("separates the representation: the same role under two representations is two capabilities", () => {

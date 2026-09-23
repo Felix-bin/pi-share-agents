@@ -38,10 +38,15 @@ function childContract(): SynapseChildContract {
 			namespaceId: deriveNamespaceId(worktree),
 			representationId: "unavailable",
 			scope: { pathPrefixes: [""], write: true },
+			stateVerify: "off",
 			storageRoot: store,
 		}),
+		capabilityTools: ["read", "grep"],
+		delta: false,
+		embedding: null,
 		runId: "run-7",
 		sessionId: "sess-parent",
+		vectorCache: false,
 	};
 }
 
@@ -64,7 +69,6 @@ function runtime(synapse: SynapseChildContract | undefined): ChildRuntimeConfig 
 
 function openFor(synapse: SynapseChildContract | undefined, message: string) {
 	return openChildDelegation({
-		childTools: ["read", "grep"],
 		cwd: worktree,
 		message,
 		receiverSessionId: "sess-child",
@@ -76,13 +80,13 @@ function totals() {
 	return aggregateMetering(readMeteringLog(meteringLogPath(childContract().contract, "run-7")));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
 	root = fs.mkdtempSync(path.join(os.tmpdir(), "synapse-bridge-"));
 	store = path.join(root, "store");
 	worktree = path.join(root, "worktree");
 	fs.mkdirSync(path.join(worktree, "src"), { recursive: true });
 	fs.writeFileSync(path.join(worktree, "src", "auth.ts"), "export const login = 1;\n", "utf-8");
-	createMemoryService({
+	await createMemoryService({
 		provenance: { agent: "retriever", attempt: 1, runId: "run-0", sessionId: "sess-seed" },
 		scope: { agent: "retriever", namespaceId: deriveNamespaceId(worktree), pathPrefixes: [""], write: true },
 		storeRoot: store,

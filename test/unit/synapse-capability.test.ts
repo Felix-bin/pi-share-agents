@@ -15,6 +15,7 @@ function declare(overrides: Partial<CapabilityDeclaration> = {}): CapabilityDecl
 		consumesState: overrides.consumesState ?? true,
 		consumerVersion: overrides.consumerVersion ?? 1,
 		encodings: overrides.encodings ?? ["text", "float32-vector"],
+		...(overrides.probe === undefined ? {} : { probe: overrides.probe }),
 		representationId: overrides.representationId ?? "siliconflow/BAAI/bge-m3/1024/l2/f32le",
 	};
 }
@@ -26,6 +27,7 @@ function input(overrides: Partial<NegotiationInput> = {}): NegotiationInput {
 		mode: overrides.mode ?? "synapse",
 		receiver: overrides.receiver ?? declare({ agent: "retriever" }),
 		receiverMayRead: overrides.receiverMayRead ?? true,
+		...(overrides.receiverProbeVerified === undefined ? {} : { receiverProbeVerified: overrides.receiverProbeVerified }),
 		sender: overrides.sender ?? declare({ agent: "planner" }),
 	};
 }
@@ -144,5 +146,50 @@ describe("negotiation is bounded by mode and permission (AC-03)", () => {
 		if (result.outcome !== "state") return;
 		// v1 sends full vectors; delta only becomes selectable once it is calibrated.
 		assert.equal(result.encoding, "float32-vector");
+	});
+});
+
+describe("runtime probe gate (CNR verifiable promise)", () => {
+	it("takes the text path with an explicit reason when the receiver's probe failed", () => {
+		const result = negotiate(input({ receiverProbeVerified: false }));
+		assert.equal(result.outcome, "text");
+		if (result.outcome !== "text") return;
+		assert.equal(result.reason, "probe-unverified");
+	});
+
+	it("keeps the state path when the probe passed", () => {
+		const result = negotiate(input({ receiverProbeVerified: true }));
+		assert.equal(result.outcome, "state");
+	});
+
+	it("changes nothing when no probe verdict was supplied", () => {
+		assert.equal(negotiate(input()).outcome, "state");
+	});
+
+	it("keeps the capability id stable across probe declarations: verification state must not expire a contract", () => {
+		const withoutProbe = describeCapability(declare());
+		const withProbe = describeCapability(declare({ probe: ["state-retrieval"] }));
+		assert.equal(withProbe.capabilityId, withoutProbe.capabilityId);
+	});
+
+	it("normalises the probe list like every other multi-valued field", () => {
+		const ordered = describeCapability(declare({ probe: ["state-retrieval", "state-retrieval"] })).declaration.probe;
+		assert.deepEqual(ordered, ["state-retrieval"]);
+	});
+});
+
+describe("probe gate at the negotiate level: the undeclared branch", () => {
+	it("never consults a verdict for a receiver that declared no probe items", () => {
+		// A probe-less receiver with a verdict supplied still takes the state
+		// path when the verdict is true, and degrades safely when a caller
+		// insists a probe failed: the caller's explicit false is honoured rather
+		// than second-guessed against a declaration that does not exist.
+		const probeLess = declare();
+		assert.equal(probeLess.probe, undefined);
+		assert.equal(negotiate(input({ receiver: probeLess, receiverProbeVerified: true })).outcome, "state");
+		const refused = negotiate(input({ receiver: probeLess, receiverProbeVerified: false }));
+		assert.equal(refused.outcome, "text");
+		if (refused.outcome !== "text") return;
+		assert.equal(refused.reason, "probe-unverified");
 	});
 });

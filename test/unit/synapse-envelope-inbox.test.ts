@@ -40,6 +40,7 @@ function contractFor(overrides: ContractOverrides = {}): LaunchContract {
 		namespaceId: overrides.namespaceId ?? NAMESPACE_ID,
 		representationId: "unavailable",
 		scope: { pathPrefixes: overrides.pathPrefixes ?? ["src"], write: false },
+		stateVerify: "off",
 		storageRoot: store,
 	});
 }

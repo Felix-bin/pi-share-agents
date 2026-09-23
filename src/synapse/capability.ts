@@ -34,6 +34,17 @@ export type CapabilityDeclaration = {
 	consumesState: boolean;
 	consumerVersion: number;
 	encodings: readonly SynapseEncoding[];
+	/**
+	 * Capability items the declarer claims that must pass a runtime probe
+	 * before negotiation trusts them (the CNR "verifiable promise"). Deliberately
+	 * NOT part of the capability id: the id pins what may cross the wire and
+	 * feeds persisted contracts that must keep rebuilding, while a probe verdict
+	 * is runtime state with a TTL — an id that expired would be a contract that
+	 * expires. Strict by design: a receiver that declares probe items is only
+	 * trusted once a probe verdict exists, so a caller that reaches negotiation
+	 * without wiring one negotiates down to text, never silently up to state.
+	 */
+	probe?: readonly string[];
 	representationId: string;
 };
 
@@ -50,6 +61,14 @@ export type NegotiationInput = {
 	receiver: CapabilityDeclaration;
 	/** The receiver's authorisation, already projected by the host. */
 	receiverMayRead: boolean;
+	/**
+	 * The runtime probe verdict for the receiver's declared probe items, when
+	 * the caller ran one. `false` takes the text path with an explicit reason
+	 * rather than trusting a claim whose verification failed; undefined leaves
+	 * negotiation exactly where it was before probes existed (a caller that
+	 * wires nothing changes nothing).
+	 */
+	receiverProbeVerified?: boolean;
 	sender: CapabilityDeclaration;
 };
 
@@ -57,6 +76,7 @@ export type TextFallbackReason =
 	| "mode-text"
 	| "action-needs-no-state"
 	| "no-common-encoding"
+	| "probe-unverified"
 	| "receiver-cannot-consume-state"
 	| "representation-mismatch";
 
@@ -68,6 +88,9 @@ export type NegotiationResult =
 	| { outcome: "refused"; reason: RefusalReason };
 
 function normalise(declaration: CapabilityDeclaration): CapabilityDeclaration {
+	// The probe list rides on the declaration but not on the id — see the
+	// field's own comment for why verification state must not expire a contract.
+	const probeField = declaration.probe === undefined ? {} : { probe: [...new Set(declaration.probe)].sort() };
 	return {
 		// Order is not part of a capability: two peers that list the same actions
 		// differently declare the same thing and must share one record.
@@ -76,6 +99,7 @@ function normalise(declaration: CapabilityDeclaration): CapabilityDeclaration {
 		consumesState: declaration.consumesState,
 		consumerVersion: declaration.consumerVersion,
 		encodings: [...new Set(declaration.encodings)].sort(),
+		...probeField,
 		representationId: declaration.representationId,
 	};
 }
@@ -122,6 +146,11 @@ export function negotiate(input: NegotiationInput): NegotiationResult {
 	}
 	if (receiver.declaration.representationId !== sender.declaration.representationId) return asText("representation-mismatch");
 	if (!receiver.declaration.consumesState) return asText("receiver-cannot-consume-state");
+	// The verifiable promise, asked last of all: everything above checked what
+	// the peers DECLARE, this checks whether the runtime probe backed the claim.
+	// Only a verdict the caller actually ran can fail a launch — undefined means
+	// no probe was wired, which is the pre-probe behaviour unchanged.
+	if (input.receiverProbeVerified === false) return asText("probe-unverified");
 
 	return { capabilityId, encoding: "float32-vector", outcome: "state" };
 }

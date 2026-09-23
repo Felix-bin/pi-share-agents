@@ -21,6 +21,7 @@ function contractInput(overrides: Partial<LaunchContractInput> = {}): LaunchCont
 		mode: overrides.mode ?? "synapse",
 		namespaceId: overrides.namespaceId ?? "0123456789abcdef",
 		representationId: overrides.representationId ?? "siliconflow/BAAI/bge-m3/1024/l2/f32le",
+		stateVerify: overrides.stateVerify ?? "off",
 		scope: overrides.scope ?? { pathPrefixes: ["src"], write: false },
 		storageRoot: overrides.storageRoot ?? "/store/0123456789abcdef",
 	};
@@ -131,6 +132,37 @@ describe("rehydration after reload or resume (AC-14)", () => {
 		assert.equal(result.status, "refused");
 		if (result.status !== "refused") return;
 		assert.equal(result.category, "integrity");
+	});
+
+	it("covers the receiver's verification setting in the contract's own digest", () => {
+		// The setting changes what a consumed state is allowed to be, so a contract
+		// rehydrated with a different one must not pass as the original: a persisted
+		// contract is the only record of what the receiver was launched to do.
+		const contract = resolveLaunchContract(contractInput({ stateVerify: "reembed" }));
+		const tampered = JSON.stringify({ ...contract, stateVerify: "off" });
+		const result = rehydrateLaunchContract(tampered, checks());
+		assert.equal(result.status, "refused");
+		if (result.status !== "refused") return;
+		assert.equal(result.category, "integrity");
+
+		// And the setting survives an honest round trip.
+		const honest = rehydrateLaunchContract(serialiseLaunchContract(contract), checks());
+		assert.equal(honest.status, "ready");
+		if (honest.status !== "ready") return;
+		assert.equal(honest.contract.stateVerify, "reembed");
+	});
+
+	it("rehydrates a contract persisted before the verification setting existed", () => {
+		// A setting added later must not make older contracts read as tampered: an old
+		// contract's identity was computed without it, and that identity has to keep
+		// verifying, or every resume across an upgrade fails as corruption.
+		const contract = resolveLaunchContract(contractInput());
+		const legacy = JSON.parse(serialiseLaunchContract(contract)) as Record<string, unknown>;
+		delete legacy.stateVerify;
+		const result = rehydrateLaunchContract(JSON.stringify(legacy), checks());
+		assert.equal(result.status, "ready");
+		if (result.status !== "ready") return;
+		assert.equal(result.contract.stateVerify, "off");
 	});
 
 	it("refuses unreadable persisted state instead of starting from defaults", () => {

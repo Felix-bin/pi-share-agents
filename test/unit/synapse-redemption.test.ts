@@ -76,8 +76,8 @@ function serviceWithin(pathPrefixes: string[]): MemoryService {
 	});
 }
 
-function seedMemory(summary: string, content: string, sourcePath: string | undefined): string {
-	return serviceWithin([""]).remember({
+async function seedMemory(summary: string, content: string, sourcePath: string | undefined): Promise<string> {
+	return (await serviceWithin([""]).remember({
 		content,
 		kind: "evidence",
 		operationId: `seed/${summary}`,
@@ -85,7 +85,7 @@ function seedMemory(summary: string, content: string, sourcePath: string | undef
 		summary,
 		tags: ["auth"],
 		topic: "auth flow",
-	}).record.memoryId;
+	})).record.memoryId;
 }
 
 function createLog(contract: LaunchContract): MeteringLog {
@@ -156,7 +156,7 @@ afterEach(() => {
 
 describe("the parent stops sending bodies, the child starts reading them", () => {
 	it("moves the recalled body out of the parent's prompt and into the child's", async () => {
-		const memoryId = seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+		const memoryId = await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
 		const contract = contractFor("synapse");
 		const delegation = openFor(contract);
 		assert.ok(delegation);
@@ -177,7 +177,7 @@ describe("the parent stops sending bodies, the child starts reading them", () =>
 	});
 
 	it("redeems once, however many turns the child takes", async () => {
-		seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+		await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
 		const contract = contractFor("synapse");
 		assert.ok(openFor(contract));
 		const handlers = registerChild(contract);
@@ -189,7 +189,7 @@ describe("the parent stops sending bodies, the child starts reading them", () =>
 	});
 
 	it("leaves the text baseline exactly where it was: bodies in the prompt, nothing redeemed", async () => {
-		seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+		await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
 		const contract = contractFor("text");
 		const delegation = openFor(contract);
 		assert.ok(delegation);
@@ -206,7 +206,7 @@ describe("the parent stops sending bodies, the child starts reading them", () =>
 	});
 
 	it("survives a store that lost its objects, on the path a real child takes", async () => {
-		seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+		await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
 		const contract = contractFor("synapse");
 		const delegation = openFor(contract);
 		assert.ok(delegation);
@@ -223,7 +223,7 @@ describe("the parent stops sending bodies, the child starts reading them", () =>
 	});
 
 	it("runs the task unchanged when no envelope arrived at all", async () => {
-		seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+		await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
 		const contract = contractFor("synapse");
 		// No delegation opened, so no envelope was ever published. An absent
 		// envelope has always meant "run upstream's own task", and redemption must
@@ -235,8 +235,8 @@ describe("the parent stops sending bodies, the child starts reading them", () =>
 });
 
 describe("a refusal to redeem names which fact it is", () => {
-	it("classifies a handle outside the child's scope as a permission refusal, not a missing object", () => {
-		const memoryId = seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+	it("classifies a handle outside the child's scope as a permission refusal, not a missing object", async () => {
+		const memoryId = await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
 		// The child's own service, scoped to somewhere the record is not. This is
 		// the projection the design leans on: redemption reads through the service
 		// the child registered, so `isReadable` is asking about the child.
@@ -253,8 +253,8 @@ describe("a refusal to redeem names which fact it is", () => {
 		assert.notEqual(result.refusals[0]?.category, "object-unavailable");
 	});
 
-	it("classifies a body whose object is gone as object-unavailable, and keeps running", () => {
-		const memoryId = seedMemory("login is verified in src/auth.ts", BODY, undefined);
+	it("classifies a body whose object is gone as object-unavailable, and keeps running", async () => {
+		const memoryId = await seedMemory("login is verified in src/auth.ts", BODY, undefined);
 		const wide = serviceWithin([""]);
 		assert.equal(wide.get({ memoryId }).text, BODY, "readable before the store loses the object");
 
@@ -273,8 +273,8 @@ describe("a refusal to redeem names which fact it is", () => {
 		assert.equal(result.section, "");
 	});
 
-	it("keeps the bodies it could read when only some handles refuse", () => {
-		const readable = seedMemory("readable", "the readable body", undefined);
+	it("keeps the bodies it could read when only some handles refuse", async () => {
+		const readable = await seedMemory("readable", "the readable body", undefined);
 		const result = redeemMemoryRefs({
 			budgetBytes: 8192,
 			memoryRefs: [readable, "0".repeat(64)],

@@ -40,11 +40,22 @@ export type SetupArgument =
 	| { kind: "key-clear" }
 	| { kind: "error"; message: string };
 
+/**
+ * Whether semantic retrieval is actually available, and why not when it is not.
+ *
+ * Answered by the same resolution the run path uses, so the report cannot drift
+ * from what a run will do. It is not a probe of the provider — reaching out to it
+ * from a status command would spend quota and fail for reasons that have nothing
+ * to do with the configuration.
+ */
+export type SynapseSemanticStatus = { available: false; reason: string } | { available: true; representationId: string };
+
 export type SynapseStatus = {
 	config: SynapseConfig;
 	configPath: string;
 	key: ResolvedKey;
 	recordCount: number | "unavailable";
+	semantic: SynapseSemanticStatus;
 	storageRoot: string | null;
 	storeExists: boolean;
 };
@@ -104,6 +115,20 @@ function describeRecords(status: SynapseStatus): string {
 	return status.recordCount === "unavailable" ? "record count unavailable" : `${status.recordCount} memories`;
 }
 
+/**
+ * The `semantic` line.
+ *
+ * This used to be a constant, and it said "unavailable — retrieval ranks by
+ * keyword and tag only" whatever the configuration was. A user who had just
+ * configured a provider and a working key read that line, believed the vector
+ * path was off, and had no way to tell a correct setup from a broken one — which
+ * is the one thing this command exists to answer.
+ */
+function describeSemantic(status: SynapseStatus): string {
+	if (status.semantic.available) return `available — ${status.semantic.representationId}`;
+	return `unavailable — ${status.semantic.reason}`;
+}
+
 export function renderSynapseStatus(status: SynapseStatus): string {
 	const lines = [
 		"SYNAPSE shared memory",
@@ -112,7 +137,7 @@ export function renderSynapseStatus(status: SynapseStatus): string {
 		`  memory:    ${status.config.memory}`,
 		`  store:     ${status.storageRoot ?? "(none while off)"}`,
 		`  contents:  ${describeRecords(status)}`,
-		`  semantic:  unavailable — retrieval ranks by keyword and tag only`,
+		`  semantic:  ${describeSemantic(status)}`,
 		`  ${SYNAPSE_KEY_ENV}: ${describeKey(status.key)}`,
 		`  config:    ${status.configPath}`,
 		"",

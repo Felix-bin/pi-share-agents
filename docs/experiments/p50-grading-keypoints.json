@@ -1,0 +1,283 @@
+{
+  "purpose": "P50 answer-quality grading keypoints, frozen BEFORE any P50 full-run data (preregistration §8/§10). The LLM judge scores each child answer 0..1 by the share of keypoints correctly reported. Every keypoint was grounded against the synapse repository at master 3491b37 (the corpus snapshot sourceCommit, byte-identical to the child worktree) on 2026-09-21.",
+  "sourceCommit": "3491b37ade90c863734e900b404144e19e274721",
+  "pathConvention": "anchors are relative to the child worktree root (the synapse repository copy)",
+  "scoring": "score = (# keypoints correctly reported) / (# keypoints); a keypoint is correct when the answer states the fact or an exact equivalent (unit conversions and verbatim constant expressions count); extra correct detail neither helps nor hurts; a wrong number on a probed constant fails that keypoint",
+  "tasks": [
+    {
+      "task": 1,
+      "anchors": ["源代码及readme文档/src/synapse/stateplane/cas.py", "源代码及readme文档/src/synapse/stateplane/checksum.py"],
+      "keypoints": [
+        "handle = content hash of the stored bytes (blake2b digest via digest_bytes, 12 bytes / 24 hex chars)",
+        "operations: put (store and return handle), get, has, diff (handles the remote has that the local lacks)",
+        "put keeps counters: writes (count) and write_bytes (total bytes)"
+      ]
+    },
+    {
+      "task": 2,
+      "anchors": ["源代码及readme文档/src/synapse/stateplane/residual.py", "源代码及readme文档/src/synapse/config.py"],
+      "keypoints": [
+        "vectors are quantised onto an integer grid of cfg.quant_grid levels (default 64) via round(v * grid)",
+        "greedy encoding adds residual components in descending |residual| order and stops when cos(reconstruction, quantised original) >= verify_threshold (default 0.97)",
+        "residual index width on the wire: 1 byte when dim <= 256, else 2 bytes; values are int8 (clipped to +/-127)"
+      ]
+    },
+    {
+      "task": 3,
+      "anchors": ["源代码及readme文档/src/synapse/memory/tom.py"],
+      "keypoints": [
+        "three policies: oracle, query_top1, learned (cfg.base_policy)",
+        "oracle picks argmax cos(candidate, Y) — it must see the target Y (sender-side, optimistic)",
+        "query_top1 picks the retrieval top-1 for the same query — the receiver can reproduce it independently, so it is the honest / receiver-reproducible policy",
+        "learned picks the consolidated topic prototype (kind=experience) and degenerates to query_top1 when no prototype exists"
+      ]
+    },
+    {
+      "task": 4,
+      "anchors": ["源代码及readme文档/src/synapse/eval/metrics.py"],
+      "keypoints": [
+        "logical wire bytes = header_bytes + text_bytes + nontext_bytes (also named logical_bytes)",
+        "transport_bytes counts the real transmitted frame length: sum of len(msg.to_wire()) utf-8 bytes (socket frame length when a transport is configured)",
+        "the headline communication-efficiency metric is the real LLM token saving (input + output tokens) of synapse vs text"
+      ]
+    },
+    {
+      "task": 5,
+      "anchors": ["源代码及readme文档/src/synapse/protocol/handshake.py"],
+      "keypoints": [
+        "negotiated encoding = highest-ranked encoding in the intersection of both sides' declared encodings (rank hidden 3 > residual 2 > embedding 1 > text 0)",
+        "hidden is dropped from the candidates when the two sides are not the same model_family",
+        "empty intersection (or a missing capability) falls back to text",
+        "probe verification results are cached with a TTL of 300 seconds"
+      ]
+    },
+    {
+      "task": 6,
+      "anchors": ["源代码及readme文档/src/synapse/memory/store.py"],
+      "keypoints": [
+        "fields include mem_id, source_agent, created_at (ISO8601), task_topic, summary, kind, content, tags, embedding, reuse_count, links, superseded_by",
+        "mem_id is content-addressed: digest of source_agent|task_topic|content (12-byte blake2b)",
+        "allowed kinds: evidence, strategy, conclusion, plan, experience"
+      ]
+    },
+    {
+      "task": 7,
+      "anchors": ["源代码及readme文档/src/synapse/eval/manifest.py"],
+      "keypoints": [
+        "code: git HEAD sha (code_sha) and a dirty flag for uncommitted changes",
+        "configuration snapshot (config fields; secret values are never stored), model, embed_model, backend, temperature, seed",
+        "dataset anchored by path + sha256 + item count; environment: os, python version, package version, uv.lock sha256, started_utc"
+      ]
+    },
+    {
+      "task": 8,
+      "anchors": ["源代码及readme文档/src/synapse/protocol/transport.py"],
+      "keypoints": [
+        "AF_UNIX stream socket (targets Linux/openEuler)",
+        "each message is framed with an unsigned 32-bit network-order length prefix (struct '!I')",
+        "maximum frame size DEFAULT_MAX_FRAME = 16 MiB (16*1024*1024 bytes)"
+      ]
+    },
+    {
+      "task": 9,
+      "anchors": ["源代码及readme文档/src/synapse/modes/synapse_mode.py", "源代码及readme文档/src/synapse/eval/metrics.py"],
+      "keypoints": [
+        "hops: residual frame -> embedding frame (full quantised vector) -> text frame (full text)",
+        "every hop is a freshly constructed frame consumed through the same receive path (no reuse of sender-side locals)",
+        "counting: fallback_events counts first-frame failures (one per task), fallback_steps counts downgrade re-send frames; recovery_residual/recovery_embedding/recovery_text count successful recoveries per channel"
+      ]
+    },
+    {
+      "task": 10,
+      "anchors": ["源代码及readme文档/src/synapse/stateplane/vector_index.py", "源代码及readme文档/src/synapse/modes/synapse_mode.py"],
+      "keypoints": [
+        "maps a text handle (CAS handle of the evidence text) to its quantised vector",
+        "receiver searches top-1 by cosine with the reconstructed vector and consumes the text behind that handle",
+        "consumption requires the top-1 similarity to pass verify_threshold and the recovered text to match the frame's content_digest",
+        "in-process linear scan prototype; shared-memory/faiss backend is a roadmap item behind the same interface"
+      ]
+    },
+    {
+      "task": 11,
+      "anchors": ["源代码及readme文档/src/synapse/stateplane/checksum.py", "源代码及readme文档/src/synapse/modes/synapse_mode.py"],
+      "keypoints": [
+        "L1 = keyed blake2b MAC (128-bit tag) over payload bytes || base_handle || generation || session_id || domain || content_digest, with length-prefixed string domains and constant-time comparison",
+        "the authentication domain is payload_kind:dim:project_dim",
+        "L2 = semantic check: cosine of the reconstructed vector against the vector-index top-1 must reach verify_threshold, plus the recovered text must match content_digest"
+      ]
+    },
+    {
+      "task": 12,
+      "anchors": ["源代码及readme文档/src/synapse/config.py", "源代码及readme文档/configs/default.yaml", "源代码及readme文档/src/synapse/stateplane/embedding.py"],
+      "keypoints": [
+        "llm_backend = mock and embedder = hash (no network, no key)",
+        "HashEmbedder is deterministic: pure-stdlib blake2b feature hashing of lowercased tokens, unit-normalised, dim = embed_dim (default 64)",
+        "temperature is fixed at 0.0 for reproducibility"
+      ]
+    },
+    {
+      "task": 13,
+      "anchors": ["源代码及readme文档/src/synapse/modes/synapse_mode.py"],
+      "keypoints": [
+        "consumed-frame key = generation:msg_id (the task generation plus the message id)",
+        "a duplicate delivery of an already-consumed frame is rejected; frames from a stale generation are rejected too",
+        "the window is bounded: beyond 10000 entries the oldest half is evicted"
+      ]
+    },
+    {
+      "task": 14,
+      "anchors": ["源代码及readme文档/src/synapse/modes/synapse_mode.py"],
+      "keypoints": [
+        "trigger: semantic verify fails — cos(decoded reconstruction, re-embedded true evidence) below verify_threshold (base mismatch or int8 clipping distortion)",
+        "an ASK message with reason verify_fail is sent, then a TELL frame with payload_kind text carrying the full evidence text (meta fallback=True, tier=text)",
+        "fallback_events is incremented once per failed task"
+      ]
+    },
+    {
+      "task": 15,
+      "anchors": ["源代码及readme文档/src/synapse/memory/retrieval.py", "源代码及readme文档/src/synapse/config.py"],
+      "keypoints": [
+        "default k = cfg.retrieval_k = 5",
+        "a hit is recorded when the top-1 fused score exceeds hit_threshold (0.15)",
+        "reuse_count is incremented only for the actually consumed top consume_k units (default top-1); link-expansion units never count"
+      ]
+    },
+    {
+      "task": 16,
+      "anchors": ["源代码及readme文档/src/synapse/modes/synapse_mode.py"],
+      "keypoints": [
+        "before the retriever runs, the summaries of the top-3 memory results are injected into its prompt (joined as '[kind]summary' triples)",
+        "writes during the task persist to the store but do not alter the already-injected snapshot",
+        "purpose: keep the prompt prefix stable so provider prefix caching applies (zero-cost token saving); counted as frozen_snapshot_injections"
+      ]
+    },
+    {
+      "task": 17,
+      "anchors": ["源代码及readme文档/src/synapse/memory/store.py", "源代码及readme文档/src/synapse/memory/retrieval.py"],
+      "keypoints": [
+        "on write, an active unit with the same topic and kind whose embedding cosine to the new content reaches the supersede threshold (0.97) is marked superseded_by the new unit; the new unit inherits the old one's links",
+        "main search results filter out superseded units",
+        "historical versions still reach the candidate set via link expansion at 0.3x the linking unit's score"
+      ]
+    },
+    {
+      "task": 18,
+      "anchors": ["源代码及readme文档/src/synapse/protocol/messages.py"],
+      "keypoints": [
+        "a result spills when its serialised byte length exceeds the budget (default 512 bytes)",
+        "the full result is written to the CAS and the message's result field is replaced with {spilled: True, handle, summary} where summary is the first 200 characters",
+        "the new handle joins the message handles; spills are counted (result_spills)"
+      ]
+    },
+    {
+      "task": 19,
+      "anchors": ["源代码及readme文档/src/synapse/memory/retrieval.py", "源代码及readme文档/src/synapse/config.py"],
+      "keypoints": [
+        "score = w_keyword * keyword + w_tag * tag + w_semantic * semantic",
+        "default split 0.3 / 0.2 / 0.5",
+        "keyword and tag are Jaccard similarities over token/tag sets; semantic is embedding cosine (0 when the unit has no embedding)"
+      ]
+    },
+    {
+      "task": 20,
+      "anchors": ["源代码及readme文档/src/synapse/protocol/messages.py", "源代码及readme文档/src/synapse/eval/metrics.py"],
+      "keypoints": [
+        "to_wire serialises the full message with json.dumps(asdict(msg), ensure_ascii=False, separators=(',',':'))",
+        "transport_bytes counts len(to_wire().encode('utf-8')) — the exact transmitted byte length, not a hand-summed proxy",
+        "header_bytes uses the same compact serialisation over the header subset (no text body, no CAS blobs)"
+      ]
+    },
+    {
+      "task": 21,
+      "anchors": ["源代码及readme文档/src/synapse/stateplane/embedding.py"],
+      "keypoints": [
+        "the ApiEmbedder keeps an in-memory text -> vector cache",
+        "a cache hit increments cache_hits and issues no API request and no input tokens (embed once, reuse across rounds)",
+        "a miss increments requests and accumulates usage.prompt_tokens; a response without usable usage raises instead of silently recording zero"
+      ]
+    },
+    {
+      "task": 22,
+      "anchors": ["源代码及readme文档/src/synapse/modes/synapse_mode.py"],
+      "keypoints": [
+        "session_id is a random 16-hex id per session; the MAC key is a fresh random 32-byte blake2b key per session",
+        "authenticated domains: payload bytes, base_handle, generation, session_id, domain (payload_kind:dim:project_dim), content_digest",
+        "the key is shared automatically inside one process; cross-process distribution via CNR hello is a roadmap item"
+      ]
+    },
+    {
+      "task": 23,
+      "anchors": ["源代码及readme文档/src/synapse/runtime/team.py", "源代码及readme文档/src/synapse/protocol/handshake.py"],
+      "keypoints": [
+        "all four roles (planner, retriever, executor, summarizer) declare encodings text, embedding and residual with model_family 'mock-family'",
+        "the executor additionally declares a probe capability 'codeact_sandbox'",
+        "probe claims are verified at hello time by a check function that really executes a minimal CodeAct (final_answer(2**10) == 1024) and are cached with the CNR TTL"
+      ]
+    },
+    {
+      "task": 24,
+      "anchors": ["源代码及readme文档/src/synapse/stateplane/embedding.py"],
+      "keypoints": [
+        "embedder 'api' with a configured key builds the ApiEmbedder (Paratera GLM-Embedding-3, OpenAI-compatible)",
+        "embedder 'sentence' builds the SentenceTransformer-backed embedder when the optional dependency is present",
+        "otherwise it falls back to HashEmbedder — deterministic blake2b token hashing with zero dependencies, which is why smoke/CI need no key"
+      ]
+    },
+    {
+      "task": 25,
+      "anchors": ["源代码及readme文档/src/synapse/cli.py", "源代码及readme文档/src/synapse/qa/dataset.py"],
+      "keypoints": [
+        "three real datasets have dedicated commands: coqa, hotpot, musique",
+        "coqa: conversational QA with sentence-level story retrieval and history reuse; measures real tokens and word-level F1",
+        "hotpot: distractor setting (10 paragraphs, 2 gold + 8 distractors); validates dropping distractors saves tokens without losing F1",
+        "musique: 20 denser distractor paragraphs as a second-dataset cross-validation"
+      ]
+    },
+    {
+      "task": 26,
+      "anchors": ["源代码及readme文档/src/synapse/cli.py"],
+      "keypoints": [
+        "runs fully offline with the mock LLM and hash embedder over linked_continuous(3,3) plus negative_family(6)",
+        "checks: both modes produce conclusions; synapse saves wire bytes (> 0%); memory hits on linked tasks (> 0); non-text bytes contract (last round <= first round)",
+        "checks discrimination (negative-family hit rate below linked hit rate), transport accounting conservation (aggregate == sum of trajectories), and non-zero token aggregation"
+      ]
+    },
+    {
+      "task": 27,
+      "anchors": ["源代码及readme文档/src/synapse/cli.py"],
+      "keypoints": [
+        "verifies authentication/construction of the configured backend (any error is surfaced, sanitised, and recorded)",
+        "verifies the raw output shape — no <think> thinking blocks that would break structured parsing",
+        "verifies token usage is reported and that CodeAct output stays parseable; writes a probe run record"
+      ]
+    },
+    {
+      "task": 28,
+      "anchors": ["源代码及readme文档/src/synapse/cli.py", "源代码及readme文档/src/synapse/config.py", "源代码及readme文档/src/synapse/tasks.py"],
+      "keypoints": [
+        "signal runs a small real-API A/B over a linked G1 family plus a negative control family, with byte-saving and discrimination verdicts; --no-memory switches on abl_no_memory (clears cross-task memory each task) to attribute the residual contraction to memory",
+        "m7 runs >= 2 linked task groups (G1 deep-dive then G2 evolution) in one persistent session to show G2 reusing G1's accumulated memory (hits high from G2's first task)",
+        "other ablation switches: abl_no_tom (no predicted base), abl_no_consolidation, abl_no_residual (full vector), abl_no_checksum (no verify/fallback)"
+      ]
+    },
+    {
+      "task": 29,
+      "anchors": ["源代码及readme文档/scripts/fetch_hotpot.py", "源代码及readme文档/scripts/fetch_coqa.py", "源代码及readme文档/scripts/fetch_musique.py"],
+      "keypoints": [
+        "fetch_hotpot.py: default 20 questions (validation set, first N unselected) into data/hotpot_sample.json, keeping only questions with exactly 10 paragraphs and both gold titles present",
+        "fetch_coqa.py: default 6 conversations into data/coqa_sample.json",
+        "fetch_musique.py: default 200 items into data/musique_sample.json",
+        "all fetch via the HuggingFace datasets-server with a pinned revision and a provenance sidecar"
+      ]
+    },
+    {
+      "task": 30,
+      "anchors": ["源代码及readme文档/scripts/ci.ps1", "源代码及readme文档/scripts/ci.sh"],
+      "keypoints": [
+        "uv run --no-sync ruff check . (lint) and uv run --no-sync pytest -q (unit tests)",
+        "uv run --no-sync synapse smoke (offline acceptance smoke) and uv build (package build)",
+        "changes touching Docker/openEuler additionally require a docker build and a container smoke run"
+      ]
+    }
+  ]
+}

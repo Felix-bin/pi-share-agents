@@ -1,0 +1,1121 @@
+{
+  "isolation": {
+    "declared": "reserved rounds; excluded from every formal G1/G2 statistic",
+    "roundIdCount": 240,
+    "roundIdPrefix": "RESERVED-G1-",
+    "roundIdsSha256": "b1aede3b4c2e450601d48f97c3ebd11469b614b183e73b5c33678bbb3fb20890"
+  },
+  "corpus": {
+    "chunkCount": 1238,
+    "corpusSnapshotId": "c4b1279d58ae01e6b855e2c5b5cb01037c6e722d7d8132139528c2c32a585e1a",
+    "dim": 1024,
+    "overlapLines": 8,
+    "representationId": "siliconflow/BAAI/bge-m3/1024",
+    "sourceCommit": "3491b37ade90c863734e900b404144e19e274721",
+    "windowLines": 40
+  },
+  "pairs": {
+    "coldStarts": 1,
+    "count": 239,
+    "rounds": 240,
+    "similarity": {
+      "max": 0.9583047622275037,
+      "mean": 0.718673899896611,
+      "min": 0.4437310078565901,
+      "under0_8": 194
+    },
+    "rankMargin": {
+      "max": 0.09685636561409161,
+      "mean": 0.008735599593053702,
+      "median": 0.005499056276014103,
+      "p10": 0.0008996527209436112
+    }
+  },
+  "recording": {
+    "mode": "followup",
+    "path": "pairs-followup.jsonl",
+    "sha256": "18ff5df3d149e14cc399e51871124e9959e8b512d7eda974f55e38422e4ea834"
+  },
+  "retrieval": {
+    "k": 5
+  },
+  "scan": [
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1260.86,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 972.95,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 690.45,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 305.25,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 3,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.07531380753138076,
+      "grid": 32,
+      "layout": "int8",
+      "maxPayloadBytes": 1329,
+      "meanNnz": 306.29,
+      "meanPayloadBytes": 918.87,
+      "outcomes": "MAgCIAAAAAIIAAAIAAAAIIAACAAQQgAAAgCAAIAg",
+      "p95PayloadBytes": 1224,
+      "quantizeOnlyConsistency": 0.4393305439330544,
+      "setConsistency": 0.2803347280334728,
+      "threshold": 0.9,
+      "top1Consistency": 0.8158995815899581
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1029.86,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 700.24,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 369.9,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 6,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.03765690376569038,
+      "grid": 64,
+      "layout": "int8",
+      "maxPayloadBytes": 1119,
+      "meanNnz": 213.35,
+      "meanPayloadBytes": 640.05,
+      "outcomes": "AAAAIAAABAIAAAAAAAAAAAAACAAAAgAAgiAAAAAg",
+      "p95PayloadBytes": 1005,
+      "quantizeOnlyConsistency": 0.602510460251046,
+      "setConsistency": 0.2384937238493724,
+      "threshold": 0.9,
+      "top1Consistency": 0.799163179916318
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 999,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 649.04,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 314.1,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 1.5,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.05439330543933055,
+      "grid": 96,
+      "layout": "int8",
+      "maxPayloadBytes": 1068,
+      "meanNnz": 196.56,
+      "meanPayloadBytes": 589.68,
+      "outcomes": "AAACAAAgBAIAAAIAAAAAAAAACAAwAgAAhEAAAAAg",
+      "p95PayloadBytes": 957,
+      "quantizeOnlyConsistency": 0.7531380753138075,
+      "setConsistency": 0.22594142259414227,
+      "threshold": 0.9,
+      "top1Consistency": 0.7740585774058577
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 982.29,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 630.58,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 294.83,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 0,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.03765690376569038,
+      "grid": 127,
+      "layout": "int8",
+      "maxPayloadBytes": 1059,
+      "meanNnz": 190.5,
+      "meanPayloadBytes": 571.49,
+      "outcomes": "AAAAAAAAhAIAAAAAAAAAAAAACAAQQgAAhAAAAAAA",
+      "p95PayloadBytes": 951,
+      "quantizeOnlyConsistency": 0.7405857740585774,
+      "setConsistency": 0.2217573221757322,
+      "threshold": 0.9,
+      "top1Consistency": 0.7698744769874477
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1289.71,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 818.7,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 366.2,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 0,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 4,
+      "consistency": 0.03765690376569038,
+      "grid": 256,
+      "layout": "int16",
+      "maxPayloadBytes": 1368,
+      "meanNnz": 184.91,
+      "meanPayloadBytes": 739.63,
+      "outcomes": "AAAAAAAABAAAAAIAAAAAAAAACEAQAgAAhCAAAAAA",
+      "p95PayloadBytes": 1240,
+      "quantizeOnlyConsistency": 0.8870292887029289,
+      "setConsistency": 0.21338912133891214,
+      "threshold": 0.9,
+      "top1Consistency": 0.7782426778242678
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1460.14,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1173.19,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 889.73,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 501,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 201,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.08786610878661087,
+      "grid": 32,
+      "layout": "int8",
+      "maxPayloadBytes": 1530,
+      "meanNnz": 372.95,
+      "meanPayloadBytes": 1118.84,
+      "outcomes": "oAgAIAAgAAIIBgAYAIAAIIAAAEIQQggAAAAAAIAA",
+      "p95PayloadBytes": 1419,
+      "quantizeOnlyConsistency": 0.4393305439330544,
+      "setConsistency": 0.3723849372384937,
+      "threshold": 0.93,
+      "top1Consistency": 0.8619246861924686
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1219.71,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 888.55,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 558.53,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 179.25,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.12133891213389121,
+      "grid": 64,
+      "layout": "int8",
+      "maxPayloadBytes": 1311,
+      "meanNnz": 275.81,
+      "meanPayloadBytes": 827.42,
+      "outcomes": "EAgAIAAgBAIAAkIIAAEAAIASCEAQQgEAlCIBAIBg",
+      "p95PayloadBytes": 1188,
+      "quantizeOnlyConsistency": 0.602510460251046,
+      "setConsistency": 0.3723849372384937,
+      "threshold": 0.93,
+      "top1Consistency": 0.8619246861924686
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1186.29,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 844.11,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 517.28,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 117.75,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.09205020920502092,
+      "grid": 96,
+      "layout": "int8",
+      "maxPayloadBytes": 1257,
+      "meanNnz": 261.25,
+      "meanPayloadBytes": 783.74,
+      "outcomes": "ACgCIAAAAABAAgIIAAMBAAECCAAwQgAAgSAAAIAA",
+      "p95PayloadBytes": 1149,
+      "quantizeOnlyConsistency": 0.7531380753138075,
+      "setConsistency": 0.3514644351464435,
+      "threshold": 0.93,
+      "top1Consistency": 0.8577405857740585
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1167,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 856.04,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 526.58,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 97.5,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.100418410041841,
+      "grid": 127,
+      "layout": "int8",
+      "maxPayloadBytes": 1236,
+      "meanNnz": 264.58,
+      "meanPayloadBytes": 793.73,
+      "outcomes": "AAgCIAAgBAIAAgIIAAABAIACCEAQQgAAhAICAIgg",
+      "p95PayloadBytes": 1146,
+      "quantizeOnlyConsistency": 0.7405857740585774,
+      "setConsistency": 0.34309623430962344,
+      "threshold": 0.93,
+      "top1Consistency": 0.8410041841004184
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1565.14,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1118.65,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 664.8,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 95,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 4,
+      "consistency": 0.09623430962343096,
+      "grid": 256,
+      "layout": "int16",
+      "maxPayloadBytes": 1640,
+      "meanNnz": 258.49,
+      "meanPayloadBytes": 1033.96,
+      "outcomes": "ACgCIAQABAAAAkIIAAIAAIACCEAwQgAABgAAAIgA",
+      "p95PayloadBytes": 1528,
+      "quantizeOnlyConsistency": 0.8870292887029289,
+      "setConsistency": 0.33472803347280333,
+      "threshold": 0.93,
+      "top1Consistency": 0.8368200836820083
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1593.43,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1306.41,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1023.38,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 633,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 333,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.16317991631799164,
+      "grid": 32,
+      "layout": "int8",
+      "maxPayloadBytes": 1668,
+      "meanNnz": 417.37,
+      "meanPayloadBytes": 1252.1,
+      "outcomes": "oAgCYCQgQIMKBgAYAIgAIIWACEAQQggAHiAAAIBA",
+      "p95PayloadBytes": 1554,
+      "quantizeOnlyConsistency": 0.4393305439330544,
+      "setConsistency": 0.41422594142259417,
+      "threshold": 0.95,
+      "top1Consistency": 0.9121338912133892
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1345.71,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1050.06,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 807.38,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 467.25,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 99,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.18410041841004185,
+      "grid": 64,
+      "layout": "int8",
+      "maxPayloadBytes": 1434,
+      "meanNnz": 334.79,
+      "meanPayloadBytes": 1004.37,
+      "outcomes": "AAiCJAAgBEECBmIIxg8AAIESCAAQQgAClCIDAIhI",
+      "p95PayloadBytes": 1317,
+      "quantizeOnlyConsistency": 0.602510460251046,
+      "setConsistency": 0.4769874476987448,
+      "threshold": 0.95,
+      "top1Consistency": 0.895397489539749
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1363.29,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1104.27,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 795.75,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 372,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 3,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.1297071129707113,
+      "grid": 96,
+      "layout": "int8",
+      "maxPayloadBytes": 1431,
+      "meanNnz": 347.79,
+      "meanPayloadBytes": 1043.36,
+      "outcomes": "ICgAIAAABABAAgIYgIABAIECCAgwYgAEsWAAAIAA",
+      "p95PayloadBytes": 1350,
+      "quantizeOnlyConsistency": 0.7531380753138075,
+      "setConsistency": 0.40585774058577406,
+      "threshold": 0.95,
+      "top1Consistency": 0.891213389121339
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1377,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1072.17,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 744.53,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 301.5,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.15481171548117154,
+      "grid": 127,
+      "layout": "int8",
+      "maxPayloadBytes": 1440,
+      "meanNnz": 336.29,
+      "meanPayloadBytes": 1008.88,
+      "outcomes": "AAgCIAQABAAKAiIYAAsEAoGSCAAQYgAAlGIBAIAo",
+      "p95PayloadBytes": 1350,
+      "quantizeOnlyConsistency": 0.7405857740585774,
+      "setConsistency": 0.4476987447698745,
+      "threshold": 0.95,
+      "top1Consistency": 0.9037656903765691
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1802.29,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1393.33,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 954.4,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 353,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 0,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 4,
+      "consistency": 0.14225941422594143,
+      "grid": 256,
+      "layout": "int16",
+      "maxPayloadBytes": 1872,
+      "meanNnz": 327.15,
+      "meanPayloadBytes": 1308.6,
+      "outcomes": "IDgCIAAABAgIAkI4AAsAAIEGBMgQQgAAgCIAAIgA",
+      "p95PayloadBytes": 1772,
+      "quantizeOnlyConsistency": 0.8870292887029289,
+      "setConsistency": 0.4560669456066946,
+      "threshold": 0.95,
+      "top1Consistency": 0.8870292887029289
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1727.14,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1439.84,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1156.13,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 766.5,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 468,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.24686192468619247,
+      "grid": 32,
+      "layout": "int8",
+      "maxPayloadBytes": 1803,
+      "meanNnz": 461.81,
+      "meanPayloadBytes": 1385.44,
+      "outcomes": "oABiZKwpQIGCFkcYhhgAIIGGiMA0IggEHiAAAJAI",
+      "p95PayloadBytes": 1689,
+      "quantizeOnlyConsistency": 0.4393305439330544,
+      "setConsistency": 0.5313807531380753,
+      "threshold": 0.97,
+      "top1Consistency": 0.9372384937238494
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1674.43,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1527.39,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1309.2,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 966.75,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 603,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.32217573221757323,
+      "grid": 64,
+      "layout": "int8",
+      "maxPayloadBytes": 1764,
+      "meanNnz": 493.97,
+      "meanPayloadBytes": 1481.92,
+      "outcomes": "oAjiNCIgBIBKlmI4xpsABakOCYA4ZgGmmGKLQJhI",
+      "p95PayloadBytes": 1692,
+      "quantizeOnlyConsistency": 0.602510460251046,
+      "setConsistency": 0.6317991631799164,
+      "threshold": 0.97,
+      "top1Consistency": 0.9205020920502092
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1644.43,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1383.67,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1075.2,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 651.75,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 246,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.2719665271966527,
+      "grid": 96,
+      "layout": "int8",
+      "maxPayloadBytes": 1710,
+      "meanNnz": 440.89,
+      "meanPayloadBytes": 1322.67,
+      "outcomes": "gDig9CgIBIhKFmI4gUsgAKGXAAgQYgQErSQjAIAq",
+      "p95PayloadBytes": 1626,
+      "quantizeOnlyConsistency": 0.7531380753138075,
+      "setConsistency": 0.5815899581589958,
+      "threshold": 0.97,
+      "top1Consistency": 0.9205020920502092
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1592.57,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1348.64,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1091.4,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 693,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 249,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.26359832635983266,
+      "grid": 127,
+      "layout": "int8",
+      "maxPayloadBytes": 1656,
+      "meanNnz": 432.38,
+      "meanPayloadBytes": 1297.15,
+      "outcomes": "gCCiJCEBBChKFmM9gooEBaGCAQYxZgAAtCCBAoog",
+      "p95PayloadBytes": 1566,
+      "quantizeOnlyConsistency": 0.7405857740585774,
+      "setConsistency": 0.5648535564853556,
+      "threshold": 0.97,
+      "top1Consistency": 0.9163179916317992
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 2137.71,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1775.29,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1381.2,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 818,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 216,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 4,
+      "consistency": 0.28451882845188287,
+      "grid": 256,
+      "layout": "int16",
+      "maxPayloadBytes": 2204,
+      "meanNnz": 424.35,
+      "meanPayloadBytes": 1697.41,
+      "outcomes": "gDhipCAFBKhCFmJsxx4gAYEWDIIQ5gEAmCaIAJgI",
+      "p95PayloadBytes": 2112,
+      "quantizeOnlyConsistency": 0.8870292887029289,
+      "setConsistency": 0.5983263598326359,
+      "threshold": 0.97,
+      "top1Consistency": 0.9163179916317992
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 1860.86,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1573.12,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1289.47,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 900,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 603,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.3682008368200837,
+      "grid": 32,
+      "layout": "int8",
+      "maxPayloadBytes": 1941,
+      "meanNnz": 506.25,
+      "meanPayloadBytes": 1518.75,
+      "outcomes": "qCBg8OorEamClico15AgFOWfD8ZwYgiILiEAAJwS",
+      "p95PayloadBytes": 1818,
+      "quantizeOnlyConsistency": 0.4393305439330544,
+      "setConsistency": 0.6317991631799164,
+      "threshold": 0.99,
+      "top1Consistency": 0.9581589958158996
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 2183.57,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 2029.22,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1811.18,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 1467,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 1101,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.502092050209205,
+      "grid": 64,
+      "layout": "int8",
+      "maxPayloadBytes": 2262,
+      "meanNnz": 661.32,
+      "meanPayloadBytes": 1983.95,
+      "outcomes": "uGjn97tzBPFBkna539qkDK23Dwk6dgcm2yKKAZB6",
+      "p95PayloadBytes": 2196,
+      "quantizeOnlyConsistency": 0.602510460251046,
+      "setConsistency": 0.7196652719665272,
+      "threshold": 0.99,
+      "top1Consistency": 0.9748953974895398
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 2099.57,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1969.68,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1823.7,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 1584.75,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 1185,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.5606694560669456,
+      "grid": 96,
+      "layout": "int8",
+      "maxPayloadBytes": 2157,
+      "meanNnz": 646.44,
+      "meanPayloadBytes": 1939.33,
+      "outcomes": "rTzx9+kvvbBqh2a719ukL7XvD+Q7bgwgvaITw8B6",
+      "p95PayloadBytes": 2103,
+      "quantizeOnlyConsistency": 0.7531380753138075,
+      "setConsistency": 0.803347280334728,
+      "threshold": 0.99,
+      "top1Consistency": 0.9707112970711297
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 2056.29,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 1834.06,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 1594.65,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 1377,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 1089,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 3,
+      "consistency": 0.5690376569037657,
+      "grid": 127,
+      "layout": "int8",
+      "maxPayloadBytes": 2106,
+      "meanNnz": 596.58,
+      "meanPayloadBytes": 1789.73,
+      "outcomes": "rCyj9+1uLTtsl3e55zqkz+vnH/4x7hkC/CJTAt4q",
+      "p95PayloadBytes": 2037,
+      "quantizeOnlyConsistency": 0.7405857740585774,
+      "setConsistency": 0.7907949790794979,
+      "threshold": 0.99,
+      "top1Consistency": 0.9790794979079498
+    },
+    {
+      "bands": [
+        {
+          "band": "[-1, 0.50)",
+          "meanPayloadBytes": 2715.43,
+          "pairs": 7
+        },
+        {
+          "band": "[0.50, 0.80)",
+          "meanPayloadBytes": 2465.18,
+          "pairs": 187
+        },
+        {
+          "band": "[0.80, 0.90)",
+          "meanPayloadBytes": 2188.9,
+          "pairs": 40
+        },
+        {
+          "band": "[0.90, 0.95)",
+          "meanPayloadBytes": 1713,
+          "pairs": 4
+        },
+        {
+          "band": "[0.95, 1)",
+          "meanPayloadBytes": 1132,
+          "pairs": 1
+        }
+      ],
+      "bytesPerComponent": 4,
+      "consistency": 0.5815899581589958,
+      "grid": 256,
+      "layout": "int16",
+      "maxPayloadBytes": 2764,
+      "meanNnz": 602.03,
+      "meanPayloadBytes": 2408.1,
+      "outcomes": "rDnz9+1vfDBulmap316lD6X3H847bg0g/SODS9p6",
+      "p95PayloadBytes": 2712,
+      "quantizeOnlyConsistency": 0.8870292887029289,
+      "setConsistency": 0.8117154811715481,
+      "threshold": 0.99,
+      "top1Consistency": 0.9832635983263598
+    }
+  ],
+  "selection": {
+    "bytesPerPayloadComparison": "meanPayloadBytes",
+    "perfectCombinations": 0,
+    "reason": "no combination reached full retrieval consistency; the highest observed was 0.5815899581589958, so the cheapest combination at that level is named and the benefit claim must be downgraded",
+    "selected": {
+      "bytesPerComponent": 4,
+      "grid": 256,
+      "layout": "int16",
+      "threshold": 0.99
+    },
+    "selectedMeanPayloadBytes": 2408.1,
+    "selectedConsistency": 0.5815899581589958,
+    "withinTolerance": {
+      "consistencyTolerance": 0.02,
+      "selected": {
+        "bytesPerComponent": 3,
+        "grid": 127,
+        "layout": "int8",
+        "threshold": 0.99
+      },
+      "selectedConsistency": 0.5690376569037657,
+      "selectedMeanPayloadBytes": 1789.73,
+      "consistencyDifference": 0.012552301255230103,
+      "pairsOnlyLiteralPickPasses": 27,
+      "pairsOnlyWithinTolerancePickPasses": 24
+    }
+  }
+}

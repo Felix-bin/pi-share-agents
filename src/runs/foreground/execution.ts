@@ -112,7 +112,7 @@ import {
 	type ChildWatchdogStatusEvent,
 } from "../../watchdog/child-status.ts";
 import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../shared/child-launch.ts";
-import { closeChildDelegation, openChildDelegation } from "../shared/synapse-delegation.ts";
+import { closeChildDelegation, openChildDelegationWithState } from "../shared/synapse-delegation.ts";
 import type { OpenDelegation } from "../../synapse/delegation.ts";
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 
@@ -1391,8 +1391,13 @@ async function runSingleAttempt(
 		// delegation the success path would have closed.
 		let delegation: OpenDelegation | null = null;
 		void (async () => {
+			// Kept reachable from the catch path: a failed delegation still closes
+			// its synapse bookkeeping, and the close needs the runtime to reach the
+			// child's contract (the auto-distill switch lives there).
+			let childRuntime: import("../shared/child-runtime-config.ts").ChildRuntimeConfig | undefined;
 			try {
 				const input = createReportedChildSessionInput(launch, shared.transcriptWriter);
+				childRuntime = input.runtime;
 				requestReadonlySessionEvidence(input, shared.readonlyExpected);
 				if (shared.readonlyHandoffAllowed && !shared.readonlyHandoffAllowed()) throw new Error("Read-only continuation handoff vetoed.");
 				const created = await childSessions.create(input);
@@ -1422,21 +1427,31 @@ async function runSingleAttempt(
 					|| actualReadonlyModel.api !== shared.readonlyExpected.api || created.modelId !== shared.readonlyModel || abortedBySignal || interruptedByControl || result.timedOut
 					|| !shared.readonlyHandoffAllowed?.())) throw new Error("Read-only continuation handoff vetoed.");
 				const message = `Task: ${task}`;
-				delegation = openChildDelegation({
-					childTools: toolPlan.declaredBuiltinTools,
+				// The task plane always, the state plane when this child can consume one;
+				// the second delivery is metered by the send side that produced it.
+				const opened = await openChildDelegationWithState({
 					cwd: options.cwd ?? runtimeCwd,
 					message,
 					receiverSessionId: created.sessionId,
 					runtime: input.runtime,
 				});
+				delegation = opened.delegation;
 				// See run-child-session.ts: the `uds` gear's send must land before
 				// the child's first agent turn verifies the envelope, and the
 				// `file` gear leaves this undefined so its path is unchanged.
 				if (delegation?.envelopeDelivery !== undefined) await delegation.envelopeDelivery;
-				await created.prompt(delegation?.prompt ?? message);
+				// A stop that arrived while the state half was embedding must not be
+				// followed by a prompt: the abort above ran before the await, and
+				// delivering the task to a session that was just aborted is what turns
+				// a stop into a failed run.
+				if (!abortedBySignal && !interruptedByControl && !result.timedOut) {
+					await created.prompt(delegation?.prompt ?? message);
+				}
 				closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
 					finalOutput: result.finalOutput ?? "",
+					runtime: childRuntime,
+					taskText: task,
 					timedOut: result.timedOut === true,
 					usage: result.usage,
 				});
@@ -1446,6 +1461,8 @@ async function runSingleAttempt(
 					cancelled: abortedBySignal || interruptedByControl,
 					cause: error,
 					finalOutput: result.finalOutput ?? "",
+					runtime: childRuntime,
+					taskText: task,
 					timedOut: result.timedOut === true,
 					usage: result.usage,
 				});

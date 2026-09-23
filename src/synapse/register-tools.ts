@@ -4,9 +4,11 @@ import { Type, type Static, type TSchema } from "typebox";
 import { canonicalJson, type CanonicalValue } from "./canonical-json.ts";
 import type { AccessScope } from "./access.ts";
 import type { SynapseConfig } from "./config.ts";
+import { resolveConfiguredEmbedder, type Embedder } from "./embedding.ts";
 import { createMemoryService, SYNAPSE_DEFAULT_SEARCH_K, SYNAPSE_MAX_SEARCH_K, type MemoryService } from "./memory-service.ts";
 import type { MemoryProvenance } from "./memory-store.ts";
 import { ensureNamespace, resolveStorageRoot } from "./namespace.ts";
+import { memoryVectorCacheFor } from "./vector-cache.ts";
 
 /**
  * Registration of the model-visible SYNAPSE tools.
@@ -26,7 +28,7 @@ export const SYNAPSE_WRITE_TOOL = "synapse_write";
 const SynapseReadParams = Type.Object(
 	{
 		action: Type.Union([Type.Literal("search"), Type.Literal("get")], {
-			description: "search: rank shared memories by keyword and tag. get: read the body of one memory.",
+			description: "search: rank shared memories by keyword and tag, and by semantic vector similarity when an embedding provider is configured. get: read the body of one memory.",
 		}),
 		allowHistorical: Type.Optional(Type.Boolean({ description: "get only: read a memory that has been superseded. Default false." })),
 		includeHistorical: Type.Optional(Type.Boolean({ description: "search only: also return superseded memories, flagged as historical. Default false." })),
@@ -135,9 +137,12 @@ function requireField<T>(action: string, field: string, value: T | undefined): T
 	return value;
 }
 
-function readAction(service: MemoryService, params: SynapseReadInput): AgentToolResult<CanonicalValue> {
+async function readAction(service: MemoryService, params: SynapseReadInput): Promise<AgentToolResult<CanonicalValue>> {
 	if (params.action === "search") {
-		const result = service.search({
+		// The tool schema has no stateId parameter, so this call types — and
+		// stays — on the memory-ranking shape; the state plane is consumed by
+		// the host, not by the model through this tool.
+		const result = await service.searchSemantic({
 			includeHistorical: params.includeHistorical,
 			k: params.k,
 			query: requireField("search", "query", params.query),
@@ -154,9 +159,9 @@ function readAction(service: MemoryService, params: SynapseReadInput): AgentTool
 	return toolOutput({ ...page });
 }
 
-function writeAction(service: MemoryService, params: SynapseWriteInput, operationId: string): AgentToolResult<CanonicalValue> {
+async function writeAction(service: MemoryService, params: SynapseWriteInput, operationId: string): Promise<AgentToolResult<CanonicalValue>> {
 	if (params.action === "remember") {
-		const written = service.remember({
+		const written = await service.remember({
 			content: requireField("remember", "content", params.content),
 			kind: params.kind ?? "evidence",
 			operationId,
@@ -180,6 +185,16 @@ function writeAction(service: MemoryService, params: SynapseWriteInput, operatio
 	return toolOutput({ eventId: event.eventId, newId: event.newId, oldId: event.oldId, reason: event.reason });
 }
 
+/**
+ * Builds the embedder for the product path, or none when semantic retrieval is
+ * not configured or cannot start. The key comes from the environment only —
+ * never from a key file — and a missing key degrades to keyword ranking rather
+ * than failing the tool.
+ */
+function resolveEmbedder(config: SynapseConfig, storageRoot: string): Embedder | undefined {
+	return resolveConfiguredEmbedder(config.embedding, storageRoot);
+}
+
 export function createSynapseService(config: SynapseConfig, agentDir: string, context: SynapseToolContext): SynapseService {
 	const resolved = resolveStorageRoot({
 		agentDir,
@@ -187,12 +202,19 @@ export function createSynapseService(config: SynapseConfig, agentDir: string, co
 		worktreePath: context.worktreeRoot,
 	});
 	ensureNamespace(resolved);
+	const resolvedEmbedder = resolveEmbedder(config, resolved.root);
 	return {
 		service: createMemoryService({
+			corpusSnapshotId: config.corpusSnapshotId,
+			embedder: resolvedEmbedder,
 			maxObjectBytes: config.maxObjectBytes,
 			provenance: context.provenance,
 			scope: { ...context.scope, namespaceId: resolved.namespaceId },
 			storeRoot: resolved.root,
+			// Recall ranks every record this agent may read. Keeping the vectors in this
+			// process turns that from a read per record per call into a read per record
+			// per process; off, nothing changes.
+			vectorCache: config.vectorCache && resolvedEmbedder !== undefined ? memoryVectorCacheFor(resolved.root, resolvedEmbedder) : undefined,
 			worktreeRoot: context.worktreeRoot,
 		}),
 		storageRoot: resolved.root,
@@ -210,7 +232,7 @@ export function registerSynapseTools(pi: SynapseToolHost, options: SynapseToolsO
 
 	const readTool: ToolDefinition<typeof SynapseReadParams, CanonicalValue> = {
 		description:
-			"Read shared memory recorded by this project's agents. search ranks memories by keyword and tag overlap and returns summaries, provenance and whether each one's source file still matches. get returns a verified page of one memory's body. Semantic ranking is not available in this build and is reported as such rather than approximated.",
+			"Read shared memory recorded by this project's agents. search ranks memories by keyword and tag overlap and, when an embedding provider is configured, by semantic cosine over each memory's stored vector; without one the semantic component is reported as unavailable rather than approximated. It returns summaries, provenance and whether each one's source file still matches. get returns a verified page of one memory's body.",
 		execute: async (_id, params) => read(params),
 		label: "Shared Memory Read",
 		name: SYNAPSE_READ_TOOL,

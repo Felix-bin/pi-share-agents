@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import type { AccessScope } from "../../src/synapse/access.ts";
 import type { MemoryRecord } from "../../src/synapse/memory-store.ts";
 import { KEYWORD_WEIGHT, searchMemories, TAG_WEIGHT, tokenize } from "../../src/synapse/retrieval.ts";
+import type { MemoryEmbeddingRef } from "../../src/synapse/memory-store.ts";
 
 function scope(overrides: Partial<AccessScope> = {}): AccessScope {
 	return {
@@ -20,6 +21,7 @@ function record(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
 	const id = counter.toString(16).padStart(64, "0");
 	return {
 		assurance: "observation",
+		embedding: null,
 		contentId: "a".repeat(64),
 		createdAt: overrides.createdAt ?? "2026-09-16T00:00:00.000Z",
 		kind: "evidence",
@@ -140,5 +142,124 @@ describe("synapse search authorisation", () => {
 		const history = searchMemories({ includeSuperseded: true, query: { text: "residual" }, records: [stale, fresh], scope: scope() });
 		assert.equal(history.length, 2);
 		assert.equal(history.find((entry) => entry.record.memoryId === stale.memoryId)?.historical, true);
+	});
+});
+
+describe("synapse semantic scoring", () => {
+	const vectorRef: MemoryEmbeddingRef = { dim: 2, objectId: "b".repeat(64), representationId: "siliconflow/BAAI/bge-m3/2" };
+	const nearId = "e".repeat(64);
+	const farId = "f".repeat(64);
+
+	function semanticRecords() {
+		const near = record({
+			embedding: vectorRef,
+			memoryId: nearId,
+			summary: "完全不相关的词甲乙丙",
+			taskTopic: "无关主题",
+		});
+		const far = record({
+			embedding: vectorRef,
+			memoryId: farId,
+			summary: "residual encoder 观察",
+			taskTopic: "residual",
+		});
+		return { far, near };
+	}
+
+	it("ranks a semantically near record above a keyword-heavy one once vectors take part", () => {
+		const { far, near } = semanticRecords();
+		const query = { text: "residual encoder" };
+		const keywordOnly = searchMemories({ query, records: [far, near], scope: scope() });
+		assert.equal(keywordOnly[0]?.record.memoryId, far.memoryId);
+		const semantic = searchMemories({
+			query,
+			records: [far, near],
+			scope: scope(),
+			semantic: {
+				queryVector: new Float32Array([1, 0]),
+				recordVectors: new Map([
+					[nearId, new Float32Array([1, 0])],
+					[farId, new Float32Array([0, 1])],
+				]),
+			},
+		});
+		assert.equal(semantic[0]?.record.memoryId, near.memoryId);
+		const nearComponent = semantic[0]?.components.semantic;
+		assert.notEqual(nearComponent, "unavailable");
+		// SAFETY: the component union is number | "unavailable" and the marker is excluded above.
+		assert.ok((nearComponent as number) > 0.99);
+	});
+
+	it("keeps the keyword-only behaviour and marker when no semantic input is given", () => {
+		const { far, near } = semanticRecords();
+		const results = searchMemories({ query: { text: "residual encoder" }, records: [far, near], scope: scope() });
+		assert.equal(results[0]?.components.semantic, "unavailable");
+		assert.ok(results.every((entry) => entry.score === KEYWORD_WEIGHT * entry.components.keyword + TAG_WEIGHT * entry.components.tag));
+	});
+
+	it("produces the same ordering for repeated identical semantic queries", () => {
+		const { far, near } = semanticRecords();
+		const input = {
+			query: { text: "residual encoder" },
+			records: [far, near],
+			scope: scope(),
+			semantic: {
+				queryVector: new Float32Array([1, 0]),
+				recordVectors: new Map([
+					[nearId, new Float32Array([1, 0])],
+					[farId, new Float32Array([0, 1])],
+				]),
+			},
+		} as const;
+		const first = searchMemories(input);
+		const second = searchMemories(input);
+		assert.deepEqual(
+			first.map((entry) => entry.record.memoryId),
+			second.map((entry) => entry.record.memoryId),
+		);
+		assert.deepEqual(
+			first.map((entry) => entry.score),
+			second.map((entry) => entry.score),
+		);
+	});
+
+	it("scores the semantic component as zero for records without a vector and keeps them ranked", () => {
+		const plain = record({ summary: "residual encoder 无向量", taskTopic: "residual" });
+		const results = searchMemories({
+			query: { text: "residual encoder" },
+			records: [plain],
+			scope: scope(),
+			semantic: { queryVector: new Float32Array([1, 0]), recordVectors: new Map() },
+		});
+		assert.equal(results.length, 1);
+		assert.equal(results[0]?.components.semantic, 0);
+		assert.ok((results[0]?.score ?? 0) > 0);
+	});
+
+	it("never returns a record outside the caller's grant, even with the nearest vector", () => {
+		const secret = record({
+			embedding: vectorRef,
+			memoryId: nearId,
+			source: { byteLength: 1, digest: "c".repeat(64), path: "secrets/keys.env" },
+			summary: "机密观察",
+			taskTopic: "机密主题",
+		});
+		const allowed = record({ embedding: vectorRef, memoryId: farId, summary: "residual encoder 观察", taskTopic: "residual" });
+		const results = searchMemories({
+			query: { text: "机密" },
+			records: [secret, allowed],
+			scope: scope({ pathPrefixes: ["src"] }),
+			semantic: {
+				queryVector: new Float32Array([1, 0]),
+				recordVectors: new Map([
+					[nearId, new Float32Array([1, 0])],
+					[farId, new Float32Array([0.8, 0.6])],
+				]),
+			},
+		});
+		// The allowed record must actually score and appear, or the exclusion
+		// assertion would pass vacuously on an empty result set.
+		assert.ok(results.some((entry) => entry.record.memoryId === farId));
+		assert.ok(results.every((entry) => entry.record.memoryId !== nearId));
 	});
 });

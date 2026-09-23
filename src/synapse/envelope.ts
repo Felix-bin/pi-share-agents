@@ -115,7 +115,11 @@ export type Envelope = EnvelopeWire & {
 const StateRefSchema = Type.Object(
 	{
 		baseMemoryId: Type.Union([Type.String({ pattern: MEMORY_ID_PATTERN }), Type.Null()]),
-		byteLength: Type.Integer({ minimum: 1 }),
+		// Zero is allowed: a residual whose base already meets the encoder's stop
+		// condition has no components to carry, and that empty payload decodes to the
+		// base. A positive minimum would let the sender produce a message the receiver
+		// then refuses to parse — the best case of the mechanism failing on the wire.
+		byteLength: Type.Integer({ minimum: 0 }),
 		dim: Type.Integer({ maximum: 8192, minimum: 1 }),
 		encoding: Type.Union([Type.Literal("float32-vector"), Type.Literal("delta")]),
 		payloadId: Type.String({ pattern: CONTENT_ID_PATTERN }),
@@ -155,6 +159,8 @@ function assertStateRef(stateRef: StateRef): void {
 		throw new Error(`stateRef byteLength ${stateRef.byteLength} does not match dim ${stateRef.dim} (expected ${fullLength})`);
 	}
 	if (stateRef.encoding === "delta") {
+		// The lower bound is zero by design, not by omission: see the schema note on
+		// why an empty residual is a real message rather than a malformed one.
 		// A residual longer than the vector it replaces would have no reason to exist.
 		if (stateRef.byteLength > fullLength) {
 			throw new Error(`stateRef byteLength ${stateRef.byteLength} exceeds the full vector it replaces (${fullLength})`);
@@ -234,4 +240,30 @@ export function parseEnvelope(wire: CanonicalValue): EnvelopeWire {
 export function envelopeParams(wire: EnvelopeWire): CanonicalValue {
 	const decoded: CanonicalValue = JSON.parse(wire.inputParamsJson);
 	return decoded;
+}
+
+const QueryTextSchema = Type.Object({ query: Type.String({ minLength: 1 }) });
+const queryTextValidator = Compile(QueryTextSchema);
+
+/**
+ * The query text the sender encoded, when the envelope's params carry one.
+ *
+ * The receiver's semantic check compares a decoded state against a fresh embedding of
+ * *this* text rather than of whatever the receiver happens to hold, because the state
+ * is a claim about the sender's query. What that catches is an envelope whose text
+ * disagrees with what was actually encoded (a buggy or inconsistent sender); it cannot
+ * catch a query that was consistently encoded AND consistently carried yet is stale
+ * for the task — both sides embed the same text, so they agree by construction. Null
+ * means the params carry no readable query, and the caller decides what that means
+ * for it rather than being handed an empty string.
+ */
+export function envelopeQueryText(wire: EnvelopeWire): string | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(wire.inputParamsJson);
+	} catch {
+		return null;
+	}
+	if (!queryTextValidator.Check(parsed)) return null;
+	return parsed.query;
 }

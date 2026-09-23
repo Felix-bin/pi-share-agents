@@ -23,7 +23,7 @@ import { formatSubagentModelVerificationError } from "../shared/model-fallback.t
 import { isMutatingTool, resolveCurrentPath } from "../shared/long-running-guard.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, toolTimeoutCallKey } from "../shared/tool-timeout.ts";
 import { createReportedChildSessionInput, type InProcessChildLaunch } from "../shared/child-launch.ts";
-import { closeChildDelegation, openChildDelegation } from "../shared/synapse-delegation.ts";
+import { closeChildDelegation, openChildDelegationWithState } from "../shared/synapse-delegation.ts";
 import type { OpenDelegation } from "../../synapse/delegation.ts";
 import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
 import { formatSteerMessage } from "../shared/subagent-prompt-runtime.ts";
@@ -639,6 +639,10 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 		// Declared outside the attempt so the failure path closes the same
 		// delegation the success path would have closed.
 		let delegation: OpenDelegation | null = null;
+		// Kept reachable from the catch path: a failed delegation still closes its
+		// synapse bookkeeping, and the close needs the runtime to reach the child's
+		// contract (the auto-distill switch lives there).
+		let delegationRuntime: import("../shared/child-runtime-config.ts").ChildRuntimeConfig | undefined;
 		void (async () => {
 			try {
 				const continuation = input.readonlyContinuation;
@@ -651,6 +655,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				};
 				checkContinuation();
 				const createInput = createReportedChildSessionInput(input.launch, input.transcriptWriter);
+				delegationRuntime = createInput.runtime;
 				if (input.collectReadonlyEvidence || continuation) requestReadonlySessionEvidence(createInput, continuation?.expected);
 				const created = await input.factory.create(createInput);
 				if (settled) {
@@ -694,24 +699,33 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				});
 				if (interrupted || timedOut || stopped) abortChild();
 				checkContinuation();
-				delegation = openChildDelegation({
-					childTools: input.launch.toolPlan.declaredBuiltinTools,
+				// The task plane always, the state plane when this child can consume one;
+				// the second delivery is metered by the send side that produced it.
+				const opened = await openChildDelegationWithState({
 					cwd: createInput.cwd,
 					message: input.prompt,
 					receiverSessionId: created.sessionId,
 					runtime: createInput.runtime,
 				});
+				delegation = opened.delegation;
 				// The `uds` gear's send is asynchronous and must finish before the
 				// child is prompted: the child verifies its envelope at the first
 				// agent turn, and a send still in flight would race that check.
 				// Undefined on the `file` gear, whose publish already happened, so
 				// the default path executes no await it did not execute before.
 				if (delegation?.envelopeDelivery !== undefined) await delegation.envelopeDelivery;
-				await created.prompt(delegation?.prompt ?? input.prompt);
+				// A stop that arrived while the state half was embedding must not be
+				// followed by a prompt. The abort above happened before the await, so
+				// without this second look the child is handed a task it was told to
+				// abandon — and the prompt's rejection is what turns a stop into a
+				// failure in the run's own record.
+				if (!interrupted && !timedOut && !stopped) await created.prompt(delegation?.prompt ?? input.prompt);
 				promptSettled = true;
 				closeChildDelegation(delegation, {
 					cancelled: interrupted || stopped,
 					finalOutput: getFinalOutput(messages),
+					runtime: delegationRuntime,
+					taskText: input.prompt,
 					timedOut,
 					usage,
 				});
@@ -722,6 +736,8 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 					cancelled: interrupted || stopped,
 					cause: promptError,
 					finalOutput: getFinalOutput(messages),
+					runtime: delegationRuntime,
+					taskText: input.prompt,
 					timedOut,
 					usage,
 				});

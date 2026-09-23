@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { encodeFrame } from "../../src/synapse/envelope-framing.ts";
-import { aggregateMetering, createMeteringLog, readMeteringLog, readProcessIdentity, recordProcessIdentity, recordTransportBytes, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
+import { aggregateMetering, createMeteringLog, FULL_ACCOUNT_DEFINITION, HOT_BASE_NOTE, readMeteringLog, readProcessIdentity, recordProcessIdentity, recordTransportBytes, SYNAPSE_METERING_SCHEMA_VERSION, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
 
 let root = "";
 let logPath = "";
@@ -57,7 +57,10 @@ describe("metering log durability", () => {
 		log.record(identity({ agent: "retriever" }), { kind: "message-delivered", envelopeBytes: 1, messageId: "m1", textBytes: 1 });
 		const [event] = readMeteringLog(logPath);
 		assert.ok(event);
-		assert.equal(event.schemaVersion, 1);
+		// A literal on purpose: bumping the metering schema is a deliberate act that
+		// must change this line and the reader that documents the difference, never
+		// something that slips through by comparing the constant to itself.
+		assert.equal(event.schemaVersion, SYNAPSE_METERING_SCHEMA_VERSION);
 		assert.equal(event.agent, "retriever");
 		assert.equal(event.runId, "run-1");
 		assert.equal(event.attempt, 1);
@@ -150,10 +153,22 @@ describe("transportBytes (Task 3, design §4.1)", () => {
 		// branches — not just under the new "transport-bytes" case — fails this
 		// assertion instead of slipping past a hand-picked subset of fields.
 		assert.deepEqual(totals, {
+			capability: { probeFailures: 0, probeVerdicts: 0 },
 			control: { envelopeBytes: 40, transportBytes: "N/A" },
-			duration: { byTask: {}, totalMs: 40, unfinishedTasks: [] },
+			// No task span in this stream, so there is no parent writer to time
+			// the run on: the duration is unavailable rather than inferred.
+			duration: { byTask: {}, totalMs: "unavailable", unfinishedTasks: [] },
 			embedding: { costUsd: 0, durationMs: 0, failed: 0, inputTokens: 0, requests: 0 },
 			errors: {},
+			fullAccount: {
+				bytes: 40,
+				components: { baseRebuildReadBytes: 0, baseSelectionReadBytes: 0, controlBytes: 40, payloadBytes: 0, resendBytes: 0 },
+				definition: FULL_ACCOUNT_DEFINITION,
+				embeddingCalls: { inputTokens: 0, requests: 0 },
+				fallback: { hops: { fullVector: 0, resend: 0, text: 0 }, partitionConsistent: true, sendsWithRestore: 0 },
+				hotBase: { bytesIfBaseResident: 40, derived: true, note: HOT_BASE_NOTE },
+				notNamed: { payloadReadBytes: 0, rankingReadBytes: 0 },
+			},
 			memory: { crossAgentReuses: 0, hitRate: "N/A", queries: 0, reuses: 0 },
 			messages: { delivered: 1, duplicateDeliveries: 0, failed: 0, received: 1 },
 			model: {
@@ -162,7 +177,23 @@ describe("transportBytes (Task 3, design §4.1)", () => {
 				parent: { cacheRead: 10, cacheWrite: 20, input: 300, output: 40 },
 				totalCost: 0.75,
 			},
-			state: { consumed: 0, failedSends: 0, prepared: 0, received: 0, receivedWithoutConsume: 0, sent: 0, sentBytes: 0 },
+			state: {
+				baseReadBytes: 0,
+				baseSelectionReadBytes: 0,
+				consumed: 0,
+				deltaPayloadBytes: 0,
+				failedSends: 0,
+				prepared: 0,
+				received: 0,
+				receivedWithoutConsume: 0,
+				restoreCount: 0,
+				sent: 0,
+				sentBytes: 0,
+				vectorCacheHits: 0,
+				vectorCacheMisses: 0,
+				verificationRefusals: 0,
+				verifications: 0,
+			},
 			storage: { readBytes: 0, writeBytes: 4096 },
 			text: { handoffBytes: 100 },
 		});
@@ -253,9 +284,21 @@ describe("model and embedding usage (AC-09)", () => {
 
 describe("state plane accounting (AC-09)", () => {
 	it("counts prepare, send, receive and consume separately", () => {
-		for (const kind of ["state-prepare", "state-send", "state-receive", "state-consume"] as const) {
+		for (const kind of ["state-prepare", "state-send", "state-receive"] as const) {
 			log.record(identity(), { kind, ok: true, payloadBytes: 4096, representationId: "rep-1", stateId: "s1" });
 		}
+		// A consume is the receipt that proves retrieval happened, so it names the
+		// payload, the corpus it ran against and how many chunks were ranked.
+		log.record(identity(), {
+			corpusSnapshotId: "c".repeat(64),
+			k: 5,
+			kind: "state-consume",
+			ok: true,
+			payloadBytes: 4096,
+			payloadId: "p".repeat(64),
+			representationId: "rep-1",
+			stateId: "s1",
+		});
 		const totals = aggregateMetering(readMeteringLog(logPath));
 		assert.deepEqual(
 			{ consumed: totals.state.consumed, prepared: totals.state.prepared, received: totals.state.received, sent: totals.state.sent },
@@ -292,6 +335,151 @@ describe("state plane accounting (AC-09)", () => {
 		const totals = aggregateMetering(readMeteringLog(logPath));
 		assert.equal(totals.state.consumed, 0);
 		assert.equal(totals.state.receivedWithoutConsume, 1);
+	});
+});
+
+describe("full account (frozen definition)", () => {
+	// One run's worth of events, so each test below can change exactly one thing.
+	function recordRun(target: MeteringLog, overrides: { payloadRead?: boolean } = {}): void {
+		target.record(identity(), { envelopeBytes: 80, kind: "message-delivered", messageId: "m1", textBytes: 100 });
+		target.record(identity(), { kind: "state-send", ok: true, payloadBytes: 4096, representationId: "rep-1", stateId: "s1" });
+		// A recovery hop: the same path paying for the bytes a second time.
+		target.record(identity({ attempt: 2 }), { kind: "state-send", ok: true, payloadBytes: 1024, representationId: "rep-1", restore: "resend", stateId: "s2" });
+		// The hop itself, recorded the way the recovery chain records it: the send
+		// above declares the marker, this event counts the hop.
+		target.record(identity({ attempt: 2 }), { hop: "resend", kind: "state-restore", ok: true });
+		target.record(identity({ attempt: 2 }), { bytes: 1024, direction: "write", kind: "object-io" });
+		target.record(identity(), { bytes: 4096, direction: "read", kind: "object-io", purpose: "base-rebuild" });
+		target.record(identity(), { bytes: 512, direction: "read", kind: "object-io", purpose: "base-selection" });
+		target.record(identity(), { bytes: 2048, direction: "read", kind: "object-io", purpose: "ranking" });
+		if (overrides.payloadRead !== false) {
+			target.record(identity(), { bytes: 4096, direction: "read", kind: "object-io", purpose: "payload-read" });
+		}
+		target.record(identity(), { costUsd: 0.0001, durationMs: 30, inputTokens: 12, kind: "embedding-call", ok: true, requests: 1 });
+	}
+
+	it("sums the frozen components and partitions the sent bytes without overlap", () => {
+		recordRun(log);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.deepEqual(totals.fullAccount.components, {
+			baseRebuildReadBytes: 4096,
+			baseSelectionReadBytes: 512,
+			// Hand-counted from the events recorded above rather than compared with the
+			// control field, which the same aggregation line produces: comparing the two
+			// would restate the assignment instead of checking the rule.
+			controlBytes: 80,
+			payloadBytes: 4096,
+			resendBytes: 1024,
+		});
+		// 4096 first transmission + 1024 recovery + 80 control + 4096 base rebuild + 512 selection.
+		assert.equal(totals.fullAccount.bytes, 9808);
+		// The two payload components partition the state plane's sent bytes rather than
+		// restating the total, so a recovery hop can never be counted twice.
+		assert.equal(totals.fullAccount.components.payloadBytes + totals.fullAccount.components.resendBytes, totals.state.sentBytes);
+	});
+
+	it("keeps the receiver's payload read out of the frozen sum but still reports it", () => {
+		// Two separate logs, not two runs appended to one: appending would double every
+		// component and the comparison would be between one run and two.
+		const withoutReadPath = path.join(root, "without-payload-read.jsonl");
+		const withoutReadLog = createMeteringLog(withoutReadPath, { monotonicMs: () => (elapsed += 10), now: () => new Date(clock) });
+		recordRun(withoutReadLog, { payloadRead: false });
+		recordRun(log);
+		const withoutRead = aggregateMetering(readMeteringLog(withoutReadPath));
+		const withRead = aggregateMetering(readMeteringLog(logPath));
+		// Both arms read their payload back, so the figure the arms are compared on
+		// must not move when that read appears.
+		assert.equal(withRead.fullAccount.bytes, withoutRead.fullAccount.bytes);
+		assert.equal(withoutRead.fullAccount.notNamed.payloadReadBytes, 0);
+		assert.equal(withRead.fullAccount.notNamed.payloadReadBytes, 4096);
+	});
+
+	it("reports the corpus ranking reads separately from the transfer account", () => {
+		recordRun(log);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.fullAccount.notNamed.rankingReadBytes, 2048);
+		// Ranking is the retrieval the state is used for, not the transfer itself.
+		assert.equal(totals.fullAccount.bytes, 9808);
+	});
+
+	it("labels the hot-base row as derived and computes it as the cold figure minus base reads", () => {
+		recordRun(log);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.fullAccount.hotBase.bytesIfBaseResident, 9808 - 4096 - 512);
+		assert.equal(totals.fullAccount.hotBase.derived, true);
+		assert.match(totals.fullAccount.hotBase.note, /derived|arithmetic/i);
+		// The conditional has to survive a consumer that serialises the object and
+		// keeps only the number, so it is in the field name as well as the flag.
+		assert.match(JSON.stringify(totals.fullAccount.hotBase), /IfBaseResident/);
+	});
+
+	it("counts the recovery hops by kind and checks the hop marker against them", () => {
+		recordRun(log);
+		log.record(identity({ attempt: 3 }), { hop: "text", kind: "state-restore", ok: true });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.deepEqual(totals.fullAccount.fallback.hops, { fullVector: 0, resend: 1, text: 1 });
+		// One recorded hop carries the marker on its send; the text hop does not send
+		// at all, so it must not be demanded from the sends.
+		assert.equal(totals.fullAccount.fallback.sendsWithRestore, 1);
+		assert.equal(totals.fullAccount.fallback.partitionConsistent, true);
+		// The hop count is metric ④, arrived at independently of the hops breakdown.
+		assert.equal(totals.state.restoreCount, 2);
+	});
+
+	it("flags a recovery send that never declared itself a hop", () => {
+		recordRun(log);
+		// A second recovery hop whose send forgot its marker: the bytes move from the
+		// resend component to the first-transmission one, so the breakdown is wrong
+		// while ② (which holds both) is not.
+		log.record(identity({ attempt: 3 }), { kind: "state-send", ok: true, payloadBytes: 700, representationId: "rep-1", stateId: "s3" });
+		log.record(identity({ attempt: 3 }), { hop: "resend", kind: "state-restore", ok: true });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.fullAccount.fallback.partitionConsistent, false);
+		assert.equal(totals.fullAccount.fallback.sendsWithRestore, 1);
+		assert.equal(totals.fullAccount.fallback.hops.resend, 2);
+	});
+
+	it("carries the definition with the number and counts embedding calls as calls, not bytes", () => {
+		recordRun(log);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.match(totals.fullAccount.definition, /payload/i);
+		assert.match(totals.fullAccount.definition, /base-selection/i);
+		assert.deepEqual(totals.fullAccount.embeddingCalls, { inputTokens: 12, requests: 1 });
+	});
+
+	it("reports cache hits and misses as counts of their own", () => {
+		// Without these, "fewer reads" and "fewer records" are indistinguishable, and a
+		// reader cannot tell whether a cache-on run is comparable to a cache-off one.
+		recordRun(log);
+		log.record(identity(), { hits: 1, kind: "vector-cache", misses: 1 });
+		log.record(identity(), { hits: 2, kind: "vector-cache", misses: 0 });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.state.vectorCacheHits, 3);
+		assert.equal(totals.state.vectorCacheMisses, 1);
+		// They are counts, not bytes: the frozen account must not move because a read was
+		// served from memory instead of from the store.
+		assert.equal(totals.fullAccount.bytes, 9808);
+	});
+
+	it("counts the receiver's semantic checks and its refusals separately", () => {
+		// Counted where the refusal happens, so a refusal that a fallback rescued and one
+		// that ended the consume are both in the same column.
+		log.record(identity(), { cosine: 0.999, kind: "state-verify", ok: true });
+		log.record(identity(), { cosine: 0.4, kind: "state-verify", ok: false });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.state.verifications, 2);
+		assert.equal(totals.state.verificationRefusals, 1);
+		// A check is not a transfer: the frozen byte account must not move because one ran.
+		assert.equal(totals.fullAccount.bytes, 0);
+	});
+
+	it("leaves an unattributed read out of every component", () => {
+		log.record(identity(), { bytes: 700, direction: "read", kind: "object-io" });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.fullAccount.bytes, 0);
+		assert.deepEqual(totals.fullAccount.notNamed, { payloadReadBytes: 0, rankingReadBytes: 0 });
+		// It is still storage traffic; it simply belongs to no arm.
+		assert.equal(totals.storage.readBytes, 700);
 	});
 });
 
@@ -332,8 +520,26 @@ describe("memory and duration accounting (AC-09)", () => {
 		assert.equal(totals.duration.totalMs, 50);
 	});
 
-	it("reports an unfinished span rather than inventing an end time", () => {
+	it("takes the run's span from the parent's own clock, not from a second writer's", () => {
 		log.record(identity(), { kind: "task-span", phase: "start", taskId: "t1" });
+		log.record(identity(), { kind: "task-span", phase: "end", taskId: "t1" });
+		const parent = readMeteringLog(logPath);
+		// A background child is a separate process appending to this same file, and
+		// its monotonic clock restarts at its own log instance. Written as a raw line
+		// because that is what the second writer actually produces: this process's
+		// log cannot mint a reading from another process's origin.
+		const childRow = { ...parent[0]!, eventId: "9".repeat(64), kind: "message-received", messageId: "m-child", monotonicMs: 1_000_000, writer: 987_654 };
+		fs.appendFileSync(logPath, `${JSON.stringify(childRow)}\n`, "utf-8");
+
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		// The parent's own span. Without the writer scope this would be the child's
+		// million-millisecond reading minus the parent's origin.
+		assert.equal(totals.duration.totalMs, parent[1]!.monotonicMs - parent[0]!.monotonicMs);
+		// The child's row is not discarded from what it is a count of.
+		assert.equal(totals.messages.received, 1);
+	});
+
+	it("reports an unfinished span rather than inventing an end time", () => {		log.record(identity(), { kind: "task-span", phase: "start", taskId: "t1" });
 		const totals = aggregateMetering(readMeteringLog(logPath));
 		assert.equal(totals.duration.byTask["t1"], "unavailable");
 		assert.deepEqual(totals.duration.unfinishedTasks, ["t1"]);

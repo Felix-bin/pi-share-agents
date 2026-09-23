@@ -1,5 +1,5 @@
 import { canonicalDigest, canonicalJson, type CanonicalValue } from "./canonical-json.ts";
-import type { SynapseDeliveryGear, SynapseMode } from "./config.ts";
+import { SYNAPSE_DEFAULT_STATE_VERIFY, type SynapseDeliveryGear, type SynapseMode, type SynapseStateVerify } from "./config.ts";
 import type { SynapseErrorCategory } from "./errors.ts";
 
 /**
@@ -43,6 +43,8 @@ export type LaunchContractInput = {
 	namespaceId: string;
 	representationId: string;
 	scope: ContractScope;
+	/** Optional: a contract persisted before this setting existed carries none, and defaults to off. */
+	stateVerify?: SynapseStateVerify;
 	storageRoot: string;
 };
 
@@ -56,6 +58,12 @@ export type LaunchContract = {
 	namespaceId: string;
 	representationId: string;
 	scope: { pathPrefixes: string[]; write: boolean };
+	/**
+	 * Whether the receiver re-embeds the query to check a decoded state before it
+	 * ranks with it. Frozen into the contract because it is the *receiver's*
+	 * behaviour, and because it changes what a consumed state is allowed to be.
+	 */
+	stateVerify: SynapseStateVerify;
 	storageRoot: string;
 };
 
@@ -99,7 +107,11 @@ function normaliseScope(scope: ContractScope) {
 
 function contractBody(input: LaunchContractInput): CanonicalValue {
 	const scope = normaliseScope(input.scope);
-	return {
+	// Normalised here as well as in the resolver, because this function is also reached
+	// with a contract parsed back off disk, where a setting added after that contract was
+	// written is simply absent.
+	const stateVerify = input.stateVerify ?? SYNAPSE_DEFAULT_STATE_VERIFY;
+	const body = {
 		capabilityId: input.capabilityId,
 		corpusSnapshotId: input.corpusSnapshotId,
 		// Part of the identity, not merely carried alongside it: the gear is one of
@@ -113,6 +125,11 @@ function contractBody(input: LaunchContractInput): CanonicalValue {
 		scope: { pathPrefixes: scope.pathPrefixes, write: scope.write },
 		storageRoot: input.storageRoot,
 	};
+	// A setting at its default is not part of the contract's identity: a launch that never
+	// sets it keeps the identity it had before the setting existed, so a contract persisted
+	// by an older build still rehydrates instead of reading as tampered.
+	if (stateVerify === SYNAPSE_DEFAULT_STATE_VERIFY) return body;
+	return { ...body, stateVerify };
 }
 
 export function resolveLaunchContract(input: LaunchContractInput): LaunchContract {
@@ -127,6 +144,7 @@ export function resolveLaunchContract(input: LaunchContractInput): LaunchContrac
 		namespaceId: input.namespaceId,
 		representationId: input.representationId,
 		scope,
+		stateVerify: input.stateVerify ?? SYNAPSE_DEFAULT_STATE_VERIFY,
 		storageRoot: input.storageRoot,
 	};
 }

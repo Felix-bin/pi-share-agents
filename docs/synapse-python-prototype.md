@@ -46,26 +46,32 @@ reference/synapse-py/
 ## 与本仓库 `src/synapse/` 的对照
 
 两边解决的是同一批问题，但本仓库是 Pi 扩展、原型是独立 Python 包，所以只有机制对应，没有代码对应。
+**逐模块的迁移覆盖核验**（含判定、证据行号与缺口处置）见
+[初赛机制迁移覆盖核验](./migration-coverage-vs-python-prototype.md)——本节的对应表只给主干。
 
 | 原型（Python） | 本仓库（TypeScript） | 说明 |
 |---|---|---|
 | `protocol/messages.py` | `envelope.ts`、`capability.ts` | 结构化通信单元 `{action, params, result, capability}` |
+| `protocol/handshake.py` | `capability.ts` | 能力协商；本仓库为二档（state/text），无原型那种运行时探测 |
 | `protocol/transport.py` | `envelope-inbox.ts` | 原型走 AF_UNIX 长度前缀 framing；本仓库走文件投递 |
-| `protocol/scheduler.py`、`runtime/team.py` | `delegation.ts`、`handoff.ts` | 委派与上下文准备 |
+| `protocol/scheduler.py`、`runtime/team.py` | `delegation.ts`、`handoff.ts`、`roles.ts` | 委派、上下文准备与角色能力声明 |
 | `runtime/exec_child.py` | `child-contract.ts`、`lifecycle.ts` | 子侧启动契约与校验 |
 | `stateplane/cas.py` | `content-store.ts` | 内容寻址存储 |
 | `stateplane/checksum.py` | `canonical-json.ts`、`source-fingerprint.ts` | 确定性摘要与来源指纹 |
+| `stateplane/residual.py`、`embedding.py` | `delta.ts`、`delta-params.ts`、`state-payload.ts`、`embedding.ts` | 残差编码与句向量 |
+| `stateplane/vector_index.py` | `corpus.ts`、`state-retrieval.ts` | 向量检索（两侧同为暴力余弦） |
 | `memory/store.py` | `memory-store.ts` | 共享记忆单元与统一 schema |
-| `memory/retrieval.py` | `retrieval.ts` | 检索 |
+| `memory/retrieval.py` | `retrieval.ts` | 关键词/标签/语义三路检索 |
 | `config.py` | `config.ts` | 配置 |
 | `cli.py` | `setup-command.ts` | 入口命令 |
 
-**原型有、本仓库没有的部分**，正对应 [README 的"已知缺口"](../README.md)：
+**原型有、本仓库确实没有的**（逐条理由见核验文档 §4）：
 
-- `stateplane/residual.py`、`embedding.py`、`vector_index.py`、`projection.py` —— 语义检索、
-  向量索引、预测残差编码的非文本状态传递。本仓库的检索目前只有关键词与标签。
-- `memory/consolidate.py`、`memory/tom.py` —— 记忆固化与 Theory-of-Mind 建模。
-- `eval/`、`qa/` —— 评测框架与问答实验流水线。
+- `runtime/model.py`、`runtime/subprocess_executor.py` —— CodeAct 与轻量沙箱（赛题 M11 加分项）。
+- `memory/consolidate.py` —— 记忆固化/合并（本仓库以取代事件 + 不可变日志替代一部分职责）。
+- `eval/` 的运行器部分、`qa/`、`tasks.py` —— A/B 运行器、数据集流水线与关联任务族。
+  本仓库的指标口径在 `src/synapse/metering.ts`，比原型更严（拒绝代理值），但出数装置尚未迁移。
+- `stateplane/projection.py` —— 原型默认关闭，故不迁移。
 
 ## 跑一遍原型
 

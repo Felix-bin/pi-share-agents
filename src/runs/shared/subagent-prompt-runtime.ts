@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { BeforeProviderRequestEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Compile } from "typebox/compile";
 import { registerNativeSupervisorClient } from "../../intercom/native-supervisor-channel.ts";
 import { permissionDecision } from "./permissions.ts";
 import type { SteerRequest } from "../background/control-channel.ts";
@@ -19,10 +21,15 @@ import { requestWatchdogPermission, type WatchdogPermissionRequest, type Watchdo
 import { SUBAGENT_WATCHDOG_WARNING_TYPE } from "../../watchdog/types.ts";
 import { registerSynapseChildTools } from "../../synapse/child-contract.ts";
 import type { SynapseToolsRegistration } from "../../synapse/register-tools.ts";
+import { consumeRetrieveState, meteringLogPath } from "../../synapse/delegation.ts";
+import { resolveConfiguredEmbedder } from "../../synapse/embedding.ts";
 import { receiveEnvelopeViaUdsRoute, selectEnvelopeRoute } from "../../synapse/envelope-gear.ts";
-import { readDeliveredEnvelope, verifyEnvelopeAgainstContract, type DeliveredEnvelope } from "../../synapse/envelope-inbox.ts";
+import { nodeIdFor, readDeliveredEnvelope, stateEnvelopePath, verifyEnvelopeAgainstContract, type DeliveredEnvelope } from "../../synapse/envelope-inbox.ts";
 import type { EnvelopeWire } from "../../synapse/envelope.ts";
+import { createMeteringLog, type MeteringIdentity } from "../../synapse/metering.ts";
+import { SYNAPSE_MAX_SEARCH_K } from "../../synapse/memory-service.ts";
 import { redeemMemoryRefs, type RedemptionResult } from "../../synapse/redemption.ts";
+import type { StateRetrievalHit } from "../../synapse/state-retrieval.ts";
 import type { UdsServerTransport } from "../../synapse/envelope-uds.ts";
 import { registerWaitTool } from "../background/wait-tool.ts";
 import { drainOutstandingWork } from "../background/auto-drain.ts";
@@ -543,6 +550,169 @@ function redeemEnvelopeMemories(config: ChildRuntimeConfig, wire: EnvelopeWire, 
 	return result;
 }
 
+/**
+ * The retrieve parameters the sender wrote into the envelope.
+ *
+ * Params travel as canonical JSON text, which the wire schema validates only as
+ * a string — what they hold is the sender's choice, so the receiver checks the
+ * shape it is about to use instead of trusting it. A payload that does not
+ * carry the two fields this side needs is not consumable, and saying so is
+ * better than recovering with a default the sender never chose.
+ */
+const RetrieveParamsSchema = Type.Object({
+	k: Type.Integer({ maximum: SYNAPSE_MAX_SEARCH_K, minimum: 1 }),
+	query: Type.String({ minLength: 1 }),
+});
+const retrieveParamsValidator = Compile(RetrieveParamsSchema);
+
+function retrieveParamsOf(wire: EnvelopeWire): { k: number; query: string } | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(wire.inputParamsJson);
+	} catch {
+		return null;
+	}
+	if (!retrieveParamsValidator.Check(parsed)) return null;
+	return { k: parsed.k, query: parsed.query };
+}
+
+/**
+ * The chunks a state handover selected, rendered for the child's own context.
+ *
+ * The plane carried a vector; what a model can act on is where the ranking put
+ * it. Paths and line ranges are the honest rendering — the same fields the
+ * memory tool would have returned had the child searched for itself — so the
+ * handover is a shortcut rather than a second retrieval policy.
+ */
+function stateHitsMessage(result: { corpusSnapshotId: string; hits: readonly StateRetrievalHit[] }): string {
+	const lines = result.hits.map((hit) => {
+		const anchor = `- ${hit.path}:${hit.startLine}-${hit.endLine} (cosine ${hit.cosine.toFixed(4)})`;
+		// A hit that names its first line lets the child recognise the region
+		// before it reads; the anchor steers the first read, it never replaces it.
+		return hit.preview ? `${anchor} — ${hit.preview}` : anchor;
+	});
+	return [
+		"The delegating agent handed over a retrieval state for the shared corpus — a query vector, not the retrieved text.",
+		`Ranking it in this session selected these chunks (corpus ${result.corpusSnapshotId.slice(0, 12)}):`,
+		...lines,
+		"Read the files for their contents; treat the ranking as a starting point, not as a summary.",
+	].join("\n");
+}
+
+/** One warning line, never a throw: a state-plane problem must not cost the run. */
+function warnState(stage: string, reason: string): void {
+	console.warn(`[pi-subagents] synapse: ${stage} skipped: ${reason}`);
+}
+
+/**
+ * Whether a consumed ranking is worth a steer message.
+ *
+ * A ranking that selected nothing has nothing for the child to act on, and the
+ * message's whole content is the list — so steering it would spend context on
+ * every later turn of that session to say "a vector arrived and selected
+ * nothing", which reads as evidence where there is none. The fact is not lost:
+ * the consume is metered whether or not a steer follows, so an experiment counts
+ * empty rankings from the ledger rather than from the child's prompt.
+ *
+ * Exported because the choice is otherwise unpinnable: `buildCorpus` refuses an
+ * empty corpus and the ranking applies no score floor, so no fixture can make a
+ * real consumption return zero hits (review item §7.4, 2026-09-20).
+ */
+export function shouldSteerHits(hits: readonly StateRetrievalHit[]): boolean {
+	return hits.length > 0;
+}
+
+/**
+ * Consumes the state-plane envelope addressed to this child and steers the
+ * session with what the ranking selected.
+ *
+ * Totality is the same one the sending seam keeps: an absent envelope means
+ * this delegation never negotiated a state delivery and the child runs exactly
+ * the task it was sent, and every other failure — an unreadable file, a
+ * divergence from the contract, a refused payload — is recorded and skipped
+ * rather than thrown. The delegate inbox is checked separately and *is* fatal
+ * on divergence, because that one decides whether the launch was delegated at
+ * all.
+ *
+ * `sessionId` is this child's own session id as the session manager reports it.
+ * It labels the meter entries this consumption writes and nothing else: the
+ * sender addresses the envelope to the id the host minted for the child
+ * session, and the two strings are not reliably equal, so admission is bound to
+ * the run, the node id and the sender identity instead. When the manager reports
+ * nothing the entry carries the same placeholder an unattributed launch uses,
+ * rather than a guess at which session this was.
+ */
+async function consumeStateEnvelope(config: ChildRuntimeConfig, sessionId: string, sendSteer: ((text: string) => void) | undefined): Promise<void> {
+	const synapse = config.synapse;
+	if (synapse === undefined) return;
+	const contract = synapse.contract;
+	// The ledger is opened before the first check, the same way the consumer opens
+	// it before its own: a refusal this side makes is still a delivery that will
+	// never be consumed, and an append-only log is the only place that fact can be
+	// read back from. Recording it is what separates "the payload was refused" from
+	// "nothing ever ran" for anyone reconciling sent against consumed.
+	const log = createMeteringLog(meteringLogPath(contract, synapse.runId));
+	const identity: MeteringIdentity = { agent: synapse.agent, attempt: 1, mode: contract.mode, nodeId: nodeIdFor(synapse.runId, config.childIndex), runId: synapse.runId, sessionId, snapshotId: null };
+	const refuse = (reason: string): void => {
+		log.record(identity, { category: "configuration", detail: reason, kind: "error" });
+		warnState("state consumption", reason);
+	};
+	const delivered = readDeliveredEnvelope(stateEnvelopePath(contract.storageRoot, synapse.runId, config.childIndex));
+	if (delivered.status === "absent") return;
+	if (delivered.status === "rejected") return refuse(delivered.reason);
+	const mismatch = verifyEnvelopeAgainstContract({ contract, wire: delivered.wire });
+	if (mismatch !== null) return refuse(mismatch);
+	const wire = delivered.wire;
+	// Only a retrieve action carries state. Nothing this side publishes reaches
+	// the state inbox without one, so an envelope here that carries no state is a
+	// divergence rather than a delivery to ignore, and it is recorded as one.
+	if (wire.action !== "retrieve" || wire.stateRef === null) {
+		return refuse(`the state inbox holds a ${wire.action} envelope with no state payload`);
+	}
+	const params = retrieveParamsOf(wire);
+	if (params === null) return refuse("the envelope's input parameters are not a retrieve query");
+	let outcome: Awaited<ReturnType<typeof consumeRetrieveState>>;
+	try {
+		outcome = await consumeRetrieveState({
+			contract,
+			deps: {
+				// The receiver's own provider re-embeds the query if recovery falls
+				// back to text; the payload itself needs no embedder.
+				embedder: resolveConfiguredEmbedder(synapse.embedding, contract.storageRoot),
+				log,
+			},
+			envelope: wire,
+			expectedSenderSessionId: synapse.sessionId,
+			fallbackQuery: params.query,
+			identity: { agent: synapse.agent, attempt: 1, childIndex: config.childIndex, runId: synapse.runId, sessionId },
+			k: params.k,
+			stateRecovery: "resend-then-text",
+			worktreeRoot: process.cwd(),
+		});
+	} catch (error) {
+		// consumeRetrieveState reports its own failures as outcomes; a throw here
+		// means the seam itself broke, which is still not the child's problem.
+		return refuse(error instanceof Error ? error.message : String(error));
+	}
+	if (outcome.kind === "text-fallback") {
+		// The recovery ran and is metered, but its result is a memory ranking, not
+		// the corpus ranking the state plane produces. Injecting it under the same
+		// name would make the two kinds of hit indistinguishable in the child's
+		// context, so the recovery's value stays what it is: the retrieval did not
+		// fail, and the child's own tools cover the rest.
+		return warnState("state hits", "the payload needed the text fallback, whose result is not a state ranking");
+	}
+	if (outcome.kind !== "consumed") return warnState("state consumption", outcome.reason);
+	if (sendSteer === undefined) return;
+	if (!shouldSteerHits(outcome.result.hits)) return;
+	try {
+		sendSteer(stateHitsMessage(outcome.result));
+	} catch (error) {
+		// Steering is best effort; the consume is already metered either way.
+		warnState("state hit delivery", error instanceof Error ? error.message : String(error));
+	}
+}
+
 function registerToolBudget(pi: ExtensionAPI, budget: ResolvedToolBudget | undefined): void {
 	if (!budget) return;
 	let toolCount = 0;
@@ -635,7 +805,14 @@ export default function registerSubagentPromptRuntime(
 		watcherRestartTimer: null,
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	} as unknown as SubagentState;
-	if (typeof pi.registerTool === "function") registerWaitTool(pi, waitState, config.waitTool.enabled, undefined, config.waitTool.defaultTimeoutMs);
+	// A child whose wait tool is off never registers it at all: the definition
+	// (~4.4 KB of description plus schema) would be billed on every request of
+	// every retrieval-style child while there is no background work it could
+	// ever resolve. The host process keeps the registered-but-disabled shape
+	// for interactive sessions; a child only sees bg_wait when it can use it.
+	if (config.waitTool.enabled && typeof pi.registerTool === "function") {
+		registerWaitTool(pi, waitState, true, undefined, config.waitTool.defaultTimeoutMs);
+	}
 	// The child registers its own memory tools from the contract it was launched
 	// with, so a delegated agent reads and writes the project's shared memory
 	// under its own identity rather than the parent's.
@@ -678,11 +855,34 @@ export default function registerSubagentPromptRuntime(
 		registerNativeSupervisorClient(pi, supervisorMetadata);
 	};
 	const onRuntimeEvent = pi.on as unknown as (event: string, handler: (event: unknown, ctx?: ExtensionContext) => unknown) => void;
+	// This child's own session id, for labelling meter entries this side writes.
+	// It is deliberately not an admission input: see consumeStateEnvelope.
+	let childSessionId: string | null = null;
 	onRuntimeEvent("session_start", (_event: unknown, ctx?: ExtensionContext) => {
 		const sessionManager = (ctx as { sessionManager?: Parameters<typeof resolveCurrentSessionId>[0] } | undefined)?.sessionManager;
 		waitState.currentSessionId = sessionManager ? resolveCurrentSessionId(sessionManager) : null;
+		try {
+			childSessionId = sessionManager?.getSessionId() ?? null;
+		} catch {
+			childSessionId = null;
+		}
 		registerNativeSupervisorClientOnce();
 	});
+	// Consuming the state plane is best effort and fires once. It is deliberately
+	// not awaited: the child is already running the task it was sent, and a state
+	// payload that arrives a moment later is worth more than a first turn held
+	// open for it.
+	let stateConsumed = false;
+	const consumeStateOnce = (): void => {
+		if (stateConsumed) return;
+		stateConsumed = true;
+		void consumeStateEnvelope(config, childSessionId ?? "unattributed-session", (text) => {
+			// Bound explicitly: an unbound call would depend on the host's method
+			// never reading `this`, and a throw here would silently drop the hits.
+			const send = (pi as { sendUserMessage?: (content: string, options: { deliverAs: "steer" }) => unknown }).sendUserMessage;
+			send?.call(pi, text, { deliverAs: "steer" });
+		});
+	};
 	const checkRequiredTools = (): undefined => {
 		if (!config.requiredTools) return;
 		const diagnostic = evaluateChildToolDiagnostic(config, pi.getAllTools().map((tool) => tool.name));
@@ -695,7 +895,15 @@ export default function registerSubagentPromptRuntime(
 		// Only the `uds` gear produces a promise here. Returning one where none
 		// existed before would make this handler asynchronous for every child,
 		// including the ones whose refusals are raised synchronously today.
-		if (pending !== undefined) return pending.then(checkRequiredTools);
+		// State consumption follows a clean check on either path, as it always
+		// did: a rejected envelope throws before the state plane is touched.
+		if (pending !== undefined) {
+			return pending.then(() => {
+				consumeStateOnce();
+				return checkRequiredTools();
+			});
+		}
+		consumeStateOnce();
 		return checkRequiredTools();
 	});
 	onRuntimeEvent("agent_end", async (_event: unknown, ctx: unknown) => {
