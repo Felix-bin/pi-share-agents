@@ -318,3 +318,33 @@ describe("async runner process terminal events", () => {
 		assert.ok(logged?.some((arg) => arg instanceof Error && arg.message === "event bus unavailable"));
 	});
 });
+
+describe("subagent launch seam", () => {
+	// `launchAsyncRunner` is not exported, so the spawn call cannot be observed from
+	// a test. What matters is the S1 design §3.1 constraint itself: this file holds
+	// no topology branch, and it spawns what the seam returned rather than the raw
+	// command. Asserting that on the source is weaker than intercepting spawn, but
+	// it is the property the constraint actually names — and exporting the launcher
+	// just to observe it would enlarge this file's change beyond the one call.
+	const source = fs.readFileSync(new URL("../../src/runs/background/async-execution.ts", import.meta.url), "utf-8");
+
+	it("spawns what the launch seam returned, not the unresolved command", () => {
+		assert.match(source, /const proc = spawn\(launch\.command, launch\.args,/);
+		assert.doesNotMatch(source, /const proc = spawn\(command, args,/);
+	});
+
+	it("spawns with exactly the environment the seam returned, not a merge around it", () => {
+		// Merging extra keys here would put them in the engine CLI's environment on the
+		// container path, where they reach the client and stop — the child would never
+		// see them. The seam is the only thing that knows which side each variable goes.
+		assert.match(source, /env: launch\.env,/);
+		assert.doesNotMatch(source, /\.\.\.launch\.env/);
+	});
+
+	it("keeps every topology decision out of this file", () => {
+		const callSite = source.slice(source.indexOf("resolveSubagentLaunch({"), source.indexOf("const proc = spawn("));
+		assert.doesNotMatch(callSite, /\bif\b|\?|&&|\|\|/);
+		assert.equal(source.match(/resolveSubagentLaunch\(/g)?.length, 1);
+		assert.doesNotMatch(source, /isula|docker|podman|--ipc/);
+	});
+});

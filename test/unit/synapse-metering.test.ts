@@ -285,8 +285,11 @@ describe("process identity binding", () => {
 				if (filePath === "/proc/uptime") return "12345.67 54321.89\n";
 				throw new Error(`unexpected path: ${filePath}`);
 			},
+			// Explicit, so the snapshot does not depend on whatever the machine
+			// running the suite happens to have exported.
+			env: {},
 		});
-		assert.deepEqual(snapshot, { pid: 4242, startTicks: 67890, uptimeAtRecordSeconds: 12345.67 });
+		assert.deepEqual(snapshot, { cgroupPath: null, pid: 4242, startTicks: 67890, topology: "process", uptimeAtRecordSeconds: 12345.67 });
 	});
 
 	it("returns null rather than throwing when /proc does not exist", () => {
@@ -311,6 +314,107 @@ describe("process identity binding", () => {
 		assert.equal(event.kind === "process-identity" && event.pid, 4242);
 		assert.equal(event.kind === "process-identity" && event.startTicks, 67890);
 		assert.equal(event.kind === "process-identity" && event.uptimeAtRecordSeconds, 12345.67);
+	});
+
+	it("records the launch topology so a container run and a process run are told apart", () => {
+		recordProcessIdentity(log, identity(), {
+			pid: 7,
+			readFile: (filePath) => (filePath === "/proc/self/stat" ? statLine(1) : filePath === "/proc/uptime" ? "1.0 0\n" : "0::/system.slice/pi-agent-a.scope\n"),
+			env: { PI_SUBAGENT_LAUNCH_TOPOLOGY: "container" },
+		});
+		const [event] = readMeteringLog(logPath);
+		assert.ok(event);
+		assert.equal(event.kind === "process-identity" && event.topology, "container");
+		assert.equal(event.kind === "process-identity" && event.degradedReason, undefined);
+	});
+
+	it("records the reason a run fell back, so a degraded run is not read as a process run by choice", () => {
+		recordProcessIdentity(log, identity(), {
+			pid: 7,
+			readFile: (filePath) => (filePath === "/proc/self/stat" ? statLine(1) : filePath === "/proc/uptime" ? "1.0 0\n" : "0::/\n"),
+			env: {
+				PI_SUBAGENT_LAUNCH_TOPOLOGY: "process",
+				PI_SUBAGENT_LAUNCH_DEGRADED_REASON: "No container engine is usable: isula (not found on PATH).",
+			},
+		});
+		const [event] = readMeteringLog(logPath);
+		assert.ok(event);
+		assert.equal(event.kind === "process-identity" && event.topology, "process");
+		assert.match(event.kind === "process-identity" ? (event.degradedReason ?? "") : "", /not found on PATH/);
+	});
+
+	it("carries the cgroup id S3 will key attribution on once the swap happens", () => {
+		recordProcessIdentity(log, identity(), {
+			pid: 7,
+			readFile: (filePath) => (filePath === "/proc/self/stat" ? statLine(1) : filePath === "/proc/uptime" ? "1.0 0\n" : "0::/system.slice/pi-agent-a.scope\n"),
+			env: { PI_SUBAGENT_LAUNCH_TOPOLOGY: "container" },
+		});
+		const [event] = readMeteringLog(logPath);
+		assert.equal(event?.kind === "process-identity" && event.cgroupPath, "/system.slice/pi-agent-a.scope");
+	});
+
+	it("reports an unreadable cgroup as absent rather than as an empty id", () => {
+		recordProcessIdentity(log, identity(), {
+			pid: 7,
+			readFile: (filePath) => {
+				if (filePath === "/proc/self/stat") return statLine(1);
+				if (filePath === "/proc/uptime") return "1.0 0\n";
+				throw new Error("ENOENT");
+			},
+			env: { PI_SUBAGENT_LAUNCH_TOPOLOGY: "process" },
+		});
+		const [event] = readMeteringLog(logPath);
+		assert.ok(event);
+		assert.equal(event.kind === "process-identity" && event.cgroupPath, null);
+	});
+
+	it("defaults to the process topology when nothing told the child otherwise", () => {
+		recordProcessIdentity(log, identity(), {
+			pid: 7,
+			readFile: (filePath) => (filePath === "/proc/self/stat" ? statLine(1) : filePath === "/proc/uptime" ? "1.0 0\n" : "0::/\n"),
+			env: {},
+		});
+		const [event] = readMeteringLog(logPath);
+		assert.equal(event?.kind === "process-identity" && event.topology, "process");
+	});
+
+	it("prefers the unified cgroup line over an arbitrary v1 controller", () => {
+		recordProcessIdentity(log, identity(), {
+			pid: 7,
+			readFile: (filePath) =>
+				filePath === "/proc/self/stat" ? statLine(1)
+				: filePath === "/proc/uptime" ? "1.0 0\n"
+				: "12:pids:/user.slice/session-3.scope\n11:blkio:/user.slice\n0::/system.slice/pi-agent-a.scope\n",
+			env: { PI_SUBAGENT_LAUNCH_TOPOLOGY: "container" },
+		});
+		const [event] = readMeteringLog(logPath);
+		// The v1 controller lines disagree with each other and with the unified one;
+		// picking whichever came first would key attribution on a different hierarchy
+		// than the I/O collector reads.
+		assert.equal(event?.kind === "process-identity" && event.cgroupPath, "/system.slice/pi-agent-a.scope");
+	});
+
+	it("falls back to a v1 controller line when there is no unified line", () => {
+		recordProcessIdentity(log, identity(), {
+			pid: 7,
+			readFile: (filePath) =>
+				filePath === "/proc/self/stat" ? statLine(1)
+				: filePath === "/proc/uptime" ? "1.0 0\n"
+				: "12:blkio:/user.slice/session-3.scope\n",
+			env: {},
+		});
+		const [event] = readMeteringLog(logPath);
+		assert.equal(event?.kind === "process-identity" && event.cgroupPath, "/user.slice/session-3.scope");
+	});
+
+	it("records the storage root the launch declared, so a wrong declaration is auditable", () => {
+		recordProcessIdentity(log, identity(), {
+			pid: 7,
+			readFile: (filePath) => (filePath === "/proc/self/stat" ? statLine(1) : filePath === "/proc/uptime" ? "1.0 0\n" : "0::/\n"),
+			env: { PI_SUBAGENT_LAUNCH_TOPOLOGY: "container", PI_SUBAGENT_LAUNCH_STORAGE_ROOT: "/srv/pi/synapse" },
+		});
+		const [event] = readMeteringLog(logPath);
+		assert.equal(event?.kind === "process-identity" && event.declaredStorageRoot, "/srv/pi/synapse");
 	});
 
 	it("records nothing and does not throw when the OS identity is unavailable", () => {
