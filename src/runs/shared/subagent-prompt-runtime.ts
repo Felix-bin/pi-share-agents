@@ -810,8 +810,13 @@ export default function registerSubagentPromptRuntime(
 	// every retrieval-style child while there is no background work it could
 	// ever resolve. The host process keeps the registered-but-disabled shape
 	// for interactive sessions; a child only sees bg_wait when it can use it.
-	if (config.waitTool.enabled && typeof pi.registerTool === "function") {
-		registerWaitTool(pi, waitState, true, undefined, config.waitTool.defaultTimeoutMs);
+	//
+	// A child whose allowlist names bg_wait still gets it when the tool is off —
+	// in the disabled shape that returns immediately — because a named tool is a
+	// required one and its absence would fail the child at its first turn.
+	const waitToolRequired = config.requiredTools?.includes("bg_wait") === true;
+	if ((config.waitTool.enabled || waitToolRequired) && typeof pi.registerTool === "function") {
+		registerWaitTool(pi, waitState, config.waitTool.enabled, undefined, config.waitTool.defaultTimeoutMs);
 	}
 	// The child registers its own memory tools from the contract it was launched
 	// with, so a delegated agent reads and writes the project's shared memory
@@ -881,6 +886,11 @@ export default function registerSubagentPromptRuntime(
 			// never reading `this`, and a throw here would silently drop the hits.
 			const send = (pi as { sendUserMessage?: (content: string, options: { deliverAs: "steer" }) => unknown }).sendUserMessage;
 			send?.call(pi, text, { deliverAs: "steer" });
+		}).catch((error: unknown) => {
+			// The consumer records its refusals on the ledger, and the ledger itself
+			// can fail (an unwritable store); nothing on this path may become an
+			// unhandled rejection that takes the child's process down with it.
+			warnState("state consumption", error instanceof Error ? error.message : String(error));
 		});
 	};
 	const checkRequiredTools = (): undefined => {

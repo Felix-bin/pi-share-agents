@@ -169,7 +169,7 @@ describe("transportBytes (Task 3, design §4.1)", () => {
 				hotBase: { bytesIfBaseResident: 40, derived: true, note: HOT_BASE_NOTE },
 				notNamed: { payloadReadBytes: 0, rankingReadBytes: 0 },
 			},
-			memory: { crossAgentReuses: 0, hitRate: "N/A", queries: 0, reuses: 0 },
+			memory: { crossAgentReuses: 0, distilled: 0, distilledWithoutVector: 0, hitRate: "N/A", queries: 0, reuses: 0 },
 			messages: { delivered: 1, duplicateDeliveries: 0, failed: 0, received: 1 },
 			model: {
 				child: { cacheRead: 1, cacheWrite: 2, input: 30, output: 4 },
@@ -335,6 +335,30 @@ describe("state plane accounting (AC-09)", () => {
 		const totals = aggregateMetering(readMeteringLog(logPath));
 		assert.equal(totals.state.consumed, 0);
 		assert.equal(totals.state.receivedWithoutConsume, 1);
+	});
+
+	it("withdraws a consume the receiver's semantic check then refused", () => {
+		// The ranking records its consume before the check runs. A refused state was
+		// never used, so it must not count as consumed however the log is ordered.
+		const consume = { corpusSnapshotId: "c".repeat(64), encoding: "delta", k: 3, kind: "state-consume", ok: true, payloadBytes: 96, payloadId: "s1", representationId: "rep-1", stateId: "s1" } as const;
+		log.record(identity(), { kind: "state-receive", ok: true, payloadBytes: 96, representationId: "rep-1", stateId: "s1" });
+		log.record(identity(), consume);
+		log.record(identity(), { cosine: 0.4, kind: "state-verify", ok: false, stateId: "s1" });
+		log.record(identity(), { kind: "state-receive", ok: true, payloadBytes: 4096, representationId: "rep-1", stateId: "s2" });
+		log.record(identity(), { ...consume, payloadId: "s2", stateId: "s2" });
+		log.record(identity(), { cosine: 0.99, kind: "state-verify", ok: true, stateId: "s2" });
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.state.consumed, 1);
+		assert.equal(totals.state.verificationRefusals, 1);
+		assert.equal(totals.state.receivedWithoutConsume, 1);
+	});
+});
+
+describe("duration on a log written before the writer field", () => {
+	it("reads a writerless log the old way, as one writer's log", () => {
+		const rows = [10, 50].map((monotonicMs, index) => JSON.stringify({ ...identity(), eventId: `e${index}`, kind: "message-received", messageId: "m1", monotonicMs, schemaVersion: 4, ts: new Date(clock).toISOString() }));
+		fs.writeFileSync(logPath, `${rows.join("\n")}\n`, "utf-8");
+		assert.equal(aggregateMetering(readMeteringLog(logPath)).duration.totalMs, 40);
 	});
 });
 

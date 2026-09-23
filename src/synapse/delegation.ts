@@ -827,6 +827,15 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 		stateId: payloadId,
 	});
 	if (!published) {
+		// The receiver reads the state inbox by path, so an envelope an earlier pass
+		// left for this node would otherwise be consumed as though this pass had
+		// sent it. Clearing is best effort: the failure that stopped the publish may
+		// stop this too, and the error below is recorded either way.
+		try {
+			clearStateEnvelope(contract.storageRoot, identity.runId, identity.childIndex);
+		} catch {
+			// Nothing further to do; the error event is the evidence.
+		}
 		// Nothing was delivered, so nothing is recorded as delivered: a
 		// `message-delivered` row here would be the one entry a reconciliation
 		// reads as "the receiver can find this".
@@ -1000,7 +1009,7 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 	 * margin the threshold leaves over legitimate payloads is a measurement rather than
 	 * a claim. Null means the state passed, or that no check is configured.
 	 */
-	async function verifyDecoded(decoded: Float32Array): Promise<ConsumeAttempt | null> {
+	async function verifyDecoded(decoded: Float32Array, stateId: string): Promise<ConsumeAttempt | null> {
 		if (stateVerify === null) return null;
 		let cosine: number;
 		try {
@@ -1012,7 +1021,9 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 			// which of the two happened.
 			return { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
 		}
-		input.deps.log.record(meterIdentity, { cosine, kind: "state-verify", ok: cosine >= stateVerify.minCosine });
+		// The state id ties a refusal to the consume the ranking already recorded, so
+		// the aggregate can withdraw it: a refused state was never "used".
+		input.deps.log.record(meterIdentity, { cosine, kind: "state-verify", ok: cosine >= stateVerify.minCosine, stateId });
 		if (cosine >= stateVerify.minCosine) return null;
 		const reason = `state-verify: decoded state matches the query at cosine ${cosine.toFixed(6)}, below the frozen ${stateVerify.minCosine}`;
 		// Marked structurally rather than by parsing this message later: the flag decides
@@ -1024,7 +1035,7 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 	async function verifiedAttempt(against: StateRef): Promise<ConsumeAttempt> {
 		const consumed = attemptConsume(against);
 		if (consumed.kind !== "ok") return consumed;
-		return (await verifyDecoded(consumed.result.decoded)) ?? consumed;
+		return (await verifyDecoded(consumed.result.decoded, against.payloadId)) ?? consumed;
 	}
 
 	/**
@@ -1038,10 +1049,16 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 		}
 		try {
 			const result = await service.searchSemantic({ k: input.k, query: input.fallbackQuery });
-			input.deps.log.record(meterIdentity, { cause: hopCauseOf(failure), hop: "text", kind: "state-restore", ok: true });
+			// The hop recovers the query's meaning only if the re-embedding actually
+			// took part. A ranking that degraded to keywords (the embedder failed, or no
+			// record carries a vector) is still handed back, but the ledger must not
+			// count it as a semantic recovery it never was.
+			input.deps.log.record(meterIdentity, { cause: hopCauseOf(failure), hop: "text", kind: "state-restore", ok: result.semantic === "ok" });
 			return { kind: "text-fallback", result };
 		} catch (error) {
 			const fallbackFailure = { category: classifySynapseError(error), kind: "error" as const, reason: error instanceof Error ? error.message : String(error) };
+			// Recorded whether or not the hop worked, like every other hop.
+			input.deps.log.record(meterIdentity, { cause: hopCauseOf(failure), hop: "text", kind: "state-restore", ok: false });
 			input.deps.log.record(meterIdentity, { category: fallbackFailure.category, detail: fallbackFailure.reason, kind: "error" });
 			return { category: fallbackFailure.category, kind: "failed", reason: fallbackFailure.reason };
 		}
@@ -1136,16 +1153,19 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 						restore: replacement === null ? "resend" : "full-vector",
 						stateId: resentId,
 					});
-					input.deps.log.record(meterIdentity, {
-						cause: hopCauseOf(first),
-						hop: replacement === null ? "resend" : "full-vector",
-						kind: "state-restore",
-						ok: true,
-					});
 				} catch (error) {
 					resendFailed = { category: classifySynapseError(error), kind: "error", reason: error instanceof Error ? error.message : String(error) };
 				}
 				afterResend = resendFailed ?? (await verifiedAttempt(against));
+				// The hop is judged by what it achieved, so it is recorded after the retry
+				// rather than when the bytes landed: a re-send whose retry still fails is a
+				// failed restore, not a successful one followed by an unexplained error.
+				input.deps.log.record(meterIdentity, {
+					cause: hopCauseOf(first),
+					hop: replacement === null ? "resend" : "full-vector",
+					kind: "state-restore",
+					ok: afterResend.kind === "ok",
+				});
 				if (afterResend.kind === "ok") return { kind: "consumed", result: afterResend.result };
 			}
 		}

@@ -22,6 +22,12 @@ import { createMemoryStore, type MemoryProvenance } from "./memory-store.ts";
  * — sediment first, semantic ranking best-effort. A store failure is a warning
  * on the close path too, never a failed delegation: memory is a side condition
  * of the run, not a result of it.
+ *
+ * Authority: the write is the host's, made under a switch the operator turned
+ * on, not the child's. The child's memory scope governs what the child's own
+ * tools may do, and a read-only child gains nothing from this — it cannot write
+ * a line of its choosing. A read-only retriever is, if anything, the role whose
+ * findings are most worth keeping, so the scope is deliberately not consulted.
  */
 
 const DEFAULT_MAX_LINES = 12;

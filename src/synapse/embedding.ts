@@ -394,8 +394,17 @@ function createPersistentCache(storageRoot: string, representationId: string, di
  * semantic retrieval and the whole state plane go quietly unused.
  */
 function resolveEmbeddingKeyFor(embedding: SynapseEmbeddingConfig): string | undefined {
-	const fromEnv = process.env[embedding.keyEnv];
-	if (fromEnv !== undefined && fromEnv.trim().length > 0) return fromEnv;
+	const fromEnv = process.env[embedding.keyEnv]?.trim();
+	if (fromEnv !== undefined && fromEnv.length > 0) {
+		// A pasted value often carries a trailing newline, which trimming removes;
+		// one with a control character inside cannot be a header value at all, and
+		// is refused here — by name, never by value — rather than on every request.
+		if (/[\x00-\x1f\x7f]/.test(fromEnv)) {
+			console.warn(`[pi-subagents] synapse: ${embedding.keyEnv} contains a control character and was ignored`);
+			return undefined;
+		}
+		return fromEnv;
+	}
 	if (embedding.keyEnv !== SYNAPSE_KEY_ENV) return undefined;
 	return resolveEmbeddingKey({ agentDir: getAgentDir(), env: process.env }).key ?? undefined;
 }
@@ -413,10 +422,54 @@ export function resolveConfiguredEmbedder(embedding: SynapseEmbeddingConfig | nu
 	}
 }
 
+/** How many embeddings one client keeps in memory; see the cache in {@link createEmbeddingClient}. */
+export const SYNAPSE_EMBEDDING_MEMORY_CACHE_ENTRIES = 2048;
+
+/**
+ * The error with every occurrence of the key removed from its message.
+ *
+ * The request carries the key in a header, and some failures quote the header
+ * back — Node's fetch rejects a value holding a control character with a
+ * message that contains the whole value. Callers put error messages into the
+ * metering log and the console, so the key is scrubbed here, where it is known,
+ * rather than trusted never to appear downstream.
+ */
+function withoutKey(error: unknown, key: string): unknown {
+	if (key.length === 0 || !(error instanceof Error)) return error;
+	const texts = [error.message, error.cause instanceof Error ? error.cause.message : ""];
+	if (!texts.some((text) => text.includes(key))) return error;
+	const scrubbed = new Error(error.message.split(key).join("[redacted key]"));
+	scrubbed.name = error.name;
+	return scrubbed;
+}
+
 export function createEmbeddingClient(cfg: SynapseEmbeddingConfig, deps: EmbedderDeps): Embedder {
 	const representationId = representationIdOfConfig(cfg);
 	const fetchFn = deps.fetchFn ?? fetch;
-	const memory = new Map<string, EmbeddingResult>();
+	// Bounded, least recently used first out: the client built for a session's
+	// tools lives as long as the session, and every distinct query or chunk would
+	// otherwise stay resident (~4 KiB each at 1024 dims) for good. The persistent
+	// cache sits behind it, so an eviction costs a disk read, never a request.
+	const memoryEntries = new Map<string, EmbeddingResult>();
+	const memory = {
+		get(key: string): EmbeddingResult | undefined {
+			const hit = memoryEntries.get(key);
+			if (hit !== undefined) {
+				memoryEntries.delete(key);
+				memoryEntries.set(key, hit);
+			}
+			return hit;
+		},
+		set(key: string, value: EmbeddingResult): void {
+			memoryEntries.delete(key);
+			memoryEntries.set(key, value);
+			while (memoryEntries.size > SYNAPSE_EMBEDDING_MEMORY_CACHE_ENTRIES) {
+				const oldest = memoryEntries.keys().next().value;
+				if (oldest === undefined) break;
+				memoryEntries.delete(oldest);
+			}
+		},
+	};
 	const persistent = deps.storageRoot === undefined ? null : createPersistentCache(deps.storageRoot, representationId, cfg.dim);
 
 	function recordCall(ok: boolean, durationMs: number, inputTokens: number | null): void {
@@ -455,7 +508,7 @@ export function createEmbeddingClient(cfg: SynapseEmbeddingConfig, deps: Embedde
 			return { durationMs, promptTokens, vectors };
 		} catch (error) {
 			recordCall(false, performance.now() - startedAt, null);
-			throw error;
+			throw withoutKey(error, deps.key);
 		}
 	}
 

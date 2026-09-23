@@ -1064,3 +1064,27 @@ describe("subagent prompt runtime", () => {
 		assert.equal(contextHandler?.({ messages }, {}), undefined);
 	});
 });
+
+describe("bg_wait registration in a child", () => {
+	const registeredWith = (config: ChildRuntimeConfig): string[] => {
+		const registered: string[] = [];
+		registerSubagentPromptRuntime({
+			on() {},
+			getAllTools: () => [],
+			registerTool(tool: { name: string }) {
+				registered.push(tool.name);
+			},
+		} as unknown as Parameters<typeof registerSubagentPromptRuntime>[0], config);
+		return registered;
+	};
+
+	it("leaves the definition out entirely when the tool is off and nothing requires it", () => {
+		assert.equal(registeredWith(childConfig({ waitTool: { enabled: false } })).includes("bg_wait"), false);
+	});
+
+	it("still registers the disabled shape for a child whose allowlist names bg_wait", () => {
+		// A named tool is a required one: leaving it out would fail the child at its
+		// first turn, where before the tool simply returned immediately.
+		assert.equal(registeredWith(childConfig({ requiredTools: ["read", "bg_wait"], waitTool: { enabled: false } })).includes("bg_wait"), true);
+	});
+});

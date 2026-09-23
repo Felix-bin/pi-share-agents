@@ -199,11 +199,14 @@ function childStorage(input: BuildInProcessChildLaunchInput): ChildSessionStorag
  * none of those — every retrieval-style role — can never resolve a wait, yet a
  * registered bg_wait definition (~4.4 KB) rides along on every one of its
  * requests, so the launch leaves the tool off and the child-side registration
- * skips it entirely. An explicit waitToolEnabled still wins over this default.
+ * skips it entirely. The configured waitToolEnabled is the ceiling: it can turn
+ * the tool off for every child, and this default only narrows it further.
  */
 export function childCanHaveBackgroundWork(input: BuildInProcessChildLaunchInput): boolean {
 	if ((input.extensions ?? []).length > 0 || (input.subagentOnlyExtensions ?? []).length > 0) return true;
 	if (input.runFanoutBudget !== undefined || input.inherited?.runFanoutBudget !== undefined) return true;
+	// A list that names bg_wait asks for it; the heuristic never overrules that.
+	if (input.tools?.includes("bg_wait")) return true;
 	// An unspecified tool list means the child keeps the ambient tool set, which
 	// includes subagent; only a list that names its tools can rule it out.
 	return input.tools === undefined || input.tools.includes("subagent");
@@ -313,7 +316,10 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		...(input.childWatchdog ? { childWatchdog: input.childWatchdog } : {}),
 		...(input.watchdogStatus ? { watchdogStatus: input.watchdogStatus } : {}),
 		waitTool: {
-			enabled: input.waitToolEnabled ?? childCanHaveBackgroundWork(input),
+			// Configuration is the ceiling and the heuristic narrows it. Every production
+			// caller passes a resolved boolean (default true), so letting it win outright
+			// would leave the heuristic — and the per-request saving it exists for — dead.
+			enabled: (input.waitToolEnabled ?? true) && childCanHaveBackgroundWork(input),
 			...(input.waitToolDefaultTimeoutMs !== undefined ? { defaultTimeoutMs: input.waitToolDefaultTimeoutMs } : {}),
 		},
 		...(input.structuredOutput

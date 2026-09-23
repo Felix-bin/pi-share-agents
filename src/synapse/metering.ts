@@ -124,6 +124,13 @@ export type MeteringPayload =
 	| { costUsd: number | null; durationMs: number; inputTokens: number | null; kind: "embedding-call"; ok: boolean; requests: number }
 	| { authorisedValidHits: number; kind: "memory-query"; queryId: string }
 	| { kind: "memory-reuse"; memoryId: string; sourceAgent: string }
+	/**
+	 * One host-side distillation of a completed delegation's output: how many
+	 * records it wrote, and how many of those carry no vector because their
+	 * embedding call failed. The reuse account needs the supply side too — a
+	 * hit rate over a memory nothing ever wrote to measures nothing.
+	 */
+	| { kind: "memory-distill"; withoutVector: number; written: number }
 	| {
 			bytes: number;
 			direction: "read" | "write";
@@ -164,7 +171,7 @@ export type MeteringPayload =
 	 * whether it passed or refused: how much margin the threshold leaves over legitimate
 	 * payloads is then a distribution in the log rather than an assumption in a comment.
 	 */
-	| { cosine: number; kind: "state-verify"; ok: boolean }
+	| { cosine: number; kind: "state-verify"; ok: boolean; stateId?: string }
 	/**
 	 * One negotiation-deciding verdict of the receiver's declared capability probe,
 	 * recorded every time the gate was consulted — including verdicts served from
@@ -514,7 +521,7 @@ export type MeteringTotals = {
 	embedding: { costUsd: number | Unavailable; durationMs: number; failed: number; inputTokens: number | Unavailable; requests: number };
 	errors: Record<string, number>;
 	fullAccount: FullAccount;
-	memory: { crossAgentReuses: number; hitRate: number | NotApplicable; queries: number; reuses: number };
+	memory: { crossAgentReuses: number; distilled: number; distilledWithoutVector: number; hitRate: number | NotApplicable; queries: number; reuses: number };
 	messages: { delivered: number; duplicateDeliveries: number; failed: number; received: number };
 	model: { child: UsageTotals; complete: boolean; parent: UsageTotals; totalCost: number | Unavailable };
 	state: {
@@ -585,6 +592,9 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	const starts = new Map<string, number>();
 	const byTask: Record<string, number | Unavailable> = {};
 	const consumedStates = new Set<string>();
+	// States a receiver-side check refused after their ranking had already been consumed.
+	const refusedStates = new Set<string>();
+	const consumedCounts = new Map<string, number>();
 	const receivedStates = new Set<string>();
 	let embeddingCost = 0;
 	let embeddingCostMissing = false;
@@ -625,7 +635,7 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			hotBase: { bytesIfBaseResident: 0, derived: true, note: HOT_BASE_NOTE },
 			notNamed: { payloadReadBytes: 0, rankingReadBytes: 0 },
 		},
-		memory: { crossAgentReuses: 0, hitRate: "N/A", queries: 0, reuses: 0 },
+		memory: { crossAgentReuses: 0, distilled: 0, distilledWithoutVector: 0, hitRate: "N/A", queries: 0, reuses: 0 },
 		messages: { delivered: 0, duplicateDeliveries: 0, failed: 0, received: 0 },
 		model: { child: projectUsage(child), complete: false, parent: projectUsage(parent), totalCost: 0 },
 		state: {
@@ -714,7 +724,7 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 				break;
 			case "state-consume":
 				if (event.ok) {
-					totals.state.consumed += 1;
+					consumedCounts.set(event.stateId, (consumedCounts.get(event.stateId) ?? 0) + 1);
 					consumedStates.add(event.stateId);
 				}
 				break;
@@ -749,6 +759,10 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 				totals.memory.reuses += 1;
 				if (event.sourceAgent !== event.agent) totals.memory.crossAgentReuses += 1;
 				break;
+			case "memory-distill":
+				totals.memory.distilled += event.written;
+				totals.memory.distilledWithoutVector += event.withoutVector;
+				break;
 			case "object-io":
 				if (event.direction === "read") totals.storage.readBytes += event.bytes;
 				else totals.storage.writeBytes += event.bytes;
@@ -778,7 +792,12 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 				break;
 			case "state-verify":
 				totals.state.verifications += 1;
-				if (!event.ok) totals.state.verificationRefusals += 1;
+				if (!event.ok) {
+					totals.state.verificationRefusals += 1;
+					// The ranking records its consume before the check runs; a refusal
+					// withdraws it, so `consumed` counts only states that were used.
+					if (event.stateId !== undefined) refusedStates.add(event.stateId);
+				}
 				break;
 			case "capability-probe":
 				totals.capability.probeVerdicts += 1;
@@ -804,8 +823,12 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 		totals.duration.unfinishedTasks.push(taskId);
 	}
 	totals.duration.unfinishedTasks.sort();
+	// A log whose rows name no writer at all predates the field and is read the old
+	// way, as one writer's log. Rows that do name writers but no parent span leave
+	// no way to tell whose clock the run is timed on, so that stays unavailable.
+	const writerless = events.every((event) => event.writer === undefined);
 	totals.duration.totalMs =
-		parentWriter === undefined || firstMonotonic === null || lastMonotonic === null ? "unavailable" : lastMonotonic - firstMonotonic;
+		(parentWriter === undefined && !writerless) || firstMonotonic === null || lastMonotonic === null ? "unavailable" : lastMonotonic - firstMonotonic;
 
 	totals.memory.hitRate = totals.memory.queries === 0 ? "N/A" : memoryHits / totals.memory.queries;
 	totals.embedding.costUsd = embeddingCostMissing ? "unavailable" : embeddingCost;
@@ -819,6 +842,10 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 	totals.model.complete = parent.reported && child.reported && !parent.missing && !child.missing;
 	totals.model.totalCost = totals.model.complete ? parent.cost + child.cost : "unavailable";
 
+	for (const [stateId, count] of consumedCounts) {
+		if (refusedStates.has(stateId)) consumedStates.delete(stateId);
+		else totals.state.consumed += count;
+	}
 	totals.state.receivedWithoutConsume = [...receivedStates].filter((stateId) => !consumedStates.has(stateId)).length;
 	totals.control.transportBytes = transportBytesTotal ?? "N/A";
 

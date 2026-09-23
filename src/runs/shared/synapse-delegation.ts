@@ -252,6 +252,32 @@ function senderBaseSelector(synapse: SynapseChildContract, childIndex: number | 
 async function openChildStateDelegation(input: OpenChildDelegationInput): Promise<RetrieveSendResult | null> {
 	const synapse = input.runtime.synapse;
 	if (synapse === undefined) return null;
+	// Total, like the task-plane half: anything the state half throws — an
+	// unreadable credentials file, a store that refuses a write — costs this
+	// launch its state delivery, never the launch itself. The task plane was
+	// already opened and metered; failing here would leave it without a receipt.
+	try {
+		return await openChildStateDelegationUnguarded(input, synapse);
+	} catch (error) {
+		warn(synapse.agent, "state delivery", error instanceof Error ? error.message : String(error));
+		try {
+			createMeteringLog(meteringLogPath(synapse.contract, synapse.runId)).record(
+				{ agent: synapse.agent, attempt: 1, mode: synapse.contract.mode, nodeId: nodeIdFor(synapse.runId, input.runtime.childIndex), runId: synapse.runId, sessionId: synapse.sessionId, snapshotId: null },
+				{ category: classifySynapseError(error), detail: `state delivery skipped: ${error instanceof Error ? error.message : String(error)}`, kind: "error" },
+			);
+		} catch {
+			// Metering the skip must never be what costs the launch.
+		}
+		try {
+			clearStateEnvelope(synapse.contract.storageRoot, synapse.runId, input.runtime.childIndex);
+		} catch {
+			// Best effort, as above.
+		}
+		return null;
+	}
+}
+
+async function openChildStateDelegationUnguarded(input: OpenChildDelegationInput, synapse: SynapseChildContract): Promise<RetrieveSendResult | null> {
 	// A pass that publishes nothing must leave nothing behind. The receiver reads
 	// the state inbox by path, not by request, so a payload a previous pass wrote
 	// for this node would be consumed here as though this pass had sent it. The
@@ -414,8 +440,26 @@ export type CloseChildDelegationInput = {
 	usage: Usage;
 };
 
-export function closeChildDelegation(delegation: OpenDelegation | null, input: CloseChildDelegationInput): void {
-	if (delegation === null) return;
+/**
+ * How long a completed delegation's close may wait for distillation to land.
+ *
+ * The distiller embeds each line before it publishes it, so it outlives the
+ * child's prompt by several provider round trips. A detached distill would be
+ * lost whenever the process ends first — and a background runner exits the
+ * moment its run resolves — so the close waits for it, but never unboundedly:
+ * a stalled provider costs the run at most this long, and the expiry is
+ * recorded rather than passed off as "nothing to distill".
+ */
+export const SYNAPSE_DISTILL_BUDGET_MS = 20_000;
+
+/**
+ * Closes the delegation and, when the launch asked for it, distills the child's
+ * output into shared memory. The returned promise settles once distillation has
+ * landed, failed, or run out of budget; it never rejects. A caller that ends its
+ * process after the run must await it, or the distill is cut off mid-write.
+ */
+export function closeChildDelegation(delegation: OpenDelegation | null, input: CloseChildDelegationInput): Promise<void> {
+	if (delegation === null) return Promise.resolve();
 	// A stop and a failure are different outcomes, and a timeout is a failure the
 	// host observed rather than one it caught, so it carries its own cause.
 	const outcome: ReceiptOutcome = input.cancelled ? "cancelled" : input.cause === undefined && !input.timedOut ? "completed" : "failed";
@@ -431,26 +475,63 @@ export function closeChildDelegation(delegation: OpenDelegation | null, input: C
 	// only a completed delegation distills, and any failure of the distiller
 	// itself is a warning on this close path, not a failed delegation.
 	const contract = input.runtime?.synapse;
-	if (outcome === "completed" && contract?.autoDistill === true) {
-		void (async () => {
-			try {
-				const embedder = resolveConfiguredEmbedder(contract.embedding, contract.contract.storageRoot);
-				const result = await autoDistillOutput(
-					{
-						contract,
-						embedder:
-							embedder === undefined
-								? null
-								: { embed: async (text) => (await embedder.embedQuery(text)).vector, representationId: embedder.representationId },
-						provenance: { agent: contract.agent, attempt: 1, runId: contract.runId, sessionId: contract.sessionId },
-						taskText: input.taskText ?? "",
-					},
-					input.finalOutput,
-				);
-				if (result.written > 0) console.log(`[pi-subagents] synapse: auto-distilled ${result.written} memory line(s)${result.withoutVector > 0 ? ` (${result.withoutVector} without a vector)` : ""}`);
-			} catch (error) {
-				warn(contract.agent, "auto-distill", error instanceof Error ? error.message : String(error));
-			}
-		})();
+	if (outcome !== "completed" || contract?.autoDistill !== true) return Promise.resolve();
+	return distillWithinBudget(contract, input);
+}
+
+async function distillWithinBudget(contract: SynapseChildContract, input: CloseChildDelegationInput): Promise<void> {
+	const identity: MeteringIdentity = {
+		agent: contract.agent,
+		attempt: 1,
+		mode: contract.contract.mode,
+		nodeId: nodeIdFor(contract.runId, input.runtime?.childIndex),
+		runId: contract.runId,
+		sessionId: contract.sessionId,
+		snapshotId: null,
+	};
+	const record = (payload: Parameters<ReturnType<typeof createMeteringLog>["record"]>[1]): void => {
+		try {
+			createMeteringLog(meteringLogPath(contract.contract, contract.runId)).record(identity, payload);
+		} catch {
+			// Metering the distill must never be what costs the run.
+		}
+	};
+	const distill = (async () => {
+		const resolved = resolveConfiguredEmbedder(contract.embedding, contract.contract.storageRoot);
+		// Metered like every other embedding call, so the reuse experiment's cost
+		// column includes what it took to build the memory it reuses.
+		const embedder = resolved === undefined ? undefined : meteredEmbedder(resolved, identity, createMeteringLog(meteringLogPath(contract.contract, contract.runId)));
+		return autoDistillOutput(
+			{
+				contract,
+				embedder: embedder === undefined ? null : { embed: async (text) => (await embedder.embedQuery(text)).vector, representationId: embedder.representationId },
+				provenance: { agent: contract.agent, attempt: 1, runId: contract.runId, sessionId: contract.sessionId },
+				taskText: input.taskText ?? "",
+			},
+			input.finalOutput,
+		);
+	})();
+	const EXPIRED = Symbol("distill-budget-expired");
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expiry = new Promise<typeof EXPIRED>((resolve) => {
+		timer = setTimeout(() => resolve(EXPIRED), SYNAPSE_DISTILL_BUDGET_MS);
+		timer.unref();
+	});
+	try {
+		const result = await Promise.race([distill, expiry]);
+		if (result === EXPIRED) {
+			void distill.catch(() => undefined);
+			record({ category: "timeout", detail: `auto-distill budget expired after ${SYNAPSE_DISTILL_BUDGET_MS} ms; records past that point may be missing`, kind: "error" });
+			warn(contract.agent, "auto-distill", `budget expired after ${SYNAPSE_DISTILL_BUDGET_MS} ms`);
+			return;
+		}
+		record({ kind: "memory-distill", withoutVector: result.withoutVector, written: result.written });
+		if (result.written > 0) console.log(`[pi-subagents] synapse: auto-distilled ${result.written} memory line(s)${result.withoutVector > 0 ? ` (${result.withoutVector} without a vector)` : ""}`);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		record({ category: classifySynapseError(error), detail: `auto-distill: ${detail}`, kind: "error" });
+		warn(contract.agent, "auto-distill", detail);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
 	}
 }

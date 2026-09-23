@@ -357,6 +357,16 @@ export function createMemoryStore(rootDir: string, options: MemoryStoreOptions):
 				// The vector reference is derived data, not record identity: a retry may
 				// recompute it (cold cache, provider bit drift, a later embedding
 				// configuration) and still lands on the record as first written.
+				//
+				// The one exception is a record first written with no vector at all: its
+				// embedding call failed, and keeping that null would make the record a
+				// permanent semantic blind spot even once a retry computed one. Filling
+				// the gap changes no identity field and never replaces an existing vector.
+				if (existing.embedding === null && candidate.embedding !== null) {
+					const filled: MemoryRecord = { ...existing, embedding: candidate.embedding };
+					writeAtomicJson(target, filled);
+					return filled;
+				}
 				return existing;
 			}
 			fs.mkdirSync(recordsDir, { recursive: true });

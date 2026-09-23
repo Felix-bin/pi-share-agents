@@ -11,7 +11,9 @@ import { aggregateMetering, readMeteringLog } from "../../src/synapse/metering.t
 import { deriveNamespaceId } from "../../src/synapse/namespace.ts";
 import { capabilityForAgent } from "../../src/synapse/roles.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
-import { closeChildDelegation, openChildDelegation } from "../../src/runs/shared/synapse-delegation.ts";
+import { closeChildDelegation, openChildDelegation, openChildDelegationWithState } from "../../src/runs/shared/synapse-delegation.ts";
+import { SYNAPSE_KEY_ENV } from "../../src/synapse/credentials.ts";
+import { SYNAPSE_STATE_CONSUMING_TOOLS } from "../../src/synapse/roles.ts";
 
 /**
  * The functions both execution paths call. Foreground and background differ in
@@ -156,5 +158,32 @@ describe("synapse delegation bridge", () => {
 	it("does nothing, and throws nothing, when there was no delegation to close", () => {
 		closeChildDelegation(null, { cancelled: false, finalOutput: "done", timedOut: false, usage: USAGE });
 		assert.equal(fs.existsSync(path.join(store, "metering")), false);
+	});
+
+	it("keeps the launch when the state half throws: a corrupt credentials file costs the state, not the run", async () => {
+		const agentDir = path.join(root, "agent");
+		fs.mkdirSync(path.join(agentDir, "synapse"), { recursive: true });
+		fs.writeFileSync(path.join(agentDir, "synapse", "credentials.json"), "{not json", "utf-8");
+		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		const previousKey = process.env[SYNAPSE_KEY_ENV];
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		delete process.env[SYNAPSE_KEY_ENV];
+		try {
+			const base = childContract();
+			const synapse: SynapseChildContract = {
+				...base,
+				capabilityTools: ["read", ...SYNAPSE_STATE_CONSUMING_TOOLS],
+				contract: resolveLaunchContract({ ...base.contract, corpusSnapshotId: "c".repeat(64) }),
+				embedding: { dim: 2, endpoint: "http://127.0.0.1:1/v1/embeddings", keyEnv: SYNAPSE_KEY_ENV, model: "BAAI/bge-m3", provider: "siliconflow" },
+			};
+			const opened = await openChildDelegationWithState({ cwd: worktree, message: "Task: explain the auth flow", receiverSessionId: "sess-child", runtime: runtime(synapse) });
+			assert.ok(opened.delegation, "the task plane still opens and its prompt still reaches the child");
+			assert.equal(opened.state, null);
+			assert.equal(totals().errors.unclassified, 1, "the skipped state delivery is on the ledger");
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+			if (previousKey !== undefined) process.env[SYNAPSE_KEY_ENV] = previousKey;
+		}
 	});
 });

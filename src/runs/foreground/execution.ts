@@ -1447,7 +1447,10 @@ async function runSingleAttempt(
 				if (!abortedBySignal && !interruptedByControl && !result.timedOut) {
 					await created.prompt(delegation?.prompt ?? message);
 				}
-				closeChildDelegation(delegation, {
+				// Awaited: a completed child's distill must land before the run
+				// resolves, because a background runner exits as soon as it does.
+				// Bounded by its own budget and never rejecting (see the callee).
+				await closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
 					finalOutput: result.finalOutput ?? "",
 					runtime: childRuntime,
@@ -1457,7 +1460,7 @@ async function runSingleAttempt(
 				});
 				settle(undefined);
 			} catch (error) {
-				closeChildDelegation(delegation, {
+				void closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
 					cause: error,
 					finalOutput: result.finalOutput ?? "",

@@ -721,7 +721,10 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				// failure in the run's own record.
 				if (!interrupted && !timedOut && !stopped) await created.prompt(delegation?.prompt ?? input.prompt);
 				promptSettled = true;
-				closeChildDelegation(delegation, {
+				// Awaited: a completed child's distill must land before the run
+				// resolves, because a background runner exits as soon as it does.
+				// Bounded by its own budget and never rejecting (see the callee).
+				await closeChildDelegation(delegation, {
 					cancelled: interrupted || stopped,
 					finalOutput: getFinalOutput(messages),
 					runtime: delegationRuntime,
@@ -732,7 +735,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				settle(undefined);
 			} catch (promptError) {
 				promptSettled = true;
-				closeChildDelegation(delegation, {
+				void closeChildDelegation(delegation, {
 					cancelled: interrupted || stopped,
 					cause: promptError,
 					finalOutput: getFinalOutput(messages),

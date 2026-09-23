@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { SYNAPSE_KEY_ENV, writeStoredKey } from "../../src/synapse/credentials.ts";
-import { resolveConfiguredEmbedder } from "../../src/synapse/embedding.ts";
+import { createEmbeddingClient, resolveConfiguredEmbedder } from "../../src/synapse/embedding.ts";
 
 /**
  * Where the embedding key comes from.
@@ -70,5 +70,24 @@ describe("configured embedder key resolution", () => {
 
 	it("returns nothing when neither the environment nor the store has a key", () => {
 		assert.equal(resolveConfiguredEmbedder(embeddingFor(SYNAPSE_KEY_ENV), storageRoot), undefined);
+	});
+
+	it("trims a pasted trailing newline and refuses a value with a control character inside", () => {
+		process.env[SYNAPSE_KEY_ENV] = "env-key-0123456789\n";
+		assert.notEqual(resolveConfiguredEmbedder(embeddingFor(SYNAPSE_KEY_ENV), storageRoot), undefined);
+		process.env[SYNAPSE_KEY_ENV] = "env-key\n0123456789";
+		assert.equal(resolveConfiguredEmbedder(embeddingFor(SYNAPSE_KEY_ENV), storageRoot), undefined);
+	});
+
+	it("never lets the key reach an error message, even one the transport built from the header", async () => {
+		// Node's fetch quotes an invalid header value back in its error; that message
+		// is what the delegation seams write into the metering log.
+		const key = "sk-secret-0123456789\u0000tail";
+		const embedder = createEmbeddingClient(embeddingFor(SYNAPSE_KEY_ENV), { key });
+		await assert.rejects(embedder.embedQuery("anything"), (error: unknown) => {
+			assert.ok(error instanceof Error);
+			assert.equal(error.message.includes("sk-secret-0123456789"), false, error.message);
+			return true;
+		});
 	});
 });

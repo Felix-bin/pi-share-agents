@@ -494,6 +494,26 @@ describe("AC-11: injected corruption is never consumed and the recovery chain st
 		assert.equal(eventsOf("state-consume").length, 0);
 	});
 
+	it("records a resend whose retry still fails as a failed restore, not a successful one", async () => {
+		const sent = await sendOnce();
+		const store = createContentStore(storageRoot);
+		fs.rmSync(store.objectPath(sent.stateRef.payloadId));
+		const outcome = await consumeRetrieveState({
+			contract: contracts.child,
+			// Bytes that land in the store but are not the payload the envelope names:
+			// the hop happened, and it recovered nothing.
+			deps: consumeDeps({ resend: () => new Uint8Array(sent.stateRef.byteLength).fill(7) }),
+			envelope: sent.envelope,
+			identity: consumeIdentity(),
+			worktreeRoot: worktree,
+			k: K,
+		});
+		assert.equal(outcome.kind, "failed");
+		const restores = eventsOf("state-restore");
+		assert.equal(restores.length, 1);
+		assert.equal(restores[0]?.kind === "state-restore" && restores[0].ok, false);
+	});
+
 	it("a resend that restores the object lets the chain consume it", async () => {
 		const sent = await sendOnce();
 		const store = createContentStore(storageRoot);
@@ -514,6 +534,7 @@ describe("AC-11: injected corruption is never consumed and the recovery chain st
 		assert.equal(outcome.result.hits[0]?.path, "src/b.md");
 		assert.equal(resends, 1);
 		assert.equal(eventsOf("state-consume").length, 1);
+		assert.deepEqual(eventsOf("state-restore").map((event) => event.kind === "state-restore" && event.ok), [true]);
 		// The received set is false at first receipt (the object was gone) and the
 		// recovery consumes anyway: the aggregate must stay recomputable from the
 		// log with received=0 and consumed=1 (group review X-9).
@@ -607,5 +628,27 @@ describe("AC-11: injected corruption is never consumed and the recovery chain st
 		assert.equal(eventsOf("state-consume").length, 0, "a text fallback never counts as consumption");
 		const embedDelta = eventsOf("embedding-call").length - embedCallsBefore;
 		assert.ok(embedDelta >= 1, "the fallback's re-embedding must actually happen and be metered, not free");
+		assert.deepEqual(eventsOf("state-restore").map((event) => event.kind === "state-restore" && event.ok), [true]);
+	});
+
+	it("does not count a text fallback that degraded to keywords as a semantic recovery", async () => {
+		// No stored record carries a vector, so the fallback's ranking never took a
+		// semantic component: its answer is still handed back, but the hop failed.
+		const sent = await sendOnce();
+		const store = createContentStore(storageRoot);
+		fs.rmSync(store.objectPath(sent.stateRef.payloadId));
+		const outcome = await consumeRetrieveState({
+			contract: contracts.child,
+			deps: consumeDeps({ embedder, resend: () => null }),
+			envelope: sent.envelope,
+			fallbackQuery: "compression observation two",
+			identity: consumeIdentity(),
+			worktreeRoot: worktree,
+			k: K,
+			stateRecovery: "resend-then-text",
+		});
+		assert.equal(outcome.kind, "text-fallback");
+		assert.equal(outcome.result.semantic, "unavailable");
+		assert.deepEqual(eventsOf("state-restore").map((event) => event.kind === "state-restore" && event.ok), [false]);
 	});
 });

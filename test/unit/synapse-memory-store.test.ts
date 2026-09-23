@@ -204,4 +204,17 @@ describe("synapse supersession", () => {
 		assert.equal(first.eventId, second.eventId);
 		assert.equal(store.status(oldRecord.memoryId), "superseded");
 	});
+
+	it("fills in a vector a retry computed for a record first written without one", () => {
+		const first = store.publish(input());
+		assert.equal(first.embedding, null);
+		const vector = content.put(new Uint8Array(8), "application/octet-stream");
+		const embedding = { dim: 2, objectId: vector, representationId: "rep-1" };
+		const retried = store.publish({ ...input(), embedding });
+		assert.deepEqual(retried.embedding, embedding);
+		assert.equal(retried.createdAt, first.createdAt);
+		// A vector already present is never replaced.
+		const other = content.put(new Uint8Array(16), "application/octet-stream");
+		assert.deepEqual(store.publish({ ...input(), embedding: { dim: 4, objectId: other, representationId: "rep-1" } }).embedding, embedding);
+	});
 });
