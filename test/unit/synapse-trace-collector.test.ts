@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { AT_FDCWD, createCollectorState, translateBpftraceLine, type CollectorOptions, type CollectorStep } from "../../src/synapse/trace-collector.ts";
+import { AT_FDCWD, createCollectorState, translateBpftraceLine, unpairedCalls, type CollectorOptions, type CollectorState, type CollectorStep } from "../../src/synapse/trace-collector.ts";
 import { parseTraceLine } from "../../src/synapse/trace-log.ts";
 
 /**
@@ -21,6 +21,13 @@ const options = (overrides: Partial<CollectorOptions> = {}): CollectorOptions =>
 
 const printf = (data: string): string => JSON.stringify({ data: `${data}\n`, type: "printf" });
 
+/** A path-carrying call as the kernel half prints it: entry with the path, exit with the return value. */
+function pathCall(syscall: string, dirfd: number, ret: number, rawPath: string, state: CollectorState, opts: CollectorOptions, seq = 1): string[] {
+	const entry = linesOf(translateBpftraceLine(printf(`OPEN\t${syscall}\t41\t41\t9000\t1\t${dirfd}\t4100\t${seq}\t${rawPath}`), state, opts));
+	assert.deepEqual(entry, [], "the entry half waits for its return value");
+	return linesOf(translateBpftraceLine(printf(`RET\t4100\t${seq}\t${ret}`), state, opts));
+}
+
 function linesOf(step: CollectorStep): string[] {
 	assert.equal(step.kind, "lines", JSON.stringify(step));
 	return step.kind === "lines" ? step.lines : [];
@@ -36,32 +43,30 @@ describe("synapse-trace collector translation", () => {
 
 	it("escapes a path bpftrace printed raw, so a quote or a tab cannot break the line", () => {
 		const raw = '/srv/store/objects/ab/we"ird\tname';
-		const [line] = linesOf(translateBpftraceLine(printf(`PATH\topenat\t41\t41\t9000\t1\t${AT_FDCWD}\t5\t${raw}`), createCollectorState(), options()));
+		const [line] = pathCall("openat", AT_FDCWD, 5, raw, createCollectorState(), options());
 		const parsed = parseTraceLine(line!);
 		assert.equal(parsed.kind === "record" && parsed.record.syscall === "openat" && parsed.record.path, raw);
 	});
 
 	it("resolves a relative path against the directory the call named", () => {
 		const seen: Array<[number, number]> = [];
-		const [line] = linesOf(
-			translateBpftraceLine(printf(`PATH\topenat\t41\t41\t9000\t1\t${AT_FDCWD}\t5\tstore/envelopes/x.json`), createCollectorState(), options({ resolveDirectory: (pid, dirfd) => (seen.push([pid, dirfd]), "/srv/work") })),
-		);
+		const [line] = pathCall("openat", AT_FDCWD, 5, "store/envelopes/x.json", createCollectorState(), options({ resolveDirectory: (pid, dirfd) => (seen.push([pid, dirfd]), "/srv/work") }));
 		assert.deepEqual(seen, [[41, AT_FDCWD]]);
 		const parsed = parseTraceLine(line!);
 		assert.equal(parsed.kind === "record" && parsed.record.syscall === "openat" && parsed.record.path, "/srv/work/store/envelopes/x.json");
 	});
 
 	it("never guesses a path it cannot resolve: the record is written pathless and the parser rejects it", () => {
-		const [line] = linesOf(translateBpftraceLine(printf(`PATH\topenat\t41\t41\t9000\t1\t${AT_FDCWD}\t5\trelative/only`), createCollectorState(), options({ resolveDirectory: () => null })));
+		const [line] = pathCall("openat", AT_FDCWD, 5, "relative/only", createCollectorState(), options({ resolveDirectory: () => null }));
 		const parsed = parseTraceLine(line!);
 		assert.equal(parsed.kind, "error");
 	});
 
 	it("refuses a path that fills bpftrace's string limit, since it may be a prefix of the real one", () => {
 		const long = `/${"a".repeat(198)}`;
-		const [line] = linesOf(translateBpftraceLine(printf(`PATH\trenameat2\t41\t41\t9000\t1\t${AT_FDCWD}\t0\t${long}`), createCollectorState(), options()));
+		const [line] = pathCall("renameat2", AT_FDCWD, 0, long, createCollectorState(), options());
 		assert.equal(parseTraceLine(line!).kind, "error");
-		const [short] = linesOf(translateBpftraceLine(printf(`PATH\trenameat2\t41\t41\t9000\t1\t${AT_FDCWD}\t0\t/${"a".repeat(100)}`), createCollectorState(), options()));
+		const [short] = pathCall("renameat2", AT_FDCWD, 0, `/${"a".repeat(100)}`, createCollectorState(), options());
 		assert.equal(parseTraceLine(short!).kind, "record");
 	});
 
@@ -90,5 +95,33 @@ describe("synapse-trace collector translation", () => {
 		assert.equal(translateBpftraceLine("Attaching 10 probes...", createCollectorState(), options()).kind, "diagnostic");
 		assert.equal(translateBpftraceLine(JSON.stringify({ data: "x", type: "time" }), createCollectorState(), options()).kind, "diagnostic");
 		assert.equal(translateBpftraceLine(printf("IO\twrite\tnot-a-pid\t42\t9000\t1\t7\t1\t1"), createCollectorState(), options()).kind, "diagnostic");
+	});
+
+	it("pairs a return value that arrived before its entry, as per-CPU draining allows", () => {
+		const state = createCollectorState();
+		assert.deepEqual(linesOf(translateBpftraceLine(printf("RET\t4100\t7\t9"), state, options())), []);
+		const [line] = linesOf(translateBpftraceLine(printf(`OPEN\topenat\t41\t42\t9000\t1\t${AT_FDCWD}\t4100\t7\t/srv/store/x`), state, options()));
+		const parsed = parseTraceLine(line!);
+		assert.equal(parsed.kind === "record" && parsed.record.ret, 9);
+		assert.equal(unpairedCalls(state), 0);
+	});
+
+	it("keeps halves with different sequence numbers apart and counts the ones left unpaired", () => {
+		const state = createCollectorState();
+		linesOf(translateBpftraceLine(printf(`OPEN\topenat\t41\t42\t9000\t1\t${AT_FDCWD}\t4100\t1\t/srv/a`), state, options()));
+		linesOf(translateBpftraceLine(printf(`OPEN\topenat\t41\t42\t9000\t2\t${AT_FDCWD}\t4100\t2\t/srv/b`), state, options()));
+		const [second] = linesOf(translateBpftraceLine(printf("RET\t4100\t2\t11"), state, options()));
+		const parsed = parseTraceLine(second!);
+		assert.equal(parsed.kind === "record" && parsed.record.syscall === "openat" && parsed.record.path, "/srv/b");
+		assert.equal(unpairedCalls(state), 1);
+	});
+
+	it("turns the collector's own marker into one observing line, however many times it fires", () => {
+		const state = createCollectorState();
+		const [line] = linesOf(translateBpftraceLine(printf("OBSERVING\t777"), state, options()));
+		const parsed = parseTraceLine(line!);
+		assert.deepEqual(parsed, { kind: "observing", nsecs: 777 });
+		assert.deepEqual(linesOf(translateBpftraceLine(printf("OBSERVING\t900"), state, options())), []);
+		assert.equal(state.observingSince, 777);
 	});
 });

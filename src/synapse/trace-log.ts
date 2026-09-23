@@ -157,13 +157,32 @@ const TraceLossSchema = Type.Object(
 
 export type TraceLossReport = Static<typeof TraceLossSchema>;
 
+/**
+ * The collector's statement of when it began watching: a boot-clock reading
+ * taken after every probe was attached. Without it the earliest thing a trace
+ * can prove is its first record, so the first traced process could never be
+ * shown to have been observed from its start — every account would carry a
+ * front-edge gap that is an artefact of the file format, not of the collection.
+ * Disjoint from records and loss reports the same way they are from each other.
+ */
+const TraceObservingSchema = Type.Object(
+	{
+		kind: Type.Literal("observing"),
+		nsecs: Type.Integer({ minimum: 0 }),
+	},
+	{ additionalProperties: false },
+);
+
 /** Routes a line to the schema it claims to be, so the rejection message names the real problem instead of every branch's. */
 const LossClaimSchema = Type.Object({ kind: Type.Literal("lost") }, { additionalProperties: true });
+const ObservingClaimSchema = Type.Object({ kind: Type.Literal("observing") }, { additionalProperties: true });
 const PathCallClaimSchema = Type.Object({ syscall: Type.Union([Type.Literal("openat"), Type.Literal("renameat2")]) }, { additionalProperties: true });
 
 const lossClaim = Compile(LossClaimSchema);
 const pathCallClaim = Compile(PathCallClaimSchema);
 const lossValidator = Compile(TraceLossSchema);
+const observingClaim = Compile(ObservingClaimSchema);
+const observingValidator = Compile(TraceObservingSchema);
 const descriptorValidator = Compile(DescriptorCallSchema);
 const pathValidator = Compile(PathCallSchema);
 
@@ -172,6 +191,7 @@ export type TraceLineErrorReason = "too-long" | "truncated" | "malformed";
 export type TraceLineResult =
 	| { kind: "record"; record: TraceRecord }
 	| { kind: "loss"; loss: TraceLossReport }
+	| { kind: "observing"; nsecs: number }
 	| { detail: string; kind: "error"; reason: TraceLineErrorReason };
 
 export type TraceParseOptions = {
@@ -366,6 +386,11 @@ export function parseTraceLine(line: string, options: TraceParseOptions = {}): T
 		return { detail: `loss report ${firstSchemaError(lossValidator.Errors(decoded))}`, kind: "error", reason: "malformed" };
 	}
 
+	if (observingClaim.Check(decoded)) {
+		if (observingValidator.Check(decoded)) return { kind: "observing", nsecs: decoded.nsecs };
+		return { detail: `observing marker ${firstSchemaError(observingValidator.Errors(decoded))}`, kind: "error", reason: "malformed" };
+	}
+
 	if (pathCallClaim.Check(decoded)) {
 		if (!pathValidator.Check(decoded)) return { detail: firstSchemaError(pathValidator.Errors(decoded)), kind: "error", reason: "malformed" };
 		return { kind: "record", record: decoded };
@@ -386,6 +411,8 @@ export type TraceLineError = { detail: string; line: number; reason: TraceLineEr
 export type TraceLog = {
 	errors: TraceLineError[];
 	losses: TraceLossReport[];
+	/** When the collector began watching, if it said so: the earliest `observing` marker. */
+	observingSince?: number;
 	records: TraceRecord[];
 };
 
@@ -405,14 +432,16 @@ export function parseTraceLog(raw: string, options: TraceParseOptions = {}): Tra
 	const records: TraceRecord[] = [];
 	const losses: TraceLossReport[] = [];
 	const errors: TraceLineError[] = [];
+	let observingSince: number | undefined;
 	for (const [index, line] of raw.split("\n").entries()) {
 		if (line.trim().length === 0) continue;
 		const result = parseTraceLine(line, options);
 		if (result.kind === "record") records.push(result.record);
 		else if (result.kind === "loss") losses.push(result.loss);
+		else if (result.kind === "observing") observingSince = observingSince === undefined ? result.nsecs : Math.min(observingSince, result.nsecs);
 		else errors.push({ detail: result.detail, line: index + 1, reason: result.reason });
 	}
-	return { errors, losses, records };
+	return observingSince === undefined ? { errors, losses, records } : { errors, losses, observingSince, records };
 }
 
 /** True when the syscall failed. Uniform across all four hooks: a negative return value is `-errno` whichever call produced it. */

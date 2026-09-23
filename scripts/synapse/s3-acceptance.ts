@@ -74,7 +74,7 @@ type Collector = { child: ChildProcess; stderr: () => string; stop: () => Promis
 async function startCollector(args: Args, out: string, rbPages: number | null): Promise<Collector | string> {
 	const ready = `${out}.ready`;
 	fs.rmSync(ready, { force: true });
-	const collectorArgs = ["--experimental-strip-types", path.join(HERE, "synapse-trace.ts"), "--out", out, "--ready-file", ready, "--bpftrace", args.bpftrace];
+	const collectorArgs = ["--experimental-strip-types", path.join(HERE, "synapse-trace.ts"), "--out", out, "--ready-file", ready, "--bpftrace", args.bpftrace, "--exclude-pid", String(process.pid)];
 	if (rbPages !== null) collectorArgs.push("--rb-pages", String(rbPages));
 	const child = spawn(NODE, collectorArgs, { stdio: ["ignore", "ignore", "pipe"] });
 	let stderr = "";
@@ -97,7 +97,9 @@ async function startCollector(args: Args, out: string, rbPages: number | null): 
 				},
 			};
 		}
-		if (exited) return stderr.trim().split("\n").slice(-3).join(" | ") || "the collector exited before attaching";
+		// The whole stderr: bpftrace puts the reason (a compile error, a probe that
+		// would not attach) before the collector's own closing lines.
+		if (exited) return stderr.trim().split("\n").filter((line) => line.trim().length > 0).join(" | ").slice(0, 2000) || "the collector exited before attaching";
 		await sleep(100);
 	}
 	child.kill("SIGKILL");

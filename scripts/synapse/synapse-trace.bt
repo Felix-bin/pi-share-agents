@@ -5,12 +5,27 @@
  * prints raw tab-separated values, and the wrapper is what turns them into the
  * contract lines trace-log.ts parses (JSON escaping, absolute paths, loss lines).
  *
- *   $1  the process name to trace, compared against the thread-group leader's
- *       comm so that libuv worker threads — where Node's file I/O actually
- *       runs — are covered whatever their own thread names are.
+ *   $1  the executable to trace, by the basename of the file the process is
+ *       running (/proc/<pid>/exe). Not comm: Node 24 renames its main thread
+ *       to "MainThread" and its workers to "V8Worker" and "libuv-worker", so a
+ *       comm filter sees node only for the instant before it renames itself.
+ *       The executable covers every thread of the process, including the libuv
+ *       workers where Node's file I/O actually runs.
+ *   $2  the collector's own pid, as its namespace sees it: the collector is a
+ *       node process too, and tracing its own writes of the trace file would
+ *       feed every event back as another event.
+ *   $3  one more pid to leave out, or 0 — the process that started the
+ *       collector for an experiment, which is apparatus rather than workload.
  *
  * What it reads: syscall numbers, descriptors, byte counts, return values and
  * the path argument of openat/renameat2. Never a file's contents.
+ *
+ * A path-carrying call is printed in two halves: its path and identity at
+ * entry, straight from the syscall argument into printf, and its return value
+ * at exit. Holding the path in a map until exit would copy a 200-byte string
+ * onto the 512-byte BPF stack twice and fail verification. The halves share a
+ * (root tid, per-thread sequence) key, and the wrapper pairs them — in either
+ * arrival order, since bpftrace drains its per-CPU buffers in no fixed order.
  *
  * Every pending call is keyed by thread id: a thread has at most one syscall in
  * flight, so a map holds one entry per traced thread and cannot fill under any
@@ -21,6 +36,13 @@
  * and bpftrace reports every drop as a lost_events notice, which the wrapper
  * turns into the contract's `lost` line.
  *
+ * Process and thread ids are the ones the process sees itself as: the pid
+ * namespace level the task lives at, not the root namespace bpftrace's `pid`
+ * reports. They differ whenever the process runs inside a pid namespace — every
+ * WSL2 distribution does, and every container — and the joiner matches them
+ * against process.pid as recorded in process-identity. bpftrace 0.19 cannot
+ * index an array by a variable, so the level is unrolled for depths 0-3.
+ *
  * Start time is the leader's start_boottime in USER_HZ ticks, the same value as
  * field 22 of /proc/<pid>/stat, so the joiner's (pid, startTicks) key matches the
  * process-identity event. Timestamps use the boot clock (nsecs(boot)), the base
@@ -29,7 +51,9 @@
 
 tracepoint:syscalls:sys_enter_read,
 tracepoint:syscalls:sys_enter_write
-/curtask->group_leader->comm == str($1)/
+/strncmp(str(curtask->mm->exe_file->f_path.dentry->d_name.name, 16), str($1), 15) == 0 &&
+ (curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))) != $2 &&
+ (curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))) != $3/
 {
 	@fd[tid] = args->fd;
 	@count[tid] = args->count;
@@ -39,7 +63,9 @@ tracepoint:syscalls:sys_enter_write
 tracepoint:syscalls:sys_exit_read
 /@live[tid]/
 {
-	printf("IO\tread\t%d\t%d\t%llu\t%llu\t%d\t%llu\t%lld\n", pid, tid,
+	printf("IO\tread\t%d\t%d\t%llu\t%llu\t%d\t%llu\t%lld\n",
+		(curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))),
+		(curtask->thread_pid->level == 0 ? curtask->thread_pid->numbers[0].nr : (curtask->thread_pid->level == 1 ? curtask->thread_pid->numbers[1].nr : (curtask->thread_pid->level == 2 ? curtask->thread_pid->numbers[2].nr : curtask->thread_pid->numbers[3].nr))),
 		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
 		@fd[tid], @count[tid], args->ret);
 	delete(@fd[tid]); delete(@count[tid]); delete(@live[tid]);
@@ -48,47 +74,70 @@ tracepoint:syscalls:sys_exit_read
 tracepoint:syscalls:sys_exit_write
 /@live[tid]/
 {
-	printf("IO\twrite\t%d\t%d\t%llu\t%llu\t%d\t%llu\t%lld\n", pid, tid,
+	printf("IO\twrite\t%d\t%d\t%llu\t%llu\t%d\t%llu\t%lld\n",
+		(curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))),
+		(curtask->thread_pid->level == 0 ? curtask->thread_pid->numbers[0].nr : (curtask->thread_pid->level == 1 ? curtask->thread_pid->numbers[1].nr : (curtask->thread_pid->level == 2 ? curtask->thread_pid->numbers[2].nr : curtask->thread_pid->numbers[3].nr))),
 		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
 		@fd[tid], @count[tid], args->ret);
 	delete(@fd[tid]); delete(@count[tid]); delete(@live[tid]);
 }
 
 tracepoint:syscalls:sys_enter_openat
-/curtask->group_leader->comm == str($1)/
+/strncmp(str(curtask->mm->exe_file->f_path.dentry->d_name.name, 16), str($1), 15) == 0 &&
+ (curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))) != $2 &&
+ (curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))) != $3/
 {
-	@fd[tid] = args->dfd;
-	@path[tid] = str(args->filename);
+	@seq[tid] = @seq[tid] + 1;
 	@live[tid] = 1;
+	printf("OPEN\topenat\t%d\t%d\t%llu\t%llu\t%d\t%d\t%llu\t%s\n",
+		(curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))),
+		(curtask->thread_pid->level == 0 ? curtask->thread_pid->numbers[0].nr : (curtask->thread_pid->level == 1 ? curtask->thread_pid->numbers[1].nr : (curtask->thread_pid->level == 2 ? curtask->thread_pid->numbers[2].nr : curtask->thread_pid->numbers[3].nr))),
+		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
+		args->dfd, tid, @seq[tid], str(args->filename));
 }
 
 tracepoint:syscalls:sys_exit_openat
 /@live[tid]/
 {
-	printf("PATH\topenat\t%d\t%d\t%llu\t%llu\t%d\t%lld\t%s\n", pid, tid,
-		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
-		@fd[tid], args->ret, @path[tid]);
-	delete(@fd[tid]); delete(@path[tid]); delete(@live[tid]);
+	printf("RET\t%d\t%llu\t%lld\n", tid, @seq[tid], args->ret);
+	delete(@live[tid]);
 }
 
 tracepoint:syscalls:sys_enter_renameat2
-/curtask->group_leader->comm == str($1)/
+/strncmp(str(curtask->mm->exe_file->f_path.dentry->d_name.name, 16), str($1), 15) == 0 &&
+ (curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))) != $2 &&
+ (curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))) != $3/
 {
-	@fd[tid] = args->newdfd;
-	@path[tid] = str(args->newname);
+	@seq[tid] = @seq[tid] + 1;
 	@live[tid] = 1;
+	printf("OPEN\trenameat2\t%d\t%d\t%llu\t%llu\t%d\t%d\t%llu\t%s\n",
+		(curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))),
+		(curtask->thread_pid->level == 0 ? curtask->thread_pid->numbers[0].nr : (curtask->thread_pid->level == 1 ? curtask->thread_pid->numbers[1].nr : (curtask->thread_pid->level == 2 ? curtask->thread_pid->numbers[2].nr : curtask->thread_pid->numbers[3].nr))),
+		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
+		args->newdfd, tid, @seq[tid], str(args->newname));
 }
 
 tracepoint:syscalls:sys_exit_renameat2
 /@live[tid]/
 {
-	printf("PATH\trenameat2\t%d\t%d\t%llu\t%llu\t%d\t%lld\t%s\n", pid, tid,
-		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
-		@fd[tid], args->ret, @path[tid]);
-	delete(@fd[tid]); delete(@path[tid]); delete(@live[tid]);
+	printf("RET\t%d\t%llu\t%lld\n", tid, @seq[tid], args->ret);
+	delete(@live[tid]);
+}
+
+/*
+ * The observation marker. Once bpftrace reports its probes attached, the
+ * wrapper opens one file itself; this clause, matching only the wrapper, stamps
+ * that moment on the boot clock. Every probe is attached by then, so anything
+ * that starts afterwards is observed from its first call. BEGIN cannot serve:
+ * it fires before the other probes attach.
+ */
+tracepoint:syscalls:sys_enter_openat
+/(curtask->group_leader->thread_pid->level == 0 ? curtask->group_leader->thread_pid->numbers[0].nr : (curtask->group_leader->thread_pid->level == 1 ? curtask->group_leader->thread_pid->numbers[1].nr : (curtask->group_leader->thread_pid->level == 2 ? curtask->group_leader->thread_pid->numbers[2].nr : curtask->group_leader->thread_pid->numbers[3].nr))) == $2/
+{
+	printf("OBSERVING\t%llu\n", nsecs(boot));
 }
 
 END
 {
-	clear(@fd); clear(@count); clear(@path); clear(@live);
+	clear(@fd); clear(@count); clear(@live); clear(@seq);
 }

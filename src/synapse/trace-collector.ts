@@ -36,11 +36,24 @@ export const AT_FDCWD = -100;
 /** Resolves the directory a relative path was opened against; null when that can no longer be known. */
 export type DirectoryResolver = (pid: number, dirfd: number) => string | null;
 
+/** A path-carrying call's entry half, waiting for its return value. */
+type PendingEntry = { record: Record<string, number | string> };
+
 export type CollectorState = {
 	/** Losses reported so far; the contract's `count` is cumulative. */
 	lostTotal: number;
 	/** The latest boot-clock reading seen, so a loss line is stamped no earlier than the records before it. */
 	lastNsecs: number;
+	/**
+	 * Halves of path-carrying calls seen without their partner, keyed by
+	 * `<root tid>:<sequence>`. Either half may arrive first: bpftrace drains its
+	 * per-CPU buffers in no fixed order, and a thread can migrate between entry
+	 * and exit.
+	 */
+	pendingEntries: Map<string, PendingEntry>;
+	pendingReturns: Map<string, number>;
+	/** When the collector's own marker was seen; null until then. Only the first counts. */
+	observingSince: number | null;
 };
 
 export type CollectorOptions = {
@@ -61,7 +74,7 @@ export type CollectorStep =
 	| { kind: "diagnostic"; message: string };
 
 export function createCollectorState(): CollectorState {
-	return { lostTotal: 0, lastNsecs: 0 };
+	return { lastNsecs: 0, lostTotal: 0, observingSince: null, pendingEntries: new Map(), pendingReturns: new Map() };
 }
 
 const INTEGER = /^-?[0-9]+$/;
@@ -100,20 +113,52 @@ export function translateRawRecord(raw: string, state: CollectorState, options: 
 		state.lastNsecs = Math.max(state.lastNsecs, nsecs!);
 		return JSON.stringify({ bytes, fd, nsecs, pid, ret, startTicks, syscall, tid });
 	}
-	if (tag === "PATH") {
+	if (tag === "OPEN") {
 		// The path is the last field and may itself contain the separator.
-		const [, syscall, pidText, tidText, startText, nsecsText, fdText, retText] = fields;
-		if (fields.length < 9 || (syscall !== "openat" && syscall !== "renameat2")) return { diagnostic: `unrecognised PATH line: ${JSON.stringify(raw)}` };
-		const values = [pidText, tidText, startText, nsecsText, fdText, retText].map(integerOf);
-		if (values.some((value) => value === null)) return { diagnostic: `non-integer field in PATH line: ${JSON.stringify(raw)}` };
-		const [pid, tid, startTicks, nsecs, fd, ret] = values as number[];
+		const [, syscall, pidText, tidText, startText, nsecsText, fdText, rootTidText, seqText] = fields;
+		if (fields.length < 10 || (syscall !== "openat" && syscall !== "renameat2")) return { diagnostic: `unrecognised OPEN line: ${JSON.stringify(raw)}` };
+		const values = [pidText, tidText, startText, nsecsText, fdText, rootTidText, seqText].map(integerOf);
+		if (values.some((value) => value === null)) return { diagnostic: `non-integer field in OPEN line: ${JSON.stringify(raw)}` };
+		const [pid, tid, startTicks, nsecs, fd, rootTid, seq] = values as number[];
 		state.lastNsecs = Math.max(state.lastNsecs, nsecs!);
-		const resolved = resolveTracedPath(fields.slice(8).join(SEPARATOR), pid!, fd!, options);
+		// Resolved now, while the process is certainly alive, not when the return arrives.
+		const resolved = resolveTracedPath(fields.slice(9).join(SEPARATOR), pid!, fd!, options);
 		// Without a trustworthy path the record is written pathless on purpose:
 		// the parser rejects it, and the run shows a counted gap instead of a
 		// quietly misfiled one.
-		const record = { bytes: 0, fd, nsecs, pid, ret, startTicks, syscall, tid };
-		return JSON.stringify(resolved === null ? record : { ...record, path: resolved });
+		const record: Record<string, number | string> = { bytes: 0, fd: fd!, nsecs: nsecs!, pid: pid!, startTicks: startTicks!, syscall, tid: tid! };
+		if (resolved !== null) record.path = resolved;
+		const key = `${rootTid}:${seq}`;
+		const ret = state.pendingReturns.get(key);
+		if (ret === undefined) {
+			state.pendingEntries.set(key, { record });
+			return "";
+		}
+		state.pendingReturns.delete(key);
+		return JSON.stringify({ ...record, ret });
+	}
+	if (tag === "OBSERVING") {
+		const nsecs = integerOf(fields[1]);
+		if (fields.length !== 2 || nsecs === null) return { diagnostic: `unrecognised OBSERVING line: ${JSON.stringify(raw)}` };
+		// The wrapper may open other files later; only the first marks the start.
+		if (state.observingSince !== null) return "";
+		state.observingSince = nsecs;
+		state.lastNsecs = Math.max(state.lastNsecs, nsecs);
+		return JSON.stringify({ kind: "observing", nsecs });
+	}
+	if (tag === "RET") {
+		const [, rootTidText, seqText, retText] = fields;
+		const values = [rootTidText, seqText, retText].map(integerOf);
+		if (fields.length !== 4 || values.some((value) => value === null)) return { diagnostic: `unrecognised RET line: ${JSON.stringify(raw)}` };
+		const [rootTid, seq, ret] = values as number[];
+		const key = `${rootTid}:${seq}`;
+		const entry = state.pendingEntries.get(key);
+		if (entry === undefined) {
+			state.pendingReturns.set(key, ret!);
+			return "";
+		}
+		state.pendingEntries.delete(key);
+		return JSON.stringify({ ...entry.record, ret });
 	}
 	return null;
 }
@@ -122,6 +167,15 @@ function lossLine(state: CollectorState, count: number, options: CollectorOption
 	state.lostTotal += count;
 	const nsecs = Math.max(state.lastNsecs, Math.floor(options.nowBootNsecs()));
 	return JSON.stringify({ count: state.lostTotal, kind: "lost", nsecs });
+}
+
+/**
+ * Calls whose two halves never met by the time the collector stopped: a process
+ * that exited inside the call, or a stop that landed between entry and exit.
+ * Reported by the caller so an unfinished call is visible rather than dropped.
+ */
+export function unpairedCalls(state: CollectorState): number {
+	return state.pendingEntries.size + state.pendingReturns.size;
 }
 
 /**
@@ -159,7 +213,8 @@ export function translateBpftraceLine(line: string, state: CollectorState, optio
 				const translated = translateRawRecord(raw, state, options);
 				if (translated === null) return { kind: "diagnostic", message: `unrecognised collector line: ${JSON.stringify(raw)}` };
 				if (typeof translated === "object") return { kind: "diagnostic", message: translated.diagnostic };
-				lines.push(translated);
+				// An empty string is one half of a pair, held until its partner arrives.
+				if (translated.length > 0) lines.push(translated);
 			}
 			return { kind: "lines", lines };
 		}

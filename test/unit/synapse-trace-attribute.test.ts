@@ -820,6 +820,25 @@ describe("synapse kernel I/O attribution: coverage completeness", () => {
 		assert.equal(result.diagnostics.coverage.observedFromNsecs, 9_000_000_000);
 	});
 
+	it("takes the collector's own observing marker as the front edge, so a process started after it is covered from its start", () => {
+		// Same process and records as the case below, but the collector says it was
+		// watching from 5s — before the process started at 10s. The gap below is an
+		// artefact of the first record being late, not of the collector being late.
+		const trace: TraceLog = { errors: [], losses: [], observingSince: 5_000_000_000, records: envelopeWrite(42, 1_000, 500) };
+		const result = attributeKernelIo([identityEvent()], { kind: "collected", trace }, ROOT);
+		const row = rowFor(result, 42, 1_000);
+		assert.equal(row.coverage.observedFromStart, true);
+		assert.equal(row.coverage.unobservedPrefixNsecs, 0);
+		assert.equal(result.diagnostics.coverage.observedFromNsecs, 5_000_000_000);
+	});
+
+	it("still reports the gap when the marker itself came after the process started", () => {
+		const trace: TraceLog = { errors: [], losses: [], observingSince: 15_000_000_000, records: envelopeWrite(42, 1_000, 500) };
+		const row = rowFor(attributeKernelIo([identityEvent()], { kind: "collected", trace }, ROOT), 42, 1_000);
+		assert.equal(row.coverage.observedFromStart, false);
+		assert.equal(row.coverage.unobservedPrefixNsecs, 5_000_000_000);
+	});
+
 	it("detects a collector that started after the run, rather than reporting a full account", () => {
 		// The process started at 10s since boot; the earliest line in the whole
 		// trace is at 20s. The first 10s of this process carries no evidence, so

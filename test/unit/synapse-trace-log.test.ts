@@ -436,4 +436,13 @@ describe("synapse-trace wire contract: byte and failure accounting", () => {
 		assert.equal(log.records.reduce((total, record) => total + contributedBytes(record), 0), 4156);
 		assert.equal(log.records.filter((record) => traceCallFailed(record)).length, 1);
 	});
+
+	it("reads the collector's observing marker and keeps the earliest one", () => {
+		assert.deepEqual(parseTraceLine('{"kind":"observing","nsecs":12}'), { kind: "observing", nsecs: 12 });
+		assert.equal(parseTraceLine('{"kind":"observing","nsecs":-1}').kind, "error");
+		assert.equal(parseTraceLine('{"kind":"observing","nsecs":12,"pid":1}').kind, "error");
+		const log = parseTraceLog('{"kind":"observing","nsecs":30}\n{"kind":"observing","nsecs":20}\n');
+		assert.equal(log.observingSince, 20);
+		assert.equal(parseTraceLog("").observingSince, undefined);
+	});
 });

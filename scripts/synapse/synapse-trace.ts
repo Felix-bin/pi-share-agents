@@ -7,7 +7,7 @@
  * tree: it crashing costs the run its kernel account, never the run itself.
  *
  *   node --experimental-strip-types scripts/synapse/synapse-trace.ts \
- *     --out <storageRoot>/trace/<runId>.ndjson [--comm node] [--ready-file F] \
+ *     --out <storageRoot>/trace/<runId>.ndjson [--exe node] [--exclude-pid P] [--ready-file F] \
  *     [--rb-pages N] [--bpftrace /usr/bin/bpftrace]
  *
  * Exit codes: 0 stopped by a signal after tracing; 2 bpftrace could not start
@@ -23,22 +23,27 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { createCollectorState, translateBpftraceLine, type CollectorOptions } from "../../src/synapse/trace-collector.ts";
+import { createCollectorState, translateBpftraceLine, unpairedCalls, type CollectorOptions } from "../../src/synapse/trace-collector.ts";
 
 const STRING_LIMIT = 200;
 
-type Args = { bpftrace: string; comm: string; out: string; rbPages: number | null; readyFile: string | null };
+type Args = { bpftrace: string; excludePid: number; exe: string; out: string; rbPages: number | null; readyFile: string | null };
 
 function parseArgs(argv: readonly string[]): Args | string {
-	const args: Args = { bpftrace: "bpftrace", comm: "node", out: "", rbPages: null, readyFile: null };
+	const args: Args = { bpftrace: "bpftrace", excludePid: 0, exe: "node", out: "", rbPages: null, readyFile: null };
 	for (let index = 0; index < argv.length; index += 2) {
 		const flag = argv[index];
 		const value = argv[index + 1];
 		if (value === undefined) return `missing value for ${flag}`;
 		if (flag === "--out") args.out = value;
-		else if (flag === "--comm") args.comm = value;
+		else if (flag === "--exe") args.exe = value;
 		else if (flag === "--ready-file") args.readyFile = value;
 		else if (flag === "--bpftrace") args.bpftrace = value;
+		else if (flag === "--exclude-pid") {
+			const pid = Number(value);
+			if (!Number.isInteger(pid) || pid < 1) return `--exclude-pid must be a positive integer, got ${value}`;
+			args.excludePid = pid;
+		}
 		else if (flag === "--rb-pages") {
 			const pages = Number(value);
 			if (!Number.isInteger(pages) || pages < 1) return `--rb-pages must be a positive integer, got ${value}`;
@@ -46,8 +51,8 @@ function parseArgs(argv: readonly string[]): Args | string {
 		} else return `unknown flag ${flag}`;
 	}
 	if (args.out.length === 0) return "--out is required";
-	// The kernel compares against a 16-byte comm, 15 characters plus terminator.
-	if (args.comm.length === 0 || args.comm.length > 15) return "--comm must be 1-15 characters";
+	// The kernel half compares at most 15 characters of the executable's basename.
+	if (args.exe.length === 0 || args.exe.length > 15 || args.exe.includes("/")) return "--exe must be a basename of 1-15 characters";
 	return args;
 }
 
@@ -89,11 +94,12 @@ function main(): void {
 	const program = path.join(path.dirname(fileURLToPath(import.meta.url)), "synapse-trace.bt");
 	const env: NodeJS.ProcessEnv = { ...process.env, BPFTRACE_STRLEN: String(STRING_LIMIT) };
 	if (args.rbPages !== null) env.BPFTRACE_PERF_RB_PAGES = String(args.rbPages);
-	const child = spawn(args.bpftrace, ["-f", "json", program, args.comm], { env, stdio: ["ignore", "pipe", "pipe"] });
+	const child = spawn(args.bpftrace, ["-f", "json", program, args.exe, String(process.pid), String(args.excludePid)], { env, stdio: ["ignore", "pipe", "pipe"] });
 
 	const state = createCollectorState();
 	const options: CollectorOptions = { nowBootNsecs, resolveDirectory, stringLimit: STRING_LIMIT };
 	let ready = false;
+	let announced = false;
 	let written = 0;
 	let stopping = false;
 
@@ -106,21 +112,32 @@ function main(): void {
 		const step = translateBpftraceLine(line, state, options);
 		if (step.kind === "ready") {
 			ready = true;
-			console.error(`synapse-trace: tracing comm=${args.comm} with ${step.probes} probes -> ${args.out}`);
-			if (args.readyFile !== null) fs.writeFileSync(args.readyFile, `${process.pid}\n`, "utf-8");
+			console.error(`synapse-trace: tracing exe=${args.exe} with ${step.probes} probes -> ${args.out}`);
+			// The marker: one openat of our own, which the kernel half stamps. Ready
+			// is announced only once that stamp comes back, so nothing a caller
+			// starts after the announcement can predate the observation window.
+			fs.closeSync(fs.openSync("/proc/self/stat", "r"));
 			return;
 		}
 		if (step.kind === "diagnostic") {
 			console.error(`synapse-trace: ${step.message}`);
 			return;
 		}
-		if (step.lines.length === 0) return;
-		fs.writeSync(out, `${step.lines.join("\n")}\n`);
-		written += step.lines.length;
+		if (step.lines.length > 0) {
+			fs.writeSync(out, `${step.lines.join("\n")}\n`);
+			written += step.lines.length;
+		}
+		if (!announced && state.observingSince !== null) {
+			announced = true;
+			console.error(`synapse-trace: observing since boot+${state.observingSince} ns`);
+			if (args.readyFile !== null) fs.writeFileSync(args.readyFile, `${process.pid}\n`, "utf-8");
+		}
 	});
-	child.on("exit", (code, signal) => {
+	// "close", not "exit": close fires only after bpftrace's stdout has been read to
+	// the end, so the last lines it printed are written before the file is closed.
+	child.on("close", (code, signal) => {
 		fs.closeSync(out);
-		console.error(`synapse-trace: stopped (${written} lines, ${state.lostTotal} events lost)`);
+		console.error(`synapse-trace: stopped (${written} lines, ${state.lostTotal} events lost, ${unpairedCalls(state)} calls unfinished at stop)`);
 		if (!ready) {
 			console.error(`synapse-trace: bpftrace exited before tracing started (code ${code ?? "none"}, signal ${signal ?? "none"}); see its message above`);
 			process.exit(2);

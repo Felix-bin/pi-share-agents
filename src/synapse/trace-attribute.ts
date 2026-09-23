@@ -732,7 +732,9 @@ function bindIdentities(events: readonly MeteringEvent[], ticksPerSecond: number
  * decided as a real one.
  */
 function earliestObservation(trace: TraceLog): number | Unavailable {
-	let earliest: number | null = null;
+	// The collector's own marker, when present, is the proof that it was watching
+	// from then on, whether or not anything was traced at that moment.
+	let earliest: number | null = trace.observingSince ?? null;
 	for (const record of trace.records) earliest = earliest === null ? record.nsecs : Math.min(earliest, record.nsecs);
 	for (const loss of trace.losses) earliest = earliest === null ? loss.nsecs : Math.min(earliest, loss.nsecs);
 	return earliest === null ? "unavailable" : boundedNsecs(earliest);
