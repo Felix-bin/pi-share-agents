@@ -1,0 +1,94 @@
+/*
+ * synapse-trace — the kernel half of the S3 collector (design §3.1).
+ *
+ * Run through scripts/synapse/synapse-trace.ts, never directly: this program
+ * prints raw tab-separated values, and the wrapper is what turns them into the
+ * contract lines trace-log.ts parses (JSON escaping, absolute paths, loss lines).
+ *
+ *   $1  the process name to trace, compared against the thread-group leader's
+ *       comm so that libuv worker threads — where Node's file I/O actually
+ *       runs — are covered whatever their own thread names are.
+ *
+ * What it reads: syscall numbers, descriptors, byte counts, return values and
+ * the path argument of openat/renameat2. Never a file's contents.
+ *
+ * Every pending call is keyed by thread id: a thread has at most one syscall in
+ * flight, so a map holds one entry per traced thread and cannot fill under any
+ * realistic thread count. A call already in flight when the probes attach has
+ * an exit with no entry and is skipped — it began before the observation window.
+ *
+ * Output never blocks a traced process: bpftrace's perf buffer drops when full,
+ * and bpftrace reports every drop as a lost_events notice, which the wrapper
+ * turns into the contract's `lost` line.
+ *
+ * Start time is the leader's start_boottime in USER_HZ ticks, the same value as
+ * field 22 of /proc/<pid>/stat, so the joiner's (pid, startTicks) key matches the
+ * process-identity event. Timestamps use the boot clock (nsecs(boot)), the base
+ * /proc/uptime counts from.
+ */
+
+tracepoint:syscalls:sys_enter_read,
+tracepoint:syscalls:sys_enter_write
+/curtask->group_leader->comm == str($1)/
+{
+	@fd[tid] = args->fd;
+	@count[tid] = args->count;
+	@live[tid] = 1;
+}
+
+tracepoint:syscalls:sys_exit_read
+/@live[tid]/
+{
+	printf("IO\tread\t%d\t%d\t%llu\t%llu\t%d\t%llu\t%lld\n", pid, tid,
+		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
+		@fd[tid], @count[tid], args->ret);
+	delete(@fd[tid]); delete(@count[tid]); delete(@live[tid]);
+}
+
+tracepoint:syscalls:sys_exit_write
+/@live[tid]/
+{
+	printf("IO\twrite\t%d\t%d\t%llu\t%llu\t%d\t%llu\t%lld\n", pid, tid,
+		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
+		@fd[tid], @count[tid], args->ret);
+	delete(@fd[tid]); delete(@count[tid]); delete(@live[tid]);
+}
+
+tracepoint:syscalls:sys_enter_openat
+/curtask->group_leader->comm == str($1)/
+{
+	@fd[tid] = args->dfd;
+	@path[tid] = str(args->filename);
+	@live[tid] = 1;
+}
+
+tracepoint:syscalls:sys_exit_openat
+/@live[tid]/
+{
+	printf("PATH\topenat\t%d\t%d\t%llu\t%llu\t%d\t%lld\t%s\n", pid, tid,
+		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
+		@fd[tid], args->ret, @path[tid]);
+	delete(@fd[tid]); delete(@path[tid]); delete(@live[tid]);
+}
+
+tracepoint:syscalls:sys_enter_renameat2
+/curtask->group_leader->comm == str($1)/
+{
+	@fd[tid] = args->newdfd;
+	@path[tid] = str(args->newname);
+	@live[tid] = 1;
+}
+
+tracepoint:syscalls:sys_exit_renameat2
+/@live[tid]/
+{
+	printf("PATH\trenameat2\t%d\t%d\t%llu\t%llu\t%d\t%lld\t%s\n", pid, tid,
+		curtask->group_leader->start_boottime / 10000000, nsecs(boot),
+		@fd[tid], args->ret, @path[tid]);
+	delete(@fd[tid]); delete(@path[tid]); delete(@live[tid]);
+}
+
+END
+{
+	clear(@fd); clear(@count); clear(@path); clear(@live);
+}

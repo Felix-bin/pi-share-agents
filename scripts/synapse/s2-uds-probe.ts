@@ -80,7 +80,7 @@ async function main(): Promise<void> {
 	});
 	// One recalled memory, so the envelope carries a handle and the run exercises
 	// the same shape a real delegation has rather than an empty special case.
-	service.remember({
+	await service.remember({
 		content: "the login path checks the session cookie first",
 		kind: "evidence",
 		operationId: `${args.run}/seed`,
