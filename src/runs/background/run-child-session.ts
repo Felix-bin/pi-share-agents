@@ -701,6 +701,12 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 					receiverSessionId: created.sessionId,
 					runtime: createInput.runtime,
 				});
+				// The `uds` gear's send is asynchronous and must finish before the
+				// child is prompted: the child verifies its envelope at the first
+				// agent turn, and a send still in flight would race that check.
+				// Undefined on the `file` gear, whose publish already happened, so
+				// the default path executes no await it did not execute before.
+				if (delegation?.envelopeDelivery !== undefined) await delegation.envelopeDelivery;
 				await created.prompt(delegation?.prompt ?? input.prompt);
 				promptSettled = true;
 				closeChildDelegation(delegation, {

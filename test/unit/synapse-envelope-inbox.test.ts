@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { resolveSynapseConfig } from "../../src/synapse/config.ts";
 import { buildEnvelope, freezeSnapshot, type Envelope } from "../../src/synapse/envelope.ts";
 import {
 	envelopeInboxPath,
@@ -33,6 +34,7 @@ function contractFor(overrides: ContractOverrides = {}): LaunchContract {
 	return resolveLaunchContract({
 		capabilityId: overrides.capabilityId ?? CAPABILITY_ID,
 		corpusSnapshotId: "unset",
+		deliveryGear: "file",
 		memoryRefs: [],
 		mode: "synapse",
 		namespaceId: overrides.namespaceId ?? NAMESPACE_ID,
@@ -116,6 +118,26 @@ describe("envelope delivery", () => {
 		// cannot be opened. The child must then run upstream's own task.
 		const delivered = readDeliveredEnvelope(envelopeInboxPath(store, RUN_ID, 0));
 		assert.equal(delivered.status, "absent");
+	});
+
+	it("routes the default config to the file gear, and publish/read behave exactly as before S2 (verify a)", () => {
+		// "Off by default" is a claim this test enforces rather than states: an
+		// experiment config that names nothing must still resolve to the gear
+		// this module has always used, and the round trip through it must be the
+		// same round trip synapse-envelope-inbox has always proven.
+		const config = resolveSynapseConfig(undefined);
+		assert.equal(config.deliveryGear, "file");
+
+		const contract = contractFor();
+		const envelope = envelopeFor(contract);
+		const target = publishEnvelope(store, RUN_ID, 0, envelope);
+		assert.equal(target, envelopeInboxPath(store, RUN_ID, 0));
+		assert.equal(fs.existsSync(target), true);
+		assert.equal(target.endsWith(".json"), true);
+
+		const delivered = readDeliveredEnvelope(target);
+		assert.equal(delivered.status, "ready");
+		assert.deepEqual(delivered.status === "ready" ? delivered.wire : null, envelope.wire);
 	});
 
 	it("replaces the envelope when the same node is delegated to again", () => {

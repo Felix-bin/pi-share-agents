@@ -18,6 +18,15 @@ import type { MemoryValidity } from "./memory-service.ts";
 
 export const SYNAPSE_RECEIPT_SUMMARY_BYTES = 2048;
 
+/**
+ * Introduces the recalled memory section, wherever it is assembled. Both gears
+ * use it: under `text` the parent writes the section into the prompt, under
+ * `synapse` the child writes it after redeeming the handles. The model should
+ * not be able to tell which side built it — a different framing per gear would
+ * be a difference S4 could mistake for an effect of the transport.
+ */
+export const MEMORY_SECTION_HEADER = "Shared memory recalled for this task (read-only unless you record a new finding):";
+
 export type HandoffCandidate = {
 	contentId: string;
 	memoryId: string;

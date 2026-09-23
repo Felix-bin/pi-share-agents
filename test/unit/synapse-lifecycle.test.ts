@@ -15,6 +15,7 @@ import {
 function contractInput(overrides: Partial<LaunchContractInput> = {}): LaunchContractInput {
 	return {
 		capabilityId: overrides.capabilityId ?? "c".repeat(64),
+		deliveryGear: overrides.deliveryGear ?? "file",
 		memoryRefs: overrides.memoryRefs ?? ["a".repeat(64)],
 		corpusSnapshotId: overrides.corpusSnapshotId ?? "corpus-1",
 		mode: overrides.mode ?? "synapse",
@@ -46,6 +47,12 @@ describe("launch contract parity (AC-10)", () => {
 		assert.notEqual(resolveLaunchContract(contractInput({ scope: { pathPrefixes: [""], write: false } })).contractId, base);
 		assert.notEqual(resolveLaunchContract(contractInput({ memoryRefs: ["b".repeat(64)] })).contractId, base);
 		assert.notEqual(resolveLaunchContract(contractInput({ mode: "text" })).contractId, base);
+		// The gear is part of the identity, not merely carried beside it: two runs
+		// that differ only in how the envelope crossed are different launches (it
+		// is one of S4's experiment conditions). Without this, a contract that
+		// carried `deliveryGear` as a field but left it out of `contractBody`
+		// would pass every other assertion in this file.
+		assert.notEqual(resolveLaunchContract(contractInput({ deliveryGear: "uds" })).contractId, base);
 	});
 
 	it("does not depend on the order permissions or references were collected in", () => {
@@ -108,6 +115,19 @@ describe("rehydration after reload or resume (AC-14)", () => {
 		const contract = resolveLaunchContract(contractInput());
 		const tampered = JSON.stringify({ ...contract, scope: { pathPrefixes: [""], write: true } });
 		const result = rehydrateLaunchContract(tampered, checks({ currentScope: { pathPrefixes: [""], write: true } }));
+		assert.equal(result.status, "refused");
+		if (result.status !== "refused") return;
+		assert.equal(result.category, "integrity");
+	});
+
+	it("refuses a parseable contract that is missing a field, rather than throwing", () => {
+		// The shape a build from before `deliveryGear` existed would have written.
+		// Recomputing the digest over an absent value throws inside `canonicalJson`,
+		// and every other rejection in this function is a returned refusal — a
+		// caller that handles `refused` does not handle a throw.
+		const contract = resolveLaunchContract(contractInput());
+		const { deliveryGear: _dropped, ...withoutGear } = contract;
+		const result = rehydrateLaunchContract(JSON.stringify(withoutGear), checks());
 		assert.equal(result.status, "refused");
 		if (result.status !== "refused") return;
 		assert.equal(result.category, "integrity");

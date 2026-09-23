@@ -20,6 +20,17 @@ export const SYNAPSE_MODES = ["off", "text", "synapse"] as const;
 export const SYNAPSE_MEMORY_MODES = ["off", "project"] as const;
 export const SYNAPSE_STATE_RECOVERIES = ["resend", "resend-then-text"] as const;
 export const SYNAPSE_EMBEDDING_PROVIDERS = ["siliconflow"] as const;
+/**
+ * The envelope delivery gear (design §3.1, §4.3). `file` is the atomic-write
+ * path `envelope-inbox.ts` has always used and stays the default: it is S4's
+ * control arm for the text-vs-structured A/B, and S1's fallback when a
+ * container launch degrades. `uds` is S2's addition, an AF_UNIX `SOCK_STREAM`
+ * transport (`envelope-uds.ts`). This is a config key, not an environment
+ * variable, because it is one of S4's experiment conditions: a gear a run
+ * picked up from its environment rather than its manifest would make that
+ * run's conditions unreproducible from the manifest alone.
+ */
+export const SYNAPSE_DELIVERY_GEARS = ["file", "uds"] as const;
 
 /**
  * Provider names reserved for the deterministic stub used in tests. Accepting
@@ -40,6 +51,7 @@ export type UnvalidatedJson = CanonicalValue | undefined;
 export type SynapseMode = (typeof SYNAPSE_MODES)[number];
 export type SynapseMemoryMode = (typeof SYNAPSE_MEMORY_MODES)[number];
 export type SynapseStateRecovery = (typeof SYNAPSE_STATE_RECOVERIES)[number];
+export type SynapseDeliveryGear = (typeof SYNAPSE_DELIVERY_GEARS)[number];
 
 export type SynapseEmbeddingConfig = {
 	dim: number;
@@ -51,6 +63,7 @@ export type SynapseEmbeddingConfig = {
 
 export type SynapseConfig = {
 	contextBudgetBytes: number;
+	deliveryGear: SynapseDeliveryGear;
 	embedding: SynapseEmbeddingConfig | null;
 	maxObjectBytes: number;
 	memory: SynapseMemoryMode;
@@ -73,6 +86,7 @@ const EmbeddingSchema = Type.Object(
 const RawConfigSchema = Type.Object(
 	{
 		contextBudgetBytes: Type.Optional(Type.Integer({ minimum: 1 })),
+		deliveryGear: Type.Optional(Type.Union([Type.Literal("file"), Type.Literal("uds")])),
 		embedding: Type.Optional(EmbeddingSchema),
 		maxObjectBytes: Type.Optional(Type.Integer({ minimum: 1 })),
 		memory: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("project")])),
@@ -90,6 +104,7 @@ const KNOWN_KEYS = new Set(Object.keys(RawConfigSchema.properties));
 const KNOWN_EMBEDDING_KEYS = new Set(Object.keys(EmbeddingSchema.properties));
 
 const ALLOWED_VALUES = new Map<string, readonly string[]>([
+	["synapse.deliveryGear", SYNAPSE_DELIVERY_GEARS],
 	["synapse.memory", SYNAPSE_MEMORY_MODES],
 	["synapse.mode", SYNAPSE_MODES],
 	["synapse.stateRecovery", SYNAPSE_STATE_RECOVERIES],
@@ -167,6 +182,9 @@ export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = o
 	}
 	return {
 		contextBudgetBytes: raw.contextBudgetBytes ?? SYNAPSE_DEFAULT_CONTEXT_BUDGET_BYTES,
+		// Off unless an experiment states it explicitly (Global Constraints: the
+		// `uds` gear must never become the default path).
+		deliveryGear: raw.deliveryGear ?? "file",
 		embedding: raw.embedding === undefined ? null : resolveEmbedding(raw.embedding),
 		maxObjectBytes: raw.maxObjectBytes ?? SYNAPSE_DEFAULT_MAX_OBJECT_BYTES,
 		memory,

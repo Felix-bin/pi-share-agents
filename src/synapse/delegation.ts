@@ -2,12 +2,15 @@ import * as path from "node:path";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
 import { negotiate, type NegotiationResult } from "./capability.ts";
 import { buildEnvelope, freezeSnapshot, type Envelope } from "./envelope.ts";
+import { selectEnvelopeRoute, verifiedTransportByteCount } from "./envelope-gear.ts";
 import { nodeIdFor, publishEnvelope, safeComponent } from "./envelope-inbox.ts";
+import { publishEnvelopeViaUds, type UdsClientTransport } from "./envelope-uds.ts";
 import { classifySynapseError } from "./errors.ts";
-import { buildReceipt, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
+import type { SynapseMode } from "./config.ts";
+import { buildReceipt, MEMORY_SECTION_HEADER, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
 import type { LaunchContract } from "./lifecycle.ts";
 import { createMemoryService, type MemoryService } from "./memory-service.ts";
-import { createMeteringLog, recordProcessIdentity, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
+import { createMeteringLog, recordProcessIdentity, recordTransportBytes, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
 import { capabilityForAgent, hostCapability } from "./roles.ts";
 
 /**
@@ -49,6 +52,12 @@ export type DelegationDeps = {
 	log: MeteringLog;
 	/** Reads shared memory as the child is authorised to, never as the parent. */
 	service: MemoryService;
+	/**
+	 * The AF_UNIX client the `uds` gear sends through. Left unset in production,
+	 * where `publishEnvelopeViaUds` builds the real `node:net` one; supplied by
+	 * tests, which cannot bind a socket in this repository's sandbox.
+	 */
+	udsClient?: UdsClientTransport;
 };
 
 export type OpenDelegationInput = {
@@ -72,6 +81,19 @@ export type CloseDelegationInput = {
 
 export type OpenDelegation = {
 	close: (input: CloseDelegationInput) => Receipt;
+	/**
+	 * The `uds` gear's send, still in flight. Absent on the `file` gear, whose
+	 * publish already finished synchronously inside `openDelegation` — which is
+	 * why a caller writes `if (delegation.envelopeDelivery) await …` rather than
+	 * awaiting unconditionally: the default path must not acquire so much as a
+	 * microtask boundary it did not have before.
+	 *
+	 * It never rejects. A failed socket delivery is warned and metered as a
+	 * classified error inside; the caller's only interest is that the send has
+	 * finished before the child is prompted, so that a delivery either arrived
+	 * or is on the record as having failed, never silently in flight.
+	 */
+	envelopeDelivery?: Promise<void>;
 	envelope: Envelope;
 	handoff: HandoffContext;
 	negotiation: NegotiationResult;
@@ -152,11 +174,88 @@ function candidatesFor(service: MemoryService, message: string): HandoffCandidat
 	}));
 }
 
-const MEMORY_SECTION_HEADER = "Shared memory recalled for this task (read-only unless you record a new finding):";
-
-function promptWith(message: string, handoff: HandoffContext): string {
+/**
+ * The task as the child receives it.
+ *
+ * Under `text` the recalled memory travels inside the prompt, which is what the
+ * baseline costs and is left exactly as it was. Under `synapse` it does not:
+ * the envelope carries the handles and the child redeems the bodies from the
+ * shared store itself (design §4.2). Leaving the section here as well would
+ * send every body over the wire *and* read it again on the other side, which is
+ * the one outcome worse than either gear alone — and it would make the byte
+ * saving this whole plane exists for unmeasurable, because `textBytes` would
+ * still carry it.
+ *
+ * `handoff.text` is still built under `synapse`, and still discarded here. It
+ * is not waste: the budget is applied to those lines, so which handles are
+ * handed over stays decided the same way it always was. Only where the bodies
+ * are read changes.
+ */
+function promptWith(message: string, handoff: HandoffContext, mode: SynapseMode): string {
+	if (mode === "synapse") return message;
 	if (handoff.text.length === 0) return message;
 	return `${message}\n\n${MEMORY_SECTION_HEADER}\n${handoff.text}`;
+}
+
+type UdsDeliveryInput = {
+	agent: string;
+	deps: DelegationDeps;
+	endpointPath: string;
+	envelope: Envelope;
+	identity: MeteringIdentity;
+};
+
+/**
+ * The `uds` gear's send, and the one call site of `recordTransportBytes`.
+ *
+ * `metering.ts` defined that counter without a caller because this dispatch is
+ * where the number is born: `publishEnvelopeViaUds` has already rejected a
+ * short write, so `bytesWritten` is the frame that really left the process,
+ * and `verifiedTransportByteCount` rejects a count that could not be one at
+ * all before it can reach the meter.
+ *
+ * Failure is recorded as a classified error and nothing else. Spec §5 forbids
+ * a failed delivery being written down as "delivered but empty", and the
+ * concrete form that would take here is a `transport-bytes` event carrying
+ * zero: `control.transportBytes` distinguishes `"N/A"` from `0` precisely so
+ * that a socket gear which moved nothing cannot be read as a gear which was
+ * never used. So a failed send records no byte count whatsoever.
+ *
+ * Never rejects: a transport failure degrades the envelope exactly as a failed
+ * `file` publish does, leaving the child to run the task upstream sent.
+ */
+function deliverEnvelopeViaUds(input: UdsDeliveryInput): Promise<void> {
+	const { deps, endpointPath, identity } = input;
+	const degrade = (error: unknown): void => {
+		const detail = error instanceof Error ? error.message : String(error);
+		console.warn(`[pi-subagents] synapse: envelope delivery skipped for ${input.agent}: ${detail}`);
+		try {
+			deps.log.record(identity, { category: classifySynapseError(error), detail, kind: "error" });
+		} catch (recordError) {
+			// The "never rejects" promise above has to hold even when the meter is
+			// the thing that broke. Both host call sites await this before prompting,
+			// inside the try whose catch fails the run: a log write that throws here
+			// would cost the user their run, which is precisely what the `file` gear
+			// refuses to do (see synapse-delegation.ts's header — a metering failure
+			// must not be fatal). Warned and dropped, exactly as an unopenable meter
+			// already is upstream.
+			console.warn(`[pi-subagents] synapse: envelope delivery failure could not be metered for ${input.agent}: ${recordError instanceof Error ? recordError.message : String(recordError)}`);
+		}
+	};
+	const send = deps.udsClient === undefined
+		? publishEnvelopeViaUds(endpointPath, input.envelope)
+		: publishEnvelopeViaUds(endpointPath, input.envelope, deps.udsClient);
+	return send.then((result) => {
+		// The count check is inside the same guarded region as the send: a byte
+		// count that cannot be one is a failed delivery for metering purposes,
+		// and must degrade the same way rather than escape as a rejection the
+		// caller is documented not to have to handle.
+		try {
+			recordTransportBytes(deps.log, identity, verifiedTransportByteCount(result.bytesWritten, endpointPath));
+		} catch (error) {
+			degrade(error);
+		}
+	}, degrade);
 }
 
 /**
@@ -233,17 +332,31 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 		senderSessionId: identity.senderSessionId,
 		snapshot,
 	});
+	const boundIdentity: MeteringIdentity = { ...meterIdentity, snapshotId: snapshot.snapshotId };
 	// The envelope is published before the delivery is metered, so a logged
 	// delivery never claims an envelope the receiver could not find. A failure to
 	// publish is degraded rather than fatal: the receiver treats an absent
 	// envelope as upstream's own delegation, which is what it would have run.
+	//
+	// Which gear publishes it is decided by `selectEnvelopeRoute`, a pure
+	// function of the contract — the effectful half stays here, one branch per
+	// gear. The `file` branch is the original call, unchanged and synchronous,
+	// inside the original try/catch: the default path performs exactly the I/O
+	// it always did, in the same order, and reaches no socket code at all.
+	let envelopeDelivery: Promise<void> | undefined;
 	try {
-		publishEnvelope(contract.storageRoot, identity.runId, identity.childIndex, envelope);
+		const route = selectEnvelopeRoute({
+			childIndex: identity.childIndex,
+			deliveryGear: contract.deliveryGear,
+			runId: identity.runId,
+			storageRoot: contract.storageRoot,
+		});
+		if (route.gear === "file") publishEnvelope(contract.storageRoot, identity.runId, identity.childIndex, envelope);
+		else envelopeDelivery = deliverEnvelopeViaUds({ deps, endpointPath: route.address, envelope, identity: boundIdentity, agent: identity.agent });
 	} catch (error) {
 		console.warn(`[pi-subagents] synapse: envelope delivery skipped for ${identity.agent}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	const prompt = promptWith(input.message, handoff);
-	const boundIdentity: MeteringIdentity = { ...meterIdentity, snapshotId: snapshot.snapshotId };
+	const prompt = promptWith(input.message, handoff, contract.mode);
 	deps.log.record(boundIdentity, {
 		envelopeBytes: envelope.envelopeBytes,
 		kind: "message-delivered",
@@ -285,6 +398,9 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 			return receipt;
 		},
 		envelope,
+		// Present only on the `uds` gear, so a `file` caller's `if` is false and
+		// its control flow is what it always was.
+		...(envelopeDelivery === undefined ? {} : { envelopeDelivery }),
 		handoff,
 		negotiation,
 		prompt,

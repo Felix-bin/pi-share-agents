@@ -190,6 +190,29 @@ describe("synapse metering aggregation with kernel I/O: transportBytes", () => {
 		assert.deepEqual(aggregateWithKernelIo(events, healthySource()).application, expected);
 		assert.deepEqual(aggregateWithKernelIo(events, source(collected(), WINDOWS_ROOT)).application, expected);
 	});
+
+	it("becomes a real number without perturbing envelopeBytes or the kernel-side column (Task 3 verify c)", () => {
+		const TRANSPORT_BYTES = 777;
+		const events: MeteringEvent[] = [
+			...applicationEvents(),
+			{ ...identity(), bytes: TRANSPORT_BYTES, eventId: "event-transport", kind: "transport-bytes", monotonicMs: 1_150, schemaVersion: 1, ts: "2026-09-19T00:00:00.000Z" },
+		];
+		const result = aggregateWithKernelIo(events, healthySource());
+
+		assert.equal(result.application.control.transportBytes, TRANSPORT_BYTES);
+		// The same envelope/kernel numbers as the identical stream without the
+		// transport-bytes event (compare against the describe block above):
+		// adding a real transportBytes must not shift either column.
+		assert.equal(result.application.control.envelopeBytes, APPLICATION_ENVELOPE_BYTES);
+		const { noGapFound } = accountOfKind(result.kernel, "reported-no-gap-found");
+		assert.equal(noGapFound.envelope.applicationEnvelopeBytes, APPLICATION_ENVELOPE_BYTES);
+		assert.equal(noGapFound.envelope.kernelEnvelopeWriteBytes, KERNEL_ENVELOPE_WRITE_BYTES);
+		assert.equal(noGapFound.envelope.transportBytes, "N/A");
+		// transportBytes must not have entered either byte-summing search this
+		// suite already runs for the envelope columns.
+		assert.ok(!numbersIn(result).includes(TRANSPORT_BYTES + APPLICATION_ENVELOPE_BYTES));
+		assert.ok(!numbersIn(result).includes(TRANSPORT_BYTES + KERNEL_ENVELOPE_WRITE_BYTES));
+	});
 });
 
 describe("synapse metering aggregation with kernel I/O: no collection is not a refusal", () => {

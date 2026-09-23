@@ -259,6 +259,10 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		childTools: toolPlan.declaredBuiltinTools,
 		cwd: input.cwd,
 		extensionConfig: synapseConfig,
+		// A placed child runs in another kernel, where an AF_UNIX path resolves to
+		// nothing the parent bound. The contract degrades the gear rather than
+		// letting every delivery fail and every child wait out its deadline.
+		placedOnAnotherMachine: Boolean(input.machine),
 		runId: input.runId ?? parentRunId,
 		sessionId: input.parentSessionId ?? "",
 	});

@@ -1,5 +1,5 @@
 import { canonicalDigest, canonicalJson, type CanonicalValue } from "./canonical-json.ts";
-import type { SynapseMode } from "./config.ts";
+import type { SynapseDeliveryGear, SynapseMode } from "./config.ts";
 import type { SynapseErrorCategory } from "./errors.ts";
 
 /**
@@ -30,6 +30,14 @@ export type ContractScope = {
 export type LaunchContractInput = {
 	capabilityId: string;
 	corpusSnapshotId: string;
+	/**
+	 * Which transport carries the envelope to this child (design §3.1, §4.3).
+	 * It travels in the contract rather than being read from configuration on
+	 * each side, because the sender and the receiver must address the same
+	 * endpoint: a child that resolved its own gear could bind a socket while
+	 * the parent wrote a file, and the envelope would simply never arrive.
+	 */
+	deliveryGear: SynapseDeliveryGear;
 	memoryRefs: readonly string[];
 	mode: SynapseMode;
 	namespaceId: string;
@@ -42,6 +50,7 @@ export type LaunchContract = {
 	capabilityId: string;
 	contractId: string;
 	corpusSnapshotId: string;
+	deliveryGear: SynapseDeliveryGear;
 	memoryRefs: string[];
 	mode: SynapseMode;
 	namespaceId: string;
@@ -93,6 +102,10 @@ function contractBody(input: LaunchContractInput): CanonicalValue {
 	return {
 		capabilityId: input.capabilityId,
 		corpusSnapshotId: input.corpusSnapshotId,
+		// Part of the identity, not merely carried alongside it: the gear is one of
+		// S4's experiment conditions, and two runs that differ in it are not the
+		// same launch even when every permission matches.
+		deliveryGear: input.deliveryGear,
 		memoryRefs: [...new Set(input.memoryRefs)].sort(),
 		mode: input.mode,
 		namespaceId: input.namespaceId,
@@ -108,6 +121,7 @@ export function resolveLaunchContract(input: LaunchContractInput): LaunchContrac
 		capabilityId: input.capabilityId,
 		contractId: canonicalDigest(contractBody(input)),
 		corpusSnapshotId: input.corpusSnapshotId,
+		deliveryGear: input.deliveryGear,
 		memoryRefs: [...new Set(input.memoryRefs)].sort(),
 		mode: input.mode,
 		namespaceId: input.namespaceId,
@@ -139,7 +153,18 @@ export function rehydrateLaunchContract(serialised: string, checks: RehydrationC
 		// silently run the task under conditions nobody chose.
 		return { category: "integrity", reason: "persisted contract is not valid JSON", status: "refused" };
 	}
-	const recomputed = resolveLaunchContract(parsed);
+	let recomputed: LaunchContract;
+	try {
+		recomputed = resolveLaunchContract(parsed);
+	} catch {
+		// Parseable JSON is not yet a contract. A persisted body missing a field —
+		// most plausibly one written by a build from before that field existed —
+		// makes `canonicalJson` throw on the absent value, and an exception here
+		// would escape a function whose every other rejection is a returned
+		// refusal. Callers that handle `refused` would not handle a throw, so a
+		// stale contract would crash a resume instead of declining it.
+		return { category: "integrity", reason: "persisted contract is missing or malformed fields", status: "refused" };
+	}
 	if (recomputed.contractId !== parsed.contractId) {
 		return { category: "integrity", reason: "contract id does not match its content", status: "refused" };
 	}

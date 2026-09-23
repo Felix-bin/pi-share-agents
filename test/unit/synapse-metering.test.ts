@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { aggregateMetering, createMeteringLog, readMeteringLog, readProcessIdentity, recordProcessIdentity, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
+import { encodeFrame } from "../../src/synapse/envelope-framing.ts";
+import { aggregateMetering, createMeteringLog, readMeteringLog, readProcessIdentity, recordProcessIdentity, recordTransportBytes, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
 
 let root = "";
 let logPath = "";
@@ -127,6 +128,83 @@ describe("message accounting (AC-09)", () => {
 	it("reports transport bytes as unavailable while there is no socket", () => {
 		log.record(identity(), { kind: "message-delivered", envelopeBytes: 40, messageId: "m1", textBytes: 100 });
 		assert.equal(aggregateMetering(readMeteringLog(logPath)).control.transportBytes, "N/A");
+	});
+});
+
+describe("transportBytes (Task 3, design §4.1)", () => {
+	it("(a) stays N/A, with every other field untouched, when the event stream carries no transport-bytes payload", () => {
+		// A stream that exercises several unrelated categories at once, so a
+		// regression that shifted some other field under the new case in
+		// aggregateMetering's switch would show up here, not just in control.
+		log.record(identity(), { kind: "message-delivered", envelopeBytes: 40, messageId: "m1", textBytes: 100 });
+		log.record(identity(), { kind: "message-received", messageId: "m1" });
+		log.record(identity(), { bytes: 4096, direction: "write", kind: "object-io" });
+		log.record(identity(), { kind: "model-usage", role: "parent", usage: { cacheRead: 10, cacheWrite: 20, cost: 0.5, input: 300, output: 40 } });
+		log.record(identity(), { kind: "model-usage", role: "child", usage: { cacheRead: 1, cacheWrite: 2, cost: 0.25, input: 30, output: 4 } });
+
+		const totals = aggregateMetering(readMeteringLog(logPath));
+
+		// Field-for-field (逐字段), not a sample of it: every leaf of
+		// MeteringTotals this stream can produce a non-default value for is
+		// named here, so a regression anywhere in aggregateMetering's other
+		// branches — not just under the new "transport-bytes" case — fails this
+		// assertion instead of slipping past a hand-picked subset of fields.
+		assert.deepEqual(totals, {
+			control: { envelopeBytes: 40, transportBytes: "N/A" },
+			duration: { byTask: {}, totalMs: 40, unfinishedTasks: [] },
+			embedding: { costUsd: 0, durationMs: 0, failed: 0, inputTokens: 0, requests: 0 },
+			errors: {},
+			memory: { crossAgentReuses: 0, hitRate: "N/A", queries: 0, reuses: 0 },
+			messages: { delivered: 1, duplicateDeliveries: 0, failed: 0, received: 1 },
+			model: {
+				child: { cacheRead: 1, cacheWrite: 2, input: 30, output: 4 },
+				complete: true,
+				parent: { cacheRead: 10, cacheWrite: 20, input: 300, output: 40 },
+				totalCost: 0.75,
+			},
+			state: { consumed: 0, failedSends: 0, prepared: 0, received: 0, receivedWithoutConsume: 0, sent: 0, sentBytes: 0 },
+			storage: { readBytes: 0, writeBytes: 4096 },
+			text: { handoffBytes: 100 },
+		});
+	});
+
+	it("(a2) reports a genuine zero byte count as 0, not N/A — the reason the accumulator starts undefined rather than 0", () => {
+		// The undefined-until-seen accumulator exists precisely to keep a
+		// reported zero distinct from nothing having been reported. Every other
+		// test in this file records a nonzero byte count, which an
+		// `if (event.bytes) total += event.bytes` bug would also pass; only a
+		// literal 0 catches that.
+		recordTransportBytes(log, identity(), 0);
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.control.transportBytes, 0);
+	});
+
+	it("(b) aggregates uds-gear deliveries to the exact total frame bytes sent, header included", () => {
+		// encodeFrame is the actual wire encoder envelope-uds.ts's
+		// publishEnvelopeViaUds uses; its output length (4-byte header plus body)
+		// is what a real UdsPublishResult.bytesWritten reports on a clean write.
+		const frameA = encodeFrame(Buffer.from(JSON.stringify({ envelope: "a" }), "utf-8"));
+		const frameB = encodeFrame(Buffer.from(JSON.stringify({ envelope: "much larger second body" }), "utf-8"));
+		assert.notEqual(frameA.byteLength, frameB.byteLength, "the two frames must differ in size for this to be a real sum, not a coincidence");
+
+		recordTransportBytes(log, identity(), frameA.byteLength);
+		recordTransportBytes(log, identity(), frameB.byteLength);
+
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.control.transportBytes, frameA.byteLength + frameB.byteLength);
+	});
+
+	it("(c) never lets transportBytes enter envelopeBytes, whatever order the two payloads arrive in", () => {
+		recordTransportBytes(log, identity(), 512);
+		log.record(identity(), { kind: "message-delivered", envelopeBytes: 40, messageId: "m1", textBytes: 100 });
+		log.record(identity(), { kind: "message-delivered", envelopeBytes: 60, messageId: "m2", textBytes: 100 });
+		recordTransportBytes(log, identity(), 256);
+
+		const totals = aggregateMetering(readMeteringLog(logPath));
+		assert.equal(totals.control.transportBytes, 512 + 256);
+		// envelopeBytes must reflect only the message-delivered events: 100, not
+		// 100 + 768 (the sum a bug that folded transportBytes in would produce).
+		assert.equal(totals.control.envelopeBytes, 100);
 	});
 });
 
