@@ -22,7 +22,7 @@
 
 ### Task 1: `resolveContainerLaunch` 纯函数
 
-- [ ] Change: 新增 `src/runs/shared/container-launch.ts`，导出 `resolveContainerLaunch`
+- [x] Change: 新增 `src/runs/shared/container-launch.ts`，导出 `resolveContainerLaunch`
       与 `ContainerEngineSpec`（spec §3.1、§3.3）。职责：按引擎表构造 `isula run --ipc container:<anchor>
       -v <root>:<root> ... -- <原命令>`；校验四个路径根是否都被 `identicalPathRoots` 覆盖；
       产出 `{command, args, topology, degradedReason?}`。`isula` 一档完整实现，
@@ -36,7 +36,7 @@
 
 ### Task 2: 引擎 preflight 探测
 
-- [ ] Change: 在同一模块加入引擎探测：按表顺序探测可执行性与版本，选出第一个可用的
+- [x] Change: 在同一模块加入引擎探测：按表顺序探测可执行性与版本，选出第一个可用的
       `ContainerEngineSpec`；全部不可用时返回一个具名的不可用原因（spec §5 第一行）。
       探测的副作用（执行子进程）走可注入接缝，判定逻辑保持纯函数。
 - Verify: 单测覆盖「首选可用」「首选缺失回退次选」「全部缺失」三条路径，
@@ -45,7 +45,7 @@
 
 ### Task 3: 接入 `async-execution.ts` 并让拓扑进入产物
 
-- [ ] Change: 在 `async-execution.ts:726` 的 `spawn` 之前增加一行 `resolveContainerLaunch` 调用，
+- [x] Change: 在 `async-execution.ts:726` 的 `spawn` 之前增加一行 `resolveContainerLaunch` 调用，
       用其返回的 command/args 替换原值；`spawn` 的其余参数不变。
       同时把 `topology` 与 `degradedReason` 记入运行产物——候选载体是
       `src/synapse/metering.ts:59` 的 `process-identity` 事件（它已经是"把一个 OS 进程绑到一次 run"
@@ -57,7 +57,7 @@
 
 ### Task 4: 容器镜像与 anchor 容器生命周期
 
-- [ ] Change: 提供镜像构建方式（Node 24 + Pi 安装根置于与宿主相同的绝对路径，spec §4.1 第四行），
+- [x] Change: 提供镜像构建方式（Node 24 + Pi 安装根置于与宿主相同的绝对路径，spec §4.1 第四行），
       以及 anchor 容器的创建与销毁：anchor 必须先于任何 Agent 容器创建、后于其全部退出才销毁。
       Agent 容器加入 IPC namespace 失败时拒绝启动该 Agent（**不**降级为隔离容器，spec §5）。
 - Verify: 这一条的正确性只能在真机证明，由 Task 7 的验收 1 与 4 覆盖。
@@ -69,7 +69,7 @@
 
 ### Task 5: 验收报告的解析与断言
 
-- [ ] Change: 定义 JSON 报告的形状（每条验收：`pass` / `fail` / `unavailable`，附证据字节数与实际路径），
+- [x] Change: 定义 JSON 报告的形状（每条验收：`pass` / `fail` / `unavailable`，附证据字节数与实际路径），
       并实现解析与判定的纯函数。`unavailable`（没跑）与 `fail`（跑了没过）必须是两种结论，
       不得合并——与 S3 的 `unavailable` / `"N/A"` 纪律同源（spec §6）。
 - Verify: 单测用夹具报告证明——全 pass 的报告判为通过；任一条 `fail` 判为不通过；
@@ -78,7 +78,7 @@
 
 ### Task 6: 真机验收采集脚本
 
-- [ ] Change: 新增 `scripts/synapse/s1-acceptance.sh`，一次执行依次采集 spec §6 的五条，
+- [x] Change: 新增 `scripts/synapse/s1-acceptance.sh`，一次执行依次采集 spec §6 的五条，
       输出 Task 5 定义形状的 JSON。脚本只采集事实，不做判定。
       五条依次为：跨容器 IPC 共享、路径一致性（小文件与大文件各一，量级参照 100 B / 10,000,000 B）、
       降级可见、生命周期不泄漏、S3 的 fd 前提重验。
@@ -99,7 +99,7 @@
 
 ### Task 8: `PI_SUBAGENTS_TEMP_ROOT` 固定后的会话隔离验证
 
-- [ ] Change: 确认把 `TEMP_ROOT_DIR` 固定为可挂载路径后，同机并行会话不会互相写入对方的 `asyncDir`
+- [x] Change: 确认把 `TEMP_ROOT_DIR` 固定为可挂载路径后，同机并行会话不会互相写入对方的 `asyncDir`
       （spec §7）。该变量原按 `resolveTempScopeId()` 隔离，固定它改变了这一性质。
 - Verify: 单测或集成测试证明两个并行会话在固定 temp 根下仍各自拥有独立的 `asyncDir`；
   若隔离确实被破坏，在此任务给出处理方式（例如在固定根之下保留 scope 子目录），

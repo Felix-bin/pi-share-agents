@@ -244,13 +244,19 @@ describe("synapse delegation", () => {
 		});
 	});
 
-	it("does not record a process-identity event or throw on a platform without /proc", () => {
+	it("records one process-identity event where /proc exists, none where it does not, and never throws", () => {
+		// The /proc-less branch itself is proven with an injected reader in
+		// synapse-metering.test.ts; here the real filesystem decides, so the
+		// expectation follows the platform instead of assuming one.
 		const delegation = open("synapse", "Task: explain the auth flow");
 		assert.ok(delegation);
-		assert.equal(
-			events().some((event) => event.kind === "process-identity"),
-			false,
-		);
+		const identities = events().filter((event) => event.kind === "process-identity");
+		if (fs.existsSync("/proc/self/stat")) {
+			assert.equal(identities.length, 1);
+			assert.equal(identities[0]?.kind === "process-identity" && identities[0].pid, process.pid);
+		} else {
+			assert.equal(identities.length, 0);
+		}
 	});
 
 	it("meters a cancelled run as cancelled rather than as a failure it never was", () => {

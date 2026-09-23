@@ -34,7 +34,7 @@
 
 ### Task 2: `process-identity` 计量事件
 
-- [ ] Change: `metering.ts` 的 `MeteringPayload` 增加 `process-identity` kind，
+- [x] Change: `metering.ts` 的 `MeteringPayload` 增加 `process-identity` kind，
       携带 `pid`、`startTicks`（`/proc/self/stat` 第 22 字段）、`uptimeAtRecordSeconds`
       （`/proc/uptime` 第一个字段）。在 `delegation.ts` 的 `createDelegationDeps` 中记录一次。
 - Verify: Linux 上父子两侧各产生一条事件且字段可解析；非 Linux 平台上 `/proc` 不存在时
@@ -44,7 +44,7 @@
 
 ### Task 3: trace 输出契约与解析器
 
-- [ ] Change: 定义采集器逐行 JSON 的线协议（`{pid, tid, startTicks, nsecs, syscall, fd, path?, bytes, ret}`），
+- [x] Change: 定义采集器逐行 JSON 的线协议（`{pid, tid, startTicks, nsecs, syscall, fd, path?, bytes, ret}`），
       实现解析器与边界校验。识别采集器的事件丢失报告行。
 - Verify: 固定样本输出能被正确解析；字段缺失、类型错误、超长行被拒绝而不是部分解析；
       **丢失报告行被识别**（这条是诚实性的关键路径，不能只靠真机撞上才发现）；
@@ -52,7 +52,7 @@
 
 ### Task 4: fd → path 映射与路径分类
 
-- [ ] Change: 从 trace 记录重建 `(pid, fd) → path`，并按存储根相对前缀分类为
+- [x] Change: 从 trace 记录重建 `(pid, fd) → path`，并按存储根相对前缀分类为
       envelope / content / memory-index / unclassified。`metering/` 与 `trace/` 显式排除。
 - Verify: 覆盖 spec §4.2 的全部边界——fd 继承、`dup`/`dup2`、进程退出清理、fd 关闭后复用；
       **临时文件归类**：写入先落在 `.<basename>.<pid>.<ms>.<rand>.tmp`、rename 后才成为最终路径，
@@ -63,7 +63,7 @@
 
 ### Task 5: 归因与判定
 
-- [ ] Change: 从 `process-identity` 事件建 `(pid, startTicks) → MeteringIdentity` 映射，
+- [x] Change: 从 `process-identity` 事件建 `(pid, startTicks) → MeteringIdentity` 映射，
       对齐两侧时钟（trace 的 boot-based `nsecs` 与 metering 的每进程 hrtime 不同源，
       经 `startTicks` + `uptimeAtRecordSeconds` 换算到同一 "since boot" 基准），
       产出归因结果与诊断。归因键封装在单个函数内，便于 S1 落地后替换为 cgroup id。
@@ -74,7 +74,7 @@
 
 ### Task 6: `aggregateWithKernelIo` 汇总出口
 
-- [ ] Change: 新增 `aggregateWithKernelIo(events, trace)`，返回既有 `MeteringTotals` 加内核侧分栏。
+- [x] Change: 新增 `aggregateWithKernelIo(events, trace)`，返回既有 `MeteringTotals` 加内核侧分栏。
       内核字节与 `envelopeBytes` **分栏，不相加**；`control.transportBytes` 保持 `"N/A"`。
 - Verify: 不带 trace 调用时输出与 `aggregateMetering` 逐字段一致；`aggregateMetering` 的签名
       与现有调用点均未改动；`transportBytes` 在任何输入下都是 `"N/A"`。
