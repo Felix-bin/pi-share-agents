@@ -687,7 +687,7 @@ async function consumeStateEnvelope(config: ChildRuntimeConfig, sessionId: strin
 			identity: { agent: synapse.agent, attempt: 1, childIndex: config.childIndex, runId: synapse.runId, sessionId },
 			k: params.k,
 			stateRecovery: "resend-then-text",
-			worktreeRoot: process.cwd(),
+			worktreeRoot: synapse.worktreePath ?? process.cwd(),
 		});
 	} catch (error) {
 		// consumeRetrieveState reports its own failures as outcomes; a throw here
@@ -823,7 +823,8 @@ export default function registerSubagentPromptRuntime(
 	// under its own identity rather than the parent's.
 	let synapseRegistration: SynapseToolsRegistration | undefined;
 	if (config.synapse && typeof pi.registerTool === "function") {
-		synapseRegistration = registerSynapseChildTools(pi, config.synapse, process.cwd());
+		// The parent's worktree, not this process's cwd (see SynapseChildContract.worktreePath).
+		synapseRegistration = registerSynapseChildTools(pi, config.synapse, config.synapse.worktreePath ?? process.cwd());
 	}
 	// The envelope is published after this session exists and immediately before
 	// the task is sent, so it is checked at the first agent turn rather than at

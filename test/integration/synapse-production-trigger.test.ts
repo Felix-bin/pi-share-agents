@@ -117,6 +117,11 @@ function logPath(): string {
 	return path.join(storageRoot, "metering", `${RUN_ID}.jsonl`);
 }
 
+/** The gates that kept the state plane off, in the order the passes met them. */
+function skipReasons(): string[] {
+	return readMeteringLog(logPath()).flatMap((event) => (event.kind === "state-skipped" ? [event.reason] : []));
+}
+
 /**
  * One launch through the seam. No tool list is passed: a launch's capability
  * comes from the contract, which is what the execution paths do too.
@@ -257,6 +262,7 @@ describe("synapse production trigger", () => {
 		assert.equal(opened.state, null, "a child without a state-consuming tool must not be offered state");
 		assert.ok(fs.existsSync(delegationInbox()), "the delegation delivery still happens");
 		assert.ok(!fs.existsSync(stateInbox()), "and no state envelope is written");
+		assert.deepEqual(skipReasons(), ["no-state-tool"], "the ledger names the gate rather than staying silent");
 	});
 
 	it("stays off outside synapse mode and without a pinned corpus", async () => {
@@ -269,6 +275,7 @@ describe("synapse production trigger", () => {
 		const unpinned = await trigger(synapseContract(CONSUMING_TOOLS, unpinnedConfig));
 		assert.equal(unpinned.state, null, "a contract with no pinned corpus must not send state");
 		assert.ok(!fs.existsSync(stateInbox()));
+		assert.deepEqual(skipReasons(), ["mode-not-synapse", "corpus-unset"]);
 	});
 
 	it("sends no state when the provider key is absent, without failing the run", async () => {
@@ -278,6 +285,7 @@ describe("synapse production trigger", () => {
 		assert.ok(opened.delegation, "a missing key must not cost the user their run");
 		assert.equal(opened.state, null);
 		assert.ok(!fs.existsSync(stateInbox()));
+		assert.deepEqual(skipReasons(), ["embedder-unavailable"]);
 	});
 
 	it("binds admission to the node and the sender, not to the session string the sender recorded", async () => {

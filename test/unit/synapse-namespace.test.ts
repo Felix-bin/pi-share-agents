@@ -102,4 +102,22 @@ describe("synapse namespace marker", () => {
 			fs.rmSync(other, { force: true, recursive: true });
 		}
 	});
+
+	it("refuses to claim another worktree's default store through an override", () => {
+		// A child whose cwd was its host's directory (pi-web) was handed the
+		// project's store as an override; it wrote a marker naming the host and the
+		// project was then refused its own store.
+		const owner = resolveStorageRoot({ agentDir, worktreePath: worktree });
+		const other = fs.mkdtempSync(path.join(os.tmpdir(), "synapse-wt2-"));
+		try {
+			assert.throws(
+				() => ensureNamespace(resolveStorageRoot({ agentDir, override: owner.root, worktreePath: other })),
+				/namespace-mismatch/,
+			);
+			assert.equal(fs.existsSync(path.join(owner.root, "namespace.json")), false);
+			ensureNamespace(owner);
+		} finally {
+			fs.rmSync(other, { force: true, recursive: true });
+		}
+	});
 });

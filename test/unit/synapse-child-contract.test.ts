@@ -56,6 +56,15 @@ describe("child contract resolution", () => {
 		assert.equal(resolveSynapseChildContract(input({ extensionConfig: { mode: "text" } })), null);
 	});
 
+	it("carries the worktree it resolved the store for, so the child need not trust its own cwd", () => {
+		// A host that runs pi in its own process (pi-web) starts children whose cwd
+		// is the host's directory; a child that used it wrote a namespace marker
+		// claiming the project's store for the host and then refused the store.
+		const contract = resolveSynapseChildContract(input());
+		assert.ok(contract);
+		assert.equal(contract.worktreePath, input().cwd);
+	});
+
 	it("carries the pinned corpus snapshot id, or the unset placeholder without one", () => {
 		assert.equal(resolveSynapseChildContract(input())?.contract.corpusSnapshotId, "unset");
 		const pinned = "a".repeat(64);

@@ -827,8 +827,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	registerWaitTool(pi, state, waitToolConfig.enabled, waitSubscriptionManager, waitToolConfig.defaultTimeoutMs);
 
 	let synapseOperations = 0;
+	// Resolved once: the tools below are registered from it, and the status line
+	// must describe exactly what they were registered with, not a later edit.
+	const synapseConfig = resolveSynapseConfig(config.synapse);
 	registerSynapseTools(pi, {
-		config: resolveSynapseConfig(config.synapse),
+		config: synapseConfig,
 		agentDir: getAgentDir(),
 		nextOperationId: () => `${state.currentSessionId ?? "no-session"}/${(synapseOperations += 1)}`,
 		resolveContext: () => {
@@ -1208,6 +1211,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			hasUI: ctx.hasUI === true,
 			runs: activeHerdrRuns(),
 		});
+		// One status line naming the SYNAPSE mode this session's tools run with, so
+		// a host UI (pi-web's status bar, the TUI footer) shows it next to the chat.
+		if (ctx.hasUI && synapseConfig.mode !== "off") {
+			ctx.ui.setStatus("synapse", `SYNAPSE ${synapseConfig.mode} · memory ${synapseConfig.memory} · ${synapseConfig.deliveryGear}`);
+		}
 		rpcBridge.emitReady(ctx);
 		supervisorChannel.start();
 		supervisorChannel.activateTransport();

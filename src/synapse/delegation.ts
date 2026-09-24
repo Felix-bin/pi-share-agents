@@ -666,7 +666,6 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 		receiverMayRead: contract.scope.pathPrefixes.length > 0,
 		sender,
 	});
-	if (negotiation.outcome === "refused") return null;
 	const deps = input.deps ?? { log: createMeteringLog(meteringLogPath(contract, identity.runId)) };
 	// The node id is derived from the run and child index rather than carried, so
 	// the address this side meters and the inbox the receiver reads cannot drift.
@@ -690,6 +689,12 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 			ok: probeOutcome.ok,
 			wired: input.receiverProbe !== undefined,
 		});
+	}
+	// A refusal publishes nothing, so this row is the only trace it leaves; the
+	// probe row above stays with it, since a refused round may still have probed.
+	if (negotiation.outcome === "refused") {
+		deps.log.record(meterIdentity, { kind: "state-skipped", reason: negotiation.reason });
+		return null;
 	}
 	const snapshot = freezeSnapshot({
 		capabilityId: negotiation.capabilityId,
@@ -728,6 +733,8 @@ export async function openRetrieveDelegation(input: OpenRetrieveInput): Promise<
 			messageId: identity.requestId,
 			textBytes: Buffer.byteLength(input.query, "utf-8"),
 		});
+		// The delivery row says what went out; this one says why it was not a state.
+		deps.log.record({ ...meterIdentity, snapshotId: snapshot.snapshotId }, { kind: "state-skipped", reason: negotiation.reason });
 		return { envelope, kind: "text", reason: negotiation.reason };
 	}
 

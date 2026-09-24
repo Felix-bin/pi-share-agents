@@ -86,6 +86,15 @@ export type SynapseChildContract = {
 	 * compared — the same launch must rank identically either way.
 	 */
 	vectorCache: boolean;
+	/**
+	 * The worktree the parent resolved the store for. The child's own memory
+	 * tools must use this, not their process's cwd: when pi runs inside another
+	 * host process (pi-web runs sessions in its server), the child's cwd can be
+	 * the host's directory, and the store's namespace check then refuses the
+	 * project's own store as "belongs to <host dir>". Optional so a contract
+	 * serialised by an older parent still loads; such a child falls back to cwd.
+	 */
+	worktreePath?: string;
 };
 
 export type ResolveChildContractInput = {
@@ -228,6 +237,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 		runId,
 		sessionId,
 		vectorCache: config.vectorCache,
+		worktreePath: resolved.worktreePath,
 	};
 }
 

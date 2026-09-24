@@ -13,6 +13,7 @@ import { readDeliveredEnvelope, stateEnvelopePath } from "../../src/synapse/enve
 import { createMemoryService, type MemoryService } from "../../src/synapse/memory-service.ts";
 import { aggregateMetering, createMeteringLog, readMeteringLog, type MeteringEvent } from "../../src/synapse/metering.ts";
 import { deriveNamespaceId } from "../../src/synapse/namespace.ts";
+import { stateQueryOf } from "../../src/synapse/state-query.ts";
 import type { ChildRuntimeConfig } from "../../src/runs/shared/child-runtime-config.ts";
 import { openChildDelegationWithState } from "../../src/runs/shared/synapse-delegation.ts";
 import { memoryVectorCacheFor, resetMemoryVectorCaches } from "../../src/synapse/vector-cache.ts";
@@ -215,7 +216,9 @@ function consume(
 		stateRecovery: deps.stateRecovery ?? "resend",
 		envelope: wire,
 		expectedSenderSessionId: synapse.sessionId,
-		fallbackQuery: QUERY,
+		// What the production receiver passes: the envelope's own query, which is the
+		// sender's state query rather than the raw message it was derived from.
+		fallbackQuery: stateQueryOf(QUERY).text,
 		identity: { agent: "retriever", attempt: 1, childIndex: 0, runId: RUN_ID, sessionId: "sess-child" },
 		k: K,
 		worktreeRoot: worktree,
@@ -280,7 +283,14 @@ beforeEach(async () => {
 	fs.writeFileSync(path.join(corpusRoot, "src", "a.md"), "# alpha\nshared memory plane observation one\n");
 	fs.writeFileSync(path.join(corpusRoot, "src", "b.md"), "# beta\ncoordination as compression observation two\n");
 	fs.writeFileSync(path.join(corpusRoot, "src", "c.md"), "# gamma\nresidual quantisation observation three\n");
-	const built = await buildCorpus({ corpusRoot, embedder, sourceCommit: SOURCE_COMMIT, storageRoot });
+	// A client of its own: the query text is byte-identical to chunk b, and a chunk
+	// embedded through `embedder` would sit in its cache, so the verification tests'
+	// changed provider answer would never reach the re-embed they exist to check.
+	const corpusEmbedder = createEmbeddingClient(
+		{ dim: DIM, endpoint: `http://127.0.0.1:${stub.port}/v1/embeddings`, keyEnv: "SYNAPSE_TEST_KEY", model: "BAAI/bge-m3", provider: "siliconflow" },
+		{ key: "stub-key" },
+	);
+	const built = await buildCorpus({ corpusRoot, embedder: corpusEmbedder, sourceCommit: SOURCE_COMMIT, storageRoot });
 	corpusSnapshotId = built.corpusSnapshotId;
 });
 

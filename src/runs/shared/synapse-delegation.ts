@@ -6,7 +6,8 @@ import { clearStateEnvelope, nodeIdFor } from "../../synapse/envelope-inbox.ts";
 import { meteringLogPath, modelUsageFrom, openDelegation, openRetrieveDelegation, type CloseDelegationInput, type OpenDelegation, type RetrieveSendResult, type SendDeps } from "../../synapse/delegation.ts";
 import { autoDistillOutput } from "../../synapse/auto-distill.ts";
 import { createCapabilityProbeCache, stateRetrievalProbeCheck } from "../../synapse/capability-probe.ts";
-import { createMeteringLog, type MeteringIdentity } from "../../synapse/metering.ts";
+import { createMeteringLog, type MeteringIdentity, type StateSkipReason } from "../../synapse/metering.ts";
+import { stateQueryOf } from "../../synapse/state-query.ts";
 import { createMemoryService } from "../../synapse/memory-service.ts";
 import { meteredEmbedder, resolveConfiguredEmbedder, type Embedder } from "../../synapse/embedding.ts";
 import type { ReceiptOutcome } from "../../synapse/handoff.ts";
@@ -153,8 +154,26 @@ export async function openChildRetrieveDelegation(input: OpenChildRetrieveInput)
 	} catch (error) {
 		// The catch is the boundary: the thrown value is turned into text here so
 		// nothing downstream has to handle an unparsed one.
-		warn(synapse.agent, "retrieve delegation", error instanceof Error ? error.message : String(error));
+		const detail = error instanceof Error ? error.message : String(error);
+		warn(synapse.agent, "retrieve delegation", detail);
+		// A console line is gone once the runner exits; the ledger is where a
+		// missing state is looked for, so the failure is recorded there too.
+		recordBestEffort(synapse, input.runtime.childIndex, { category: classifySynapseError(error), detail: `retrieve delegation: ${detail}`, kind: "error" });
 		return null;
+	}
+}
+
+/** The seam's own identity for rows it writes outside a delegation's log. */
+function seamIdentity(synapse: SynapseChildContract, childIndex: number | undefined): MeteringIdentity {
+	return { agent: synapse.agent, attempt: 1, mode: synapse.contract.mode, nodeId: nodeIdFor(synapse.runId, childIndex), runId: synapse.runId, sessionId: synapse.sessionId, snapshotId: null };
+}
+
+/** Metering a skip or a failure must never be what costs the launch. */
+function recordBestEffort(synapse: SynapseChildContract, childIndex: number | undefined, payload: Parameters<ReturnType<typeof createMeteringLog>["record"]>[1]): void {
+	try {
+		createMeteringLog(meteringLogPath(synapse.contract, synapse.runId)).record(seamIdentity(synapse, childIndex), payload);
+	} catch {
+		// Best effort, as above.
 	}
 }
 
@@ -260,14 +279,7 @@ async function openChildStateDelegation(input: OpenChildDelegationInput): Promis
 		return await openChildStateDelegationUnguarded(input, synapse);
 	} catch (error) {
 		warn(synapse.agent, "state delivery", error instanceof Error ? error.message : String(error));
-		try {
-			createMeteringLog(meteringLogPath(synapse.contract, synapse.runId)).record(
-				{ agent: synapse.agent, attempt: 1, mode: synapse.contract.mode, nodeId: nodeIdFor(synapse.runId, input.runtime.childIndex), runId: synapse.runId, sessionId: synapse.sessionId, snapshotId: null },
-				{ category: classifySynapseError(error), detail: `state delivery skipped: ${error instanceof Error ? error.message : String(error)}`, kind: "error" },
-			);
-		} catch {
-			// Metering the skip must never be what costs the launch.
-		}
+		recordBestEffort(synapse, input.runtime.childIndex, { category: classifySynapseError(error), detail: `state delivery skipped: ${error instanceof Error ? error.message : String(error)}`, kind: "error" });
 		try {
 			clearStateEnvelope(synapse.contract.storageRoot, synapse.runId, input.runtime.childIndex);
 		} catch {
@@ -282,17 +294,20 @@ async function openChildStateDelegationUnguarded(input: OpenChildDelegationInput
 	// the state inbox by path, not by request, so a payload a previous pass wrote
 	// for this node would be consumed here as though this pass had sent it. The
 	// text branch clears for itself; this covers every path that never reaches it.
-	const publishNothing = (): null => {
+	// Each host gate names itself in the ledger: otherwise a role kept on text by
+	// design and a store missing its corpus or key leave the same empty trace.
+	const publishNothing = (reason?: StateSkipReason): null => {
 		clearStateEnvelope(synapse.contract.storageRoot, synapse.runId, input.runtime.childIndex);
+		if (reason !== undefined) recordBestEffort(synapse, input.runtime.childIndex, { kind: "state-skipped", reason });
 		return null;
 	};
-	if (synapse.contract.mode !== "synapse") return publishNothing();
-	if (synapse.contract.corpusSnapshotId === "unset") return publishNothing();
+	if (synapse.contract.mode !== "synapse") return publishNothing("mode-not-synapse");
+	if (synapse.contract.corpusSnapshotId === "unset") return publishNothing("corpus-unset");
 	// The gate reads the same list the contract froze: the child's real tools,
 	// the extension's included.
-	if (!childConsumesState(synapse.capabilityTools)) return publishNothing();
+	if (!childConsumesState(synapse.capabilityTools)) return publishNothing("no-state-tool");
 	const embedder = resolveConfiguredEmbedder(synapse.embedding, synapse.contract.storageRoot);
-	if (embedder === undefined) return publishNothing();
+	if (embedder === undefined) return publishNothing("embedder-unavailable");
 	// With the switch off the call is byte-for-byte the one this seam made before
 	// residuals were reachable: no deps, therefore no base, therefore the existing
 	// no-base branch and a full vector.
@@ -328,7 +343,9 @@ async function openChildStateDelegationUnguarded(input: OpenChildDelegationInput
 		// The child reads the corpus itself, so the count is the same one the
 		// memory tool would return by default rather than a second policy.
 		k: SYNAPSE_DEFAULT_SEARCH_K,
-		query: input.message,
+		// The query, not the whole message: one embedding of a full plan averages
+		// its steps into a direction that ranks generic chunks. See state-query.ts.
+		query: stateQueryOf(input.message).text,
 		receiverProbe,
 		receiverSessionId: input.receiverSessionId,
 		runtime: input.runtime,

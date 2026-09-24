@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { canonicalDigest } from "./canonical-json.ts";
+import type { RefusalReason } from "./capability.ts";
 import type { SynapseMode } from "./config.ts";
 import type { SynapseErrorClassification } from "./errors.ts";
 import { LAUNCH_DEGRADED_REASON_ENV, LAUNCH_STORAGE_ROOT_ENV, LAUNCH_TOPOLOGY_ENV } from "../shared/launch-topology.ts";
@@ -24,12 +25,20 @@ import type { StateFallbackReason } from "./state-payload.ts";
 /**
  * Bumped to 2 when `object-io` gained the `payload-read` purpose, to 3 when the
  * `vector-cache` kind was added, to 4 when the `capability-probe` kind was
- * added, and to 5 when `capability-probe` gained `wired`/`durationMs`. Every
- * change is additive: each field that existed before kept its meaning, so an
- * older log still aggregates (a component it never recorded is reported as 0)
- * and the frozen full-account definition is unaffected.
+ * added, to 5 when `capability-probe` gained `wired`/`durationMs`, and to 6
+ * when the `state-skipped` kind was added. Every change is additive: each field
+ * that existed before kept its meaning, so an older log still aggregates (a
+ * component it never recorded is reported as 0) and the frozen full-account
+ * definition is unaffected.
  */
-export const SYNAPSE_METERING_SCHEMA_VERSION = 5;
+export const SYNAPSE_METERING_SCHEMA_VERSION = 6;
+
+/**
+ * Why a launch's state plane published nothing. The first four are the host's
+ * own gates, answered before any negotiation; the rest are the negotiation's
+ * verdicts, refusal and text fallback alike, carried under their own names.
+ */
+export type StateSkipReason = "mode-not-synapse" | "corpus-unset" | "no-state-tool" | "embedder-unavailable" | RefusalReason;
 
 /** A number that was never reported, as distinct from a reported zero. */
 export type Unavailable = "unavailable";
@@ -185,6 +194,14 @@ export type MeteringPayload =
 	 * critical path at all. Absent on events written before schema 5.
 	 */
 	| { durationMs?: number; kind: "capability-probe"; ok: boolean; wired?: boolean }
+	/**
+	 * A launch whose state plane sent nothing, with the gate that decided it.
+	 * Without it, a role the design keeps on text, a store with no pinned corpus
+	 * and a missing provider key all leave the same ledger: no state events at
+	 * all. It is not a state event — nothing was prepared or sent — and it is not
+	 * an error; failures keep their own `error` rows.
+	 */
+	| { kind: "state-skipped"; reason: StateSkipReason }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
 
 export type MeteringEvent = MeteringIdentity &

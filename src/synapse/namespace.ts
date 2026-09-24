@@ -18,6 +18,7 @@ import { writeAtomicJson } from "../shared/atomic-json.ts";
 
 const NAMESPACE_ID_LENGTH = 16;
 const NAMESPACE_MARKER = "namespace.json";
+const NAMESPACE_ID_PATTERN = new RegExp(`^[0-9a-f]{${NAMESPACE_ID_LENGTH}}$`);
 
 export type StorageRootSource = "default" | "override";
 
@@ -101,6 +102,16 @@ export function ensureNamespace(resolved: ResolvedStorageRoot): void {
 	try {
 		raw = fs.readFileSync(markerPath, "utf-8");
 	} catch {
+		// A directory named for another namespace id is that worktree's default
+		// store, reached here through an override (a child handed its parent's
+		// root). Writing our marker there would claim it for us and lock its owner
+		// out, so refuse before creating anything.
+		const dirName = path.basename(resolved.root);
+		if (NAMESPACE_ID_PATTERN.test(dirName) && dirName !== resolved.namespaceId) {
+			throw new Error(
+				`namespace-mismatch: ${resolved.root} is the store of namespace ${dirName}, not ${resolved.namespaceId} (${resolved.worktreePath})`,
+			);
+		}
 		fs.mkdirSync(resolved.root, { recursive: true });
 		writeAtomicJson(markerPath, {
 			namespaceId: resolved.namespaceId,

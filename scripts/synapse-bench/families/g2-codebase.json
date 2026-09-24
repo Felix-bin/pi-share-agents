@@ -1,0 +1,146 @@
+{
+  "group": "G2",
+  "title": "pi-share-agents 代码分析链（SYNAPSE 协议到计量）",
+  "description": "十轮逐级依赖的代码分析：信封协议 → 能力协商 → 状态载荷编码 → 记忆记录 schema → 源指纹有效性 → 检索打分 → 记忆交接 → 计量汇总 → 宿主侧蒸馏 → 配置解析与端到端数据流。每轮只给任务文本，上一轮的结论只能经由共享记忆（SYN）或流水线内部的文本交接获得。executor 可用 bash 读真实文件（如 sed -n、grep、sha256sum），记忆带源指纹，能展示 current / stale。",
+  "pathConvention": "anchors 相对于工作树根（pi-share-agents 仓库副本）",
+  "scoring": "score = 答对的要点数 / 要点数；答案陈述了该事实或其精确等价表述即算对；多出的正确细节不加分也不扣分；被探查的常量给错数字则该要点不得分",
+  "tasks": [
+    {
+      "index": 1,
+      "title": "信封协议",
+      "task": "分析 src/synapse/envelope.ts 定义的 SYNAPSE 信封协议：线上形式 EnvelopeWire 有哪些字段、协议版本号与 memoryRefs 上限是多少、inputParams 以什么形式上线以及为什么、envelopeBytes 如何计算、未知字段如何处理，以及 id 字段的格式约束。",
+      "dependsOn": [],
+      "anchors": ["src/synapse/envelope.ts"],
+      "keypoints": [
+        "SYNAPSE_PROTOCOL_VERSION = 2，SYNAPSE_MAX_MEMORY_REFS = 32",
+        "字段含 action（delegate | retrieve）、attempt、capabilityId、corpusSnapshotId、inputParamsJson、memoryRefs、namespaceId、nodeId、ownerRunId、protocolVersion、receiverSessionId、requestId、runId、senderSessionId、snapshotId、stateRef（可为 null）",
+        "inputParams 以 canonical JSON 文本（inputParamsJson）上线，使同样的参数只有一种字节表示、同一摘要与同一计量成本",
+        "envelopeBytes = JSON.stringify(wire) 的 UTF-8 字节数，控制开销从不按免费计",
+        "schema 为 additionalProperties: false，未知字段被拒绝而非忽略；memoryId / payloadId / sha256 / capabilityId / snapshotId 为 64 位十六进制，namespaceId 为 16 位十六进制"
+      ]
+    },
+    {
+      "index": 2,
+      "title": "能力协商",
+      "task": "在上一轮得出的信封字段结论（特别是 action 与 stateRef）基础上，分析 src/synapse/capability.ts 的 negotiate：它按什么顺序做判定、各返回 state / text / refused 的哪种结果与原因码、capabilityId 由哪些字段摘要而来、以及声明的 delta 编码会不会被协商选中。",
+      "dependsOn": [1],
+      "anchors": ["src/synapse/capability.ts"],
+      "keypoints": [
+        "先查授权：receiverMayRead 为 false → refused receiver-unauthorised；mode off → refused mode-off；接收方不支持 action → refused action-unsupported",
+        "mode text → text（mode-text）；action 不是 retrieve → text（action-needs-no-state）；任一方未声明 float32-vector → no-common-encoding；representationId 不同 → representation-mismatch；接收方不消费状态 → receiver-cannot-consume-state；probe 验证为 false → probe-unverified",
+        "allowTextFallback 为 false 时上述 text 结果变为 refused；全部通过才得 { outcome: state, encoding: float32-vector }",
+        "capabilityId = canonicalDigest(actions, consumerVersion, consumesState, encodings, representationId)，不含 agent 名与 probe 列表；actions/encodings 去重排序",
+        "SYNAPSE_ENCODINGS = text、float32-vector、delta；delta 只是预先声明，negotiate 从不返回 delta"
+      ]
+    },
+    {
+      "index": 3,
+      "title": "状态载荷编码",
+      "task": "在上一轮得出的『协商只会选中 float32-vector』结论基础上，分析 src/synapse/state-payload.ts 与 envelope.ts 的 stateRef 校验：full vector 的字节布局与长度约束、发送方何时改发 delta 残差、各回落原因码、delta 必须携带什么，以及配置中 delta 的默认值。",
+      "dependsOn": [2],
+      "anchors": ["src/synapse/state-payload.ts", "src/synapse/envelope.ts", "src/synapse/config.ts"],
+      "keypoints": [
+        "full vector 为小端 float32，stateRef.byteLength 必须等于 dim × 4，否则 assertStateRef 抛错",
+        "只有 base 存在、base.representationId 相同、残差小于全向量且不超过全向量的一半（SYNAPSE_DELTA_MAX_PAYLOAD_SHARE = 0.5）时才发 delta",
+        "回落原因：no-base、base-space-mismatch、delta-payload-not-smaller、delta-too-large-a-share-of-the-vector",
+        "delta 必须带 baseMemoryId（否则无法解码），byteLength 不得超过全向量；media type 为 application/x-synapse-delta",
+        "synapse.delta 默认 false（SYNAPSE_DEFAULT_DELTA）"
+      ]
+    },
+    {
+      "index": 4,
+      "title": "记忆记录 schema",
+      "task": "在上一轮关于 delta 需要 baseMemoryId（一条记忆记录的 id）的结论基础上，分析 src/synapse/memory-store.ts 的记忆记录 MemoryRecord：字段、kind 与 assurance 的取值、recordStatus 从哪里来、supersession 的原因码、记录与事件存放在哪些目录，以及一次最多加载多少条。",
+      "dependsOn": [3],
+      "anchors": ["src/synapse/memory-store.ts"],
+      "keypoints": [
+        "字段：assurance、contentId、createdAt、embedding（{dim, objectId, representationId} 或 null）、kind、memoryId、provenance（agent、attempt、runId、sessionId）、recordStatus、source（源指纹或 null）、summary、tags、taskTopic",
+        "kind ∈ evidence、tool-result、conclusion、strategy；assurance ∈ observation、derived，刻意没有『accepted』",
+        "recordStatus（active | superseded | conflict）不存储在记录里，而是加载时重放 supersession 事件得出，记录本身不可变",
+        "supersession 原因 ∈ source-changed、superseded-by-newer-observation、corrected；记录在 memory/，事件在 supersessions/，文件名为 <64hex>.json",
+        "SYNAPSE_DEFAULT_MAX_LOADED_RECORDS = 1000"
+      ]
+    },
+    {
+      "index": 5,
+      "title": "源指纹与有效性",
+      "task": "在上一轮得出的记录 source 字段结论基础上，分析 src/synapse/source-fingerprint.ts：指纹由什么计算、为什么不用 commit id、checkSource 的三种状态与不可用原因、越界路径与 Windows 分隔符如何处理。请让 executor 用 sha256sum 计算 src/synapse/retrieval.ts 当前的摘要与字节数，说明它与一条带该 sourcePath 的记忆如何判为 current 或 stale。",
+      "dependsOn": [4],
+      "anchors": ["src/synapse/source-fingerprint.ts"],
+      "keypoints": [
+        "指纹 = 工作树中实际字节的 SHA-256 加 byteLength 与相对 path，不是 commit id：未提交的修改同样改变证据",
+        "checkSource 返回 current（摘要与字节数都相同）、stale（附当前指纹）或 unavailable（source-missing | source-unreadable）",
+        "离开工作树根的路径抛 outside-root；反斜杠被当作分隔符归一化，跨平台不会误报 source-missing",
+        "sha256sum 结果按实际输出报告，并说明与记录中的 digest/byteLength 比较决定 current / stale"
+      ]
+    },
+    {
+      "index": 6,
+      "title": "检索打分",
+      "task": "在上一轮得出的『记录有 current/stale 有效性、summary/taskTopic/tags 字段』结论基础上，分析 src/synapse/retrieval.ts 的 searchMemories：分词规则、相似度函数、keyword 分量如何取、无向量与有向量两套权重、授权与已被取代记录如何处理、同分如何排序，以及为什么不用 IDF。",
+      "dependsOn": [5],
+      "anchors": ["src/synapse/retrieval.ts", "src/synapse/config.ts"],
+      "keypoints": [
+        "分词：小写后取拉丁字母/数字串或单个 CJK 汉字，去重排序；中文不做词典分词",
+        "相似度为 Jaccard；keyword = max(jaccard(query, summary), jaccard(query, taskTopic))，tag 为规范化标签的 Jaccard",
+        "无向量时 score = 0.6·keyword + 0.4·tag，semantic 分量报 \"unavailable\"；有向量时 0.3·keyword + 0.2·tag + 0.5·cosine（冻结权重），无向量的记录 semantic 记 0 而不被丢弃",
+        "先按 scope 做 isReadable 授权再打分；非 active 记录除非 includeSuperseded 否则排除；score ≤ 0 丢弃；同分按 memoryId 升序",
+        "不使用 IDF 等语料统计量，使同一查询对同一记录的分数不随库增长漂移，可从日志复算"
+      ]
+    },
+    {
+      "index": 7,
+      "title": "记忆交接",
+      "task": "在上一轮得出的检索打分与排序结论基础上，分析 src/synapse/handoff.ts 的 prepareHandoffContext：text 档与 synapse 档注入给子 Agent 的记忆段有何不同、哪些候选会被排除、预算作用在哪里以及默认多大、条目如何截断，以及两档为何共用同一个段标题。",
+      "dependsOn": [6],
+      "anchors": ["src/synapse/handoff.ts", "src/synapse/config.ts"],
+      "keypoints": [
+        "每条为 `- [memoryId 前 12 位] (sourceAgent · sourcePath) summary`；text 档在其后内联 readBody 读出的正文，synapse 档只给引用行",
+        "只注入 validity 为 current 的候选，stale 的计入 excludedByValidity 但仍可按需检索",
+        "预算只作用于记忆段，不截短用户任务；contextBudgetBytes 默认 8192；只放整条，放不下的计入 omitted",
+        "MEMORY_SECTION_HEADER 两档相同，使模型分辨不出是哪一侧拼的段，避免把框架差异误当作传输效果；receipt 摘要上限 SYNAPSE_RECEIPT_SUMMARY_BYTES = 2048"
+      ]
+    },
+    {
+      "index": 8,
+      "title": "计量汇总",
+      "task": "在上一轮得出的『text 档内联正文、synapse 档只传引用』结论基础上，分析 src/synapse/metering.ts 的 aggregateMetering 如何把这种差异计入账本：message-delivered 的两个字节字段分别累加到哪里、transportBytes 何时为 N/A、模型用量何时为 unavailable、记忆命中率与跨 Agent 复用如何计算、重复投递如何识别、时长取哪个写入方。",
+      "dependsOn": [7],
+      "anchors": ["src/synapse/metering.ts"],
+      "keypoints": [
+        "message-delivered 的 textBytes 累加到 text.handoffBytes，envelopeBytes 累加到 control.envelopeBytes",
+        "没有 transport-bytes 事件时 control.transportBytes 为 \"N/A\"；model-usage 缺失或 usage 为 null 时 parent/child 用量为 \"unavailable\"，model.complete 需双方都报告",
+        "memory.hitRate = 有 authorisedValidHits > 0 的 memory-query 数 / memory-query 总数，查询为 0 时为 \"N/A\"；memory-reuse 的 sourceAgent ≠ agent 时计 crossAgentReuses",
+        "重复投递按 runId/nodeId/attempt/messageId 键识别，计入 duplicateDeliveries 而不重复计 delivered",
+        "duration 只取开 task-span 的父写入方的 monotonicMs 跨度；未结束的任务记 unavailable 并列入 unfinishedTasks；schemaVersion 为 5"
+      ]
+    },
+    {
+      "index": 9,
+      "title": "宿主侧记忆蒸馏",
+      "task": "在上一轮得出的记忆命中率与复用计量结论基础上，分析 src/synapse/auto-distill.ts：为什么需要宿主侧蒸馏、distillMemoryLines 的抽取规则与上限、嵌入失败时怎么办、这次写入的权限属于谁，以及它由哪个配置开关控制、默认值是什么、会记下什么计量事件。",
+      "dependsOn": [8],
+      "anchors": ["src/synapse/auto-distill.ts", "src/synapse/config.ts", "src/synapse/metering.ts"],
+      "keypoints": [
+        "动机：P50 实测模型几乎从不主动调用 remember 工具，依赖模型自觉的记忆面积累不到任何东西，所以由宿主在委派完成后确定性写入",
+        "规则：有 ESTABLISHED: 块时取到 NOT ESTABLISHED: 为止的非空行，否则取长度 ≥ 20 字符的列表项行；最多 12 行，每行最多 400 字符（超出截断加省略号）",
+        "嵌入失败时仍以 null 向量落库（关键词与标签仍可召回）并给警告；存储失败只是警告，不让委派失败",
+        "写入权限属于宿主（操作者打开的开关），不查子 Agent 的 scope；开关为 synapse.autoDistill，默认 false；计量事件为 memory-distill {written, withoutVector}"
+      ]
+    },
+    {
+      "index": 10,
+      "title": "配置解析与端到端数据流",
+      "task": "综合前九轮的结论（信封、协商、状态载荷、记忆 schema、源指纹、检索、交接、计量、蒸馏），先分析 src/synapse/config.ts 的 resolveSynapseConfig 与 src/synapse/namespace.ts 的 resolveStorageRoot（模式与记忆默认值、非法组合、未知键、embedding 提供方、storageRoot 规则、namespaceId 的推导与默认存储根），再按顺序描述一次 text 档与一次 synapse 档委派从配置到账本的端到端数据流，并指出两档在账本上可比的字段。",
+      "dependsOn": [9],
+      "anchors": ["src/synapse/config.ts", "src/synapse/namespace.ts", "src/synapse/child-contract.ts"],
+      "keypoints": [
+        "mode ∈ off、text、synapse，默认 off；memory 未显式设置时随 mode（synapse → project，其余 → off）；mode off 且 memory project 抛错",
+        "未知键被拒绝（`synapse.<key> is not a known setting`），而不是忽略；embedding.provider 仅 paratera / siliconflow，测试桩提供方被拒绝",
+        "storageRoot 须为绝对路径或 ~/ 开头；namespaceId = sha256(规范化 worktree 路径) 前 16 位十六进制；未覆盖时存储根为 <agentDir>/synapse/<namespaceId>",
+        "mode off 或 memory off 时不签发 child contract、不写账本；text + memory project 同样签发 contract 并写账本，所以两档有同口径账本",
+        "可比字段：messages.delivered、text.handoffBytes、control.envelopeBytes、state.sent/sentBytes、memory.queries/reuses/hitRate、model 用量；差异来自交接段是否内联正文与是否走状态面"
+      ]
+    }
+  ]
+}

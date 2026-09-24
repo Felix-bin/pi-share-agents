@@ -304,6 +304,49 @@ describe("synapse retrieve seam", () => {
 		);
 	});
 
+	it("records the refusal when the receiver's role cannot serve a retrieve, probe verdict included", async () => {
+		// executor declares the vector encoding and holds synapse_read, so its probe
+		// runs; it is still delegate-only, which the negotiation refuses.
+		const embedder = createEmbeddingClient(embeddingConfig, { key: "stub" });
+		const pinned = { ...contractFor("synapse"), corpusSnapshotId: "a".repeat(64), representationId: embedder.representationId };
+		const result = await openRetrieveDelegation({
+			contract: pinned,
+			deps: { log: createMeteringLog(meteringLogPath(contractFor("synapse"), RUN_ID)) },
+			embedder,
+			identity: identity({ agent: "executor", childTools: ["read", "synapse_read"] }),
+			k: 3,
+			query: "any query",
+			receiverProbe: () => true,
+			worktreeRoot: worktree,
+		});
+		assert.equal(result, null);
+		const recorded = events().filter((event) => event.kind !== "process-identity");
+		assert.deepEqual(recorded.map((event) => event.kind), ["capability-probe", "state-skipped"]);
+		const skipped = recorded[1];
+		assert.ok(skipped?.kind === "state-skipped");
+		assert.equal(skipped.reason, "action-unsupported");
+	});
+
+	it("records why a negotiated text fallback carried no state", async () => {
+		const embedder = createEmbeddingClient(embeddingConfig, { key: "stub" });
+		const pinned = { ...contractFor("synapse"), corpusSnapshotId: "a".repeat(64), representationId: embedder.representationId };
+		const result = await openRetrieveDelegation({
+			contract: pinned,
+			deps: { log: createMeteringLog(meteringLogPath(contractFor("synapse"), RUN_ID)) },
+			embedder,
+			// No synapse_read: the retriever cannot consume, so the round falls to text.
+			identity: identity({ childTools: ["read"] }),
+			k: 3,
+			query: "any query",
+			worktreeRoot: worktree,
+		});
+		assert.ok(result?.kind === "text");
+		assert.equal(result.reason, "receiver-cannot-consume-state");
+		const skipped = events().find((event) => event.kind === "state-skipped");
+		assert.ok(skipped?.kind === "state-skipped");
+		assert.equal(skipped.reason, "receiver-cannot-consume-state");
+	});
+
 	it("bridges through openChildRetrieveDelegation or degrades to null, never loses the run", async () => {
 		// A runtime without the synapse contract returns null: upstream keeps its
 		// text behaviour, the same totality the delegate seam guarantees.
