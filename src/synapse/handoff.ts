@@ -69,8 +69,20 @@ export type ReceiptInput = {
 	outcome: ReceiptOutcome;
 	outputRef: ReceiptOutputRef | null;
 	persistence: PersistenceStatus;
+	result?: ReceiptResult | null;
 	snapshotId: string;
 	summary: string;
+};
+
+/**
+ * The result half of the protocol for an intermediate stage: the status lines
+ * the orchestrator was handed and the memory that holds the whole output.
+ */
+export type ReceiptResult = {
+	/** The ESTABLISHED lines the result block carried. */
+	established: string[];
+	memoryId: string;
+	status: "completed";
 };
 
 export type Receipt = {
@@ -81,6 +93,8 @@ export type Receipt = {
 	outcome: ReceiptOutcome;
 	outputRef: { bytes: number; contentId: string } | null;
 	persistence: PersistenceStatus;
+	/** Present only when the stage handed over a result block; see stage-result.ts. */
+	result: ReceiptResult | null;
 	snapshotId: string;
 	summary: string;
 	summaryTruncated: boolean;
@@ -168,6 +182,8 @@ export function buildReceipt(input: ReceiptInput): Receipt {
 		outcome: input.outcome,
 		outputRef: verifiedOutput && input.outputRef !== null ? { bytes: input.outputRef.bytes, contentId: input.outputRef.contentId } : null,
 		persistence,
+		// A result without its stored output is a claim with nothing behind it.
+		result: verifiedOutput ? (input.result ?? null) : null,
 		snapshotId: input.snapshotId,
 		summary: summary.text,
 		summaryTruncated: summary.truncated,

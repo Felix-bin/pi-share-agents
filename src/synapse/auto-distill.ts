@@ -83,7 +83,8 @@ export type AutoDistillResult = {
 	withoutVector: number;
 };
 
-const taskTopicOf = (taskText: string): string => {
+/** The topic a record is filed under: the delegated task's first 80 characters, whitespace collapsed. */
+export const taskTopicOf = (taskText: string): string => {
 	const trimmed = taskText.replace(/\s+/g, " ").trim();
 	return trimmed.length > 0 ? trimmed.slice(0, 80) : "unattributed-task";
 };

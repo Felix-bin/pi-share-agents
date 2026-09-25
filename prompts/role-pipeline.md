@@ -15,6 +15,7 @@ Rules for the pipeline:
 - Hand over artefacts, not conversation. A stage receives the previous stage's output; it does not receive your reasoning about it.
 - If a stage reports that it could not establish something, carry that forward verbatim. A later stage must not quietly upgrade "not established" to "established".
 - If shared memory is enabled (`/synapse-setup` reports a mode other than `off`), each child is handed the memory the host recalled for its task automatically, and can record new findings itself. Do not paste memory contents between stages by hand; that is what the store is for.
+- When shared memory is in `synapse` mode, the planner, retriever and executor return a `[SYNAPSE result]` block instead of their whole output: what the stage established, what it did not, and a handle to the full text in the store. That block is the stage's artefact — hand it to the next stage as it is. Do not read the full text yourself to paste it on; a stage that needs the detail reads it by the handle.
 - Stop the pipeline and report if a stage escalates a decision that blocks the next stage. An unapproved product, architecture or scope decision belongs to me. An ambiguity in how to read the task is not such a decision: the stage picks the reading the worktree supports best, says so, and the pipeline continues. Do not add escalation instructions of your own to a stage's task.
 - Keep every stage on the task's goal. Checking a claim serves the answer; it does not replace it — an "introduce" task still ends in an introduction, not an audit.
 

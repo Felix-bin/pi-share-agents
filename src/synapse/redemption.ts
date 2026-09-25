@@ -57,9 +57,18 @@ export type RedemptionResult = {
 	section: string;
 };
 
+/**
+ * How much of a redeemed body the child's prompt carries. A longer body is
+ * previewed and named: the child reads it by handle only when it needs it, so a
+ * recalled record costs its preview rather than its whole text on every call.
+ */
+export const SYNAPSE_REDEMPTION_PREVIEW_BYTES = 300;
+
 export type RedemptionInput = {
 	budgetBytes: number;
 	memoryRefs: readonly string[];
+	/** Defaults to SYNAPSE_REDEMPTION_PREVIEW_BYTES. */
+	previewBytes?: number;
 	/**
 	 * Reads one body. Must be backed by a MemoryService carrying this child's own
 	 * scope; it is injected so that the budget arithmetic and the classification
@@ -68,10 +77,21 @@ export type RedemptionInput = {
 	readBody: (memoryId: string) => string;
 };
 
-function entryFor(memory: RedeemedMemory): string {
+/** The longest prefix within `maxBytes` that does not split a character. */
+function utf8Prefix(text: string, maxBytes: number): string {
+	const bytes = Buffer.from(text, "utf-8");
+	if (bytes.byteLength <= maxBytes) return text;
+	let end = maxBytes;
+	while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+	return bytes.subarray(0, end).toString("utf-8");
+}
+
+function entryFor(memory: RedeemedMemory, previewBytes: number): string {
 	// The handle is echoed alongside the body so a reader of the transcript can
 	// tell which record a passage came from — the parent no longer says.
-	return `- [${memory.memoryId.slice(0, 12)}]\n  ${memory.text}`;
+	const total = Buffer.byteLength(memory.text, "utf-8");
+	if (total <= previewBytes) return `- [${memory.memoryId.slice(0, 12)}]\n  ${memory.text}`;
+	return `- [${memory.memoryId.slice(0, 12)}] (${total} B; full: synapse_read {"action":"get","memoryId":"${memory.memoryId}"})\n  ${utf8Prefix(memory.text, previewBytes)}…`;
 }
 
 export function redeemMemoryRefs(input: RedemptionInput): RedemptionResult {
@@ -104,7 +124,7 @@ export function redeemMemoryRefs(input: RedemptionInput): RedemptionResult {
 			continue;
 		}
 		const memory: RedeemedMemory = { memoryId, text };
-		const entry = entryFor(memory);
+		const entry = entryFor(memory, input.previewBytes ?? SYNAPSE_REDEMPTION_PREVIEW_BYTES);
 		const addition = Buffer.byteLength(entries.length === 0 ? entry : `\n${entry}`, "utf-8");
 		// Whole entries only, as on the sending side: half a body is not evidence,
 		// and a truncated one reads as though the record said less than it does.

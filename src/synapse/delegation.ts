@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { STAGE_OUTPUT_TAG } from "./stage-result.ts";
 import * as path from "node:path";
 import { writeAtomicJson } from "../shared/atomic-json.ts";
 import { negotiate, type CapabilityDeclaration, type NegotiationResult, type TextFallbackReason } from "./capability.ts";
@@ -84,6 +85,8 @@ export type CloseDelegationInput = {
 	/** The failure, when there was one; classified rather than interpreted. */
 	cause?: unknown;
 	outcome: ReceiptOutcome;
+	/** The stage result the host published for this delegation, when it produced one (stage-result.ts). */
+	stage?: { bytes: number; contentId: string; established: string[]; memoryId: string };
 	summary: string;
 	usage: ModelUsage | null;
 };
@@ -178,7 +181,9 @@ function candidatesFor(service: MemoryService, message: string): HandoffCandidat
 	// A query search types as the memory ranking, so the state shape cannot
 	// appear on this path; the input decides the output shape.
 	const found = service.search({ query: message });
-	return found.results.map((hit) => ({
+	// A stage output is reached by the handle its result block names, never by
+	// recall: recalling one would put a whole earlier output back into the prompt.
+	return found.results.filter((hit) => !hit.tags.includes(STAGE_OUTPUT_TAG)).map((hit) => ({
 		contentId: hit.contentId,
 		memoryId: hit.memoryId,
 		score: hit.score,
@@ -403,11 +408,12 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 				memoryRefs: handoff.refs,
 				meteringRef: deps.log.path,
 				outcome: closeInput.outcome,
-				// This build publishes no output object, so there is nothing to verify
-				// and nothing to reference; claiming otherwise is the one thing a
-				// receipt must never do.
-				outputRef: null,
-				persistence: "skipped",
+				// An intermediate stage's output is a stored object the host just wrote
+				// and can name; anything else publishes no output object, so there is
+				// nothing to verify and nothing to reference.
+				outputRef: closeInput.stage === undefined ? null : { bytes: closeInput.stage.bytes, contentId: closeInput.stage.contentId, verified: true },
+				persistence: closeInput.stage === undefined ? "skipped" : "stored",
+				result: closeInput.stage === undefined ? null : { established: [...closeInput.stage.established], memoryId: closeInput.stage.memoryId, status: "completed" },
 				snapshotId: snapshot.snapshotId,
 				summary: closeInput.summary,
 			});

@@ -140,6 +140,20 @@ export type MeteringPayload =
 	 * hit rate over a memory nothing ever wrote to measures nothing.
 	 */
 	| { kind: "memory-distill"; withoutVector: number; written: number }
+	/**
+	 * One intermediate stage's result: its whole output went into the store as
+	 * `memoryId` and the orchestrator received `renderedBytes` in its place.
+	 * `fallback` names why a stage that should have produced a result handed its
+	 * output back whole instead; `memoryId` is null then.
+	 */
+	| { fallback?: string; fullBytes: number; kind: "stage-result"; memoryId: string | null; renderedBytes: number }
+	/**
+	 * Recalled memory the child's own host redeemed from the envelope's refs and
+	 * put into the child's system prompt. It never crosses the wire the task
+	 * travels on, which is why `text.handoffBytes` cannot see it; without this
+	 * event the synapse arm's recalled context would be invisible to the account.
+	 */
+	| { bytes: number; kind: "memory-redeem"; records: number }
 	| {
 			bytes: number;
 			direction: "read" | "write";
@@ -538,7 +552,9 @@ export type MeteringTotals = {
 	embedding: { costUsd: number | Unavailable; durationMs: number; failed: number; inputTokens: number | Unavailable; requests: number };
 	errors: Record<string, number>;
 	fullAccount: FullAccount;
-	memory: { crossAgentReuses: number; distilled: number; distilledWithoutVector: number; hitRate: number | NotApplicable; queries: number; reuses: number };
+	memory: { crossAgentReuses: number; distilled: number; distilledWithoutVector: number; hitRate: number | NotApplicable; queries: number; redeemedBytes: number; reuses: number };
+	/** Stage results: how many, what the orchestrator received against what the stages wrote, and how many fell back to the whole output. */
+	stageResults: { count: number; fallbacks: number; fullBytes: number; renderedBytes: number };
 	messages: { delivered: number; duplicateDeliveries: number; failed: number; received: number };
 	model: { child: UsageTotals; complete: boolean; parent: UsageTotals; totalCost: number | Unavailable };
 	state: {
@@ -652,7 +668,8 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			hotBase: { bytesIfBaseResident: 0, derived: true, note: HOT_BASE_NOTE },
 			notNamed: { payloadReadBytes: 0, rankingReadBytes: 0 },
 		},
-		memory: { crossAgentReuses: 0, distilled: 0, distilledWithoutVector: 0, hitRate: "N/A", queries: 0, reuses: 0 },
+		memory: { crossAgentReuses: 0, distilled: 0, distilledWithoutVector: 0, hitRate: "N/A", queries: 0, redeemedBytes: 0, reuses: 0 },
+		stageResults: { count: 0, fallbacks: 0, fullBytes: 0, renderedBytes: 0 },
 		messages: { delivered: 0, duplicateDeliveries: 0, failed: 0, received: 0 },
 		model: { child: projectUsage(child), complete: false, parent: projectUsage(parent), totalCost: 0 },
 		state: {
@@ -779,6 +796,15 @@ export function aggregateMetering(events: readonly MeteringEvent[]): MeteringTot
 			case "memory-distill":
 				totals.memory.distilled += event.written;
 				totals.memory.distilledWithoutVector += event.withoutVector;
+				break;
+			case "memory-redeem":
+				totals.memory.redeemedBytes += event.bytes;
+				break;
+			case "stage-result":
+				totals.stageResults.count += 1;
+				if (event.fallback !== undefined) totals.stageResults.fallbacks += 1;
+				totals.stageResults.fullBytes += event.fullBytes;
+				totals.stageResults.renderedBytes += event.renderedBytes;
 				break;
 			case "object-io":
 				if (event.direction === "read") totals.storage.readBytes += event.bytes;

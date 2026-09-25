@@ -314,6 +314,22 @@ describe("redemption arithmetic", () => {
 		assert.deepEqual(result.refusals, []);
 	});
 
+	it("previews a long body and names the handle that reads the rest", () => {
+		const id = "c".repeat(64);
+		const body = "证据".repeat(200);
+		const result = redeemMemoryRefs({ budgetBytes: 8192, memoryRefs: [id], readBody: () => body });
+		const entry = result.section.split("\n").slice(1).join("\n");
+		assert.ok(entry.startsWith(`- [${"c".repeat(12)}] (${Buffer.byteLength(body)} B; full: synapse_read {"action":"get","memoryId":"${id}"})\n  `));
+		assert.ok(entry.endsWith("…"));
+		assert.ok(!entry.includes("\uFFFD"), "the preview never splits a character");
+		assert.ok(result.bytes < 600, "a preview, not the body");
+	});
+
+	it("carries a short body whole", () => {
+		const result = redeemMemoryRefs({ budgetBytes: 8192, memoryRefs: ["d".repeat(64)], readBody: () => "short body" });
+		assert.match(result.section, /- \[d{12}\]\n {2}short body$/);
+	});
+
 	it("counts the bytes of the entries, not of the header it prepends", () => {
 		const result = redeemMemoryRefs({ budgetBytes: 8192, memoryRefs: ["a".repeat(64)], readBody: () => "body" });
 		assert.equal(result.bytes, Buffer.byteLength(`- [${"a".repeat(12)}]\n  body`, "utf-8"));

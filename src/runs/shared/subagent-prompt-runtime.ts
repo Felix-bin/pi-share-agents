@@ -547,6 +547,17 @@ function redeemEnvelopeMemories(config: ChildRuntimeConfig, wire: EnvelopeWire, 
 	if (result.omitted > 0) {
 		console.warn(`[pi-subagents] synapse: ${result.omitted} redeemed body/bodies did not fit the ${budgetBytes}-byte context budget`);
 	}
+	// The redeemed section enters the system prompt, off the wire the task is
+	// metered on; recording it is what keeps the synapse arm's recalled context
+	// in the account instead of making it look free.
+	if (result.redeemed.length > 0) {
+		try {
+			const identity: MeteringIdentity = { agent: synapse.agent, attempt: 1, mode: synapse.contract.mode, nodeId: nodeIdFor(synapse.runId, config.childIndex), runId: synapse.runId, sessionId: wire.receiverSessionId, snapshotId: null };
+			createMeteringLog(meteringLogPath(synapse.contract, synapse.runId)).record(identity, { bytes: result.bytes, kind: "memory-redeem", records: result.redeemed.length });
+		} catch {
+			// Metering the redemption must never be what costs the run.
+		}
+	}
 	return result;
 }
 

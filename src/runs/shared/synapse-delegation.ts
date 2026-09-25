@@ -5,6 +5,7 @@ import { classifySynapseError } from "../../synapse/errors.ts";
 import { clearStateEnvelope, nodeIdFor } from "../../synapse/envelope-inbox.ts";
 import { meteringLogPath, modelUsageFrom, openDelegation, openRetrieveDelegation, type CloseDelegationInput, type OpenDelegation, type RetrieveSendResult, type SendDeps } from "../../synapse/delegation.ts";
 import { autoDistillOutput } from "../../synapse/auto-distill.ts";
+import { stageOutcomeFor, stageResultApplies, type StageOutcome } from "../../synapse/stage-result.ts";
 import { createCapabilityProbeCache, stateRetrievalProbeCheck } from "../../synapse/capability-probe.ts";
 import { createMeteringLog, type MeteringIdentity, type StateSkipReason } from "../../synapse/metering.ts";
 import { stateQueryOf } from "../../synapse/state-query.ts";
@@ -15,6 +16,7 @@ import { SYNAPSE_DEFAULT_SEARCH_K } from "../../synapse/memory-service.ts";
 import { memoryVectorCacheFor } from "../../synapse/vector-cache.ts";
 import type { Usage } from "../../shared/types.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
+import { stripAcceptanceReport } from "./acceptance.ts";
 
 /**
  * The host-side call sites of the delegation seam.
@@ -474,15 +476,24 @@ export const SYNAPSE_DISTILL_BUDGET_MS = 20_000;
  * output into shared memory. The returned promise settles once distillation has
  * landed, failed, or run out of budget; it never rejects. A caller that ends its
  * process after the run must await it, or the distill is cut off mid-write.
+ *
+ * In synapse mode a completed intermediate stage (stage-result.ts) is published
+ * first, and the promise resolves to its outcome: the caller hands the
+ * orchestrator `rendered` in place of the output. Null means "hand the output
+ * over unchanged" — every other mode, agent and outcome, and any failure to
+ * publish, which is recorded rather than swallowed.
  */
-export function closeChildDelegation(delegation: OpenDelegation | null, input: CloseChildDelegationInput): Promise<void> {
-	if (delegation === null) return Promise.resolve();
+export async function closeChildDelegation(delegation: OpenDelegation | null, input: CloseChildDelegationInput): Promise<StageOutcome | null> {
+	if (delegation === null) return null;
 	// A stop and a failure are different outcomes, and a timeout is a failure the
 	// host observed rather than one it caught, so it carries its own cause.
 	const outcome: ReceiptOutcome = input.cancelled ? "cancelled" : input.cause === undefined && !input.timedOut ? "completed" : "failed";
 	const closeInput: CloseDelegationInput = { outcome, summary: input.finalOutput, usage: modelUsageFrom(input.usage) };
 	if (input.cause !== undefined) closeInput.cause = input.cause;
 	else if (input.timedOut) closeInput.cause = new Error("timeout: the child did not finish in time");
+	const contract = input.runtime?.synapse;
+	const stage = outcome === "completed" && contract !== undefined && contract.contract.mode === "synapse" ? publishStage(contract, input) : null;
+	if (stage !== null) closeInput.stage = { bytes: stage.fullBytes, contentId: stage.contentId, established: stage.established, memoryId: stage.memoryId };
 	try {
 		delegation.close(closeInput);
 	} catch (error) {
@@ -491,9 +502,52 @@ export function closeChildDelegation(delegation: OpenDelegation | null, input: C
 	// Memory sedimentation is a side condition of the run, never a result of it:
 	// only a completed delegation distills, and any failure of the distiller
 	// itself is a warning on this close path, not a failed delegation.
-	const contract = input.runtime?.synapse;
-	if (outcome !== "completed" || contract?.autoDistill !== true) return Promise.resolve();
-	return distillWithinBudget(contract, input);
+	if (outcome === "completed" && contract?.autoDistill === true) await distillWithinBudget(contract, input);
+	return stage;
+}
+
+/** Publishes a stage result and meters it; a failure hands the output back whole and says why. */
+function publishStage(contract: SynapseChildContract, input: CloseChildDelegationInput): StageOutcome | null {
+	// The acceptance report is the host's bookkeeping appended to the output,
+	// not something the stage handed over.
+	const output = stripAcceptanceReport(input.finalOutput);
+	if (!stageResultApplies(contract.agent) || output.trim().length === 0) return null;
+	const record = (payload: Parameters<ReturnType<typeof createMeteringLog>["record"]>[1]): void => {
+		try {
+			createMeteringLog(meteringLogPath(contract.contract, contract.runId)).record(stageIdentity(contract, input), payload);
+		} catch {
+			// Metering the stage result must never be what costs the run.
+		}
+	};
+	try {
+		const stage = stageOutcomeFor({
+			agent: contract.agent,
+			contract,
+			output,
+			provenance: { agent: contract.agent, attempt: 1, runId: contract.runId, sessionId: contract.sessionId },
+			taskText: input.taskText ?? "",
+		});
+		if (stage !== null) record({ fullBytes: stage.fullBytes, kind: "stage-result", memoryId: stage.memoryId, renderedBytes: stage.renderedBytes });
+		return stage;
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		const fullBytes = Buffer.byteLength(output, "utf-8");
+		record({ fallback: detail, fullBytes, kind: "stage-result", memoryId: null, renderedBytes: fullBytes });
+		warn(contract.agent, "stage result", `${detail}; handing the output over whole`);
+		return null;
+	}
+}
+
+function stageIdentity(contract: SynapseChildContract, input: CloseChildDelegationInput): MeteringIdentity {
+	return {
+		agent: contract.agent,
+		attempt: 1,
+		mode: contract.contract.mode,
+		nodeId: nodeIdFor(contract.runId, input.runtime?.childIndex),
+		runId: contract.runId,
+		sessionId: contract.sessionId,
+		snapshotId: null,
+	};
 }
 
 async function distillWithinBudget(contract: SynapseChildContract, input: CloseChildDelegationInput): Promise<void> {

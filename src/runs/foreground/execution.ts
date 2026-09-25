@@ -113,6 +113,7 @@ import {
 } from "../../watchdog/child-status.ts";
 import { buildInProcessChildLaunch, createReportedChildSessionInput } from "../shared/child-launch.ts";
 import { closeChildDelegation, openChildDelegationWithState } from "../shared/synapse-delegation.ts";
+import type { StageOutcome } from "../../synapse/stage-result.ts";
 import type { OpenDelegation } from "../../synapse/delegation.ts";
 import { childSessionFactory, childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent } from "../shared/child-session.ts";
 
@@ -504,6 +505,9 @@ async function runSingleAttempt(
 		...(options.structuredOutput ? { structuredOutputSchema: options.structuredOutput.schema } : {}),
 		...(options.extensionBindings ? { extensionBindings: options.extensionBindings } : {}),
 	});
+	// Set when the close published this stage's output as a result block
+	// (stage-result.ts); the orchestrator then receives the block, not the text.
+	let stageOutcome: StageOutcome | null = null;
 	const result: SingleResult = withRunContext({
 		index: options.index ?? 0,
 		agent: agent.name,
@@ -1450,9 +1454,11 @@ async function runSingleAttempt(
 				// Awaited: a completed child's distill must land before the run
 				// resolves, because a background runner exits as soon as it does.
 				// Bounded by its own budget and never rejecting (see the callee).
-				await closeChildDelegation(delegation, {
+				// `result.finalOutput` is only assigned after the session settles, so
+				// the close reads the output from the messages, as the background path does.
+				stageOutcome = await closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
-					finalOutput: result.finalOutput ?? "",
+					finalOutput: result.finalOutput || getFinalOutput(result.messages ?? []),
 					runtime: childRuntime,
 					taskText: task,
 					timedOut: result.timedOut === true,
@@ -1463,7 +1469,7 @@ async function runSingleAttempt(
 				void closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
 					cause: error,
-					finalOutput: result.finalOutput ?? "",
+					finalOutput: result.finalOutput || getFinalOutput(result.messages ?? []),
 					runtime: childRuntime,
 					taskText: task,
 					timedOut: result.timedOut === true,
@@ -1676,9 +1682,14 @@ async function runSingleAttempt(
 		artifactOutputByResult.set(result, fullOutput);
 		acceptanceOutputByResult.set(result, acceptanceOutput);
 	result.outputMode = options.outputMode ?? "inline";
+	// The artifacts above keep the whole text; only what the orchestrator reads
+	// becomes the result block, and only for a stage that finished cleanly.
+	// Assigned inside the session callback, which the compiler cannot see through.
+	const stage = stageOutcome as StageOutcome | null;
+	const handOver = stage !== null && result.exitCode === 0 && !result.timedOut && !options.structuredOutput ? stage.rendered : fullOutput;
 	result.finalOutput = options.outputMode === "file-only" && result.savedOutputPath && result.outputReference
 		? result.outputReference.message
-		: fullOutput;
+		: handOver;
 	result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
 	if (options.onUpdate) {
 		const finalText = result.finalOutput || result.error || "(no output)";

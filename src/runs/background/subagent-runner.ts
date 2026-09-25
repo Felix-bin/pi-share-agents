@@ -1578,7 +1578,10 @@ export async function runSingleStepInner(
 	}
 	const output = stripAcceptanceReport(resolvedOutput.fullOutput);
 	const outputReference = resolvedOutput.savedPath ? formatSavedOutputReference(resolvedOutput.savedPath, output) : undefined;
-	let outputForSummary = output;
+	// The artifacts keep the whole text; what the orchestrator reads becomes the
+	// result block, and only for a stage that finished cleanly (stage-result.ts).
+	const stage = finalResult?.stageOutcome;
+	let outputForSummary = stage !== undefined && finalResult?.exitCode === 0 && !finalResult.timedOut && finalResult.structuredOutput === undefined ? stage.rendered : output;
 	if (attemptNotes.length > 0) {
 		outputForSummary = `${attemptNotes.join("\n")}\n\n${outputForSummary}`.trim();
 	}

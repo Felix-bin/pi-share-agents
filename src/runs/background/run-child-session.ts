@@ -23,6 +23,7 @@ import { formatSubagentModelVerificationError } from "../shared/model-fallback.t
 import { isMutatingTool, resolveCurrentPath } from "../shared/long-running-guard.ts";
 import { effectiveToolTimeoutMs, formatToolTimeoutMessage, toolTimeoutCallKey } from "../shared/tool-timeout.ts";
 import { createReportedChildSessionInput, type InProcessChildLaunch } from "../shared/child-launch.ts";
+import type { StageOutcome } from "../../synapse/stage-result.ts";
 import { closeChildDelegation, openChildDelegationWithState } from "../shared/synapse-delegation.ts";
 import type { OpenDelegation } from "../../synapse/delegation.ts";
 import { childSessionHasQueuedMessages, projectChildSessionEventForJson, type ChildSession, type ChildSessionEvent, type ChildSessionFactory } from "../shared/child-session.ts";
@@ -143,6 +144,8 @@ export interface RunChildSessionResult {
 	runtimeAcknowledgedExtensions?: RuntimeAcknowledgedChildExtensions;
 	abortRecoveryDiagnostic?: string;
 	effects?: EffectsProjection;
+	/** Set when the close published this stage's output as a result block (stage-result.ts). */
+	stageOutcome?: StageOutcome;
 }
 
 /** Events the child emits while the model streams; not persisted into the diagnostic log. */
@@ -175,6 +178,8 @@ const HARD_FINISH_MS = 3000;
 const ABORT_SETTLE_MS = 3000;
 
 export function runChildSession(input: RunChildSessionInput): Promise<RunChildSessionResult> {
+	// Set by the close when it published this stage's output as a result block.
+	let stageOutcome: StageOutcome | null = null;
 	return new Promise((resolve) => {
 		const startedAt = Date.now();
 		const messages: Message[] = [];
@@ -603,6 +608,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 					error: stopped ? stopMessage() : timedOut ? (error ?? timeoutMessage()) : interrupted || (forcedDrainAfterFinalSuccess && !forcedDrainAfterEmptyTerminal) ? undefined : finalError,
 					finalOutput: (timedOut || stopped) && !finalOutput.trim() ? (stopped ? stopMessage() : error ?? timeoutMessage()) : finalOutput,
 					outputState: finalOutput.trim() ? "present" : "absent",
+					stageOutcome: stageOutcome ?? undefined,
 					interrupted: interrupted || undefined,
 					timedOut: timedOut || undefined,
 					stopped: stopped || undefined,
@@ -724,7 +730,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				// Awaited: a completed child's distill must land before the run
 				// resolves, because a background runner exits as soon as it does.
 				// Bounded by its own budget and never rejecting (see the callee).
-				await closeChildDelegation(delegation, {
+				stageOutcome = await closeChildDelegation(delegation, {
 					cancelled: interrupted || stopped,
 					finalOutput: getFinalOutput(messages),
 					runtime: delegationRuntime,

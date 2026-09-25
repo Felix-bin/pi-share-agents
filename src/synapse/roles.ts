@@ -1,5 +1,6 @@
 import { describeCapability, type CapabilityDeclaration, type CapabilityRecord, type SynapseAction, type SynapseEncoding } from "./capability.ts";
 import { STATE_RETRIEVAL_PROBE } from "./capability-probe.ts";
+import type { MemoryKind } from "./memory-store.ts";
 
 /**
  * The collaboration roles and the capability each one declares.
@@ -58,6 +59,25 @@ const ROLE_SPECS = {
 	retriever: { actions: ["delegate", "retrieve"], encodings: ["text", "float32-vector"] },
 	summarizer: { actions: ["delegate"], encodings: ["text", "float32-vector"] },
 } satisfies Record<SynapseRole, RoleSpec>;
+
+/**
+ * The memory kind a role's whole stage output is filed under when it is
+ * published as a stage result: what the stage produced, in the vocabulary the
+ * store already has. The summarizer has none because its output is the
+ * deliverable, returned in full rather than as a result block.
+ */
+const STAGE_OUTPUT_KINDS = {
+	executor: "tool-result",
+	planner: "strategy",
+	retriever: "evidence",
+} as const satisfies Partial<Record<SynapseRole, MemoryKind>>;
+
+export type StageRole = keyof typeof STAGE_OUTPUT_KINDS;
+
+/** The memory kind of a pipeline stage whose output travels as a result block, or null for every other agent. */
+export function stageOutputKind(agent: string): MemoryKind | null {
+	return Object.hasOwn(STAGE_OUTPUT_KINDS, agent) ? STAGE_OUTPUT_KINDS[agent as StageRole] : null;
+}
 
 /** The declaration used for any agent outside the four roles, including upstream's. */
 const GENERIC_SPEC: RoleSpec = { actions: ["delegate"], encodings: ["text"] };

@@ -169,7 +169,7 @@ describe("transportBytes (Task 3, design §4.1)", () => {
 				hotBase: { bytesIfBaseResident: 40, derived: true, note: HOT_BASE_NOTE },
 				notNamed: { payloadReadBytes: 0, rankingReadBytes: 0 },
 			},
-			memory: { crossAgentReuses: 0, distilled: 0, distilledWithoutVector: 0, hitRate: "N/A", queries: 0, reuses: 0 },
+			memory: { crossAgentReuses: 0, distilled: 0, distilledWithoutVector: 0, hitRate: "N/A", queries: 0, redeemedBytes: 0, reuses: 0 },
 			messages: { delivered: 1, duplicateDeliveries: 0, failed: 0, received: 1 },
 			model: {
 				child: { cacheRead: 1, cacheWrite: 2, input: 30, output: 4 },
@@ -194,6 +194,7 @@ describe("transportBytes (Task 3, design §4.1)", () => {
 				verificationRefusals: 0,
 				verifications: 0,
 			},
+			stageResults: { count: 0, fallbacks: 0, fullBytes: 0, renderedBytes: 0 },
 			storage: { readBytes: 0, writeBytes: 4096 },
 			text: { handoffBytes: 100 },
 		});
