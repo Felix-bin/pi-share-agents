@@ -16,6 +16,11 @@
  *              from the first call), tool results and own history, and
  *              reasoning and tool calls.
  *
+ * External-framework arms (CREWAI, AUTOGEN) have no parent; each role's calls
+ * come from the proxy's llm-calls.jsonl and what it read from others from
+ * handoffs.jsonl. Both frameworks deliver an agent's hand-over before its first
+ * call, so it stays in context for all of that agent's calls.
+ *
  * Pieces of text are converted to tokens at a bytes-per-token ratio; 3.26 was
  * calibrated on smoke5-stage (343 consecutive-call deltas, median 3.12, IQR
  * 2.76–3.48), so every figure carries roughly ±15%. API usage itself gives only
@@ -38,10 +43,28 @@ const bump = (arm, role, v) => {
 	for (const k of Object.keys(v)) a[k] += v[k];
 };
 
+function external(r, ev) {
+	const handoffs = jsonl(path.join(ev, "handoffs.jsonl"));
+	const allCalls = jsonl(path.join(ev, "llm-calls.jsonl")).filter((c) => c.path === "/chat/completions" && c.usage && typeof c.usage === "object");
+	for (const role of ROLES.slice(1)) {
+		const calls = allCalls.filter((c) => c.role === role);
+		const recv = handoffs.filter((h) => h.to === role).reduce((s, h) => s + B(h.text), 0);
+		const prompt = calls.reduce((s, c) => s + c.usage.input + c.usage.cacheRead, 0);
+		const output = calls.reduce((s, c) => s + c.usage.output, 0);
+		const lastText = [...calls].reverse().map((c) => (typeof c.response?.content === "string" ? c.response.content : "")).find((t) => t.length > 0) ?? "";
+		const first = calls[0] ? calls[0].usage.input + calls[0].usage.cacheRead : 0;
+		bump(r.arm, role, { recv: T(recv), sent: Math.min(T(B(lastText)), output), ctx: T(recv) * calls.length, prompt, billed: calls.reduce((s, c) => s + c.usage.input + c.usage.output, 0), calls: calls.length, output, fixed: Math.max(0, first - T(recv)) * calls.length });
+	}
+}
+
 for (const r of rounds) {
 	(agg[r.arm] ??= { n: 0 }).n += 1;
 	const art = path.join(D, "tmp", `${r.arm}-${r.group}-${r.round}-${r.attempt}`, "artifacts");
 	const ev = path.join(D, "evidence", r.arm, r.group, `round-${String(r.round).padStart(2, "0")}`, `attempt-${r.attempt}`);
+	if (r.external) {
+		external(r, ev);
+		continue;
+	}
 	const redeemed = {};
 	const mdir = path.join(ev, "metering");
 	if (fs.existsSync(mdir)) for (const f of fs.readdirSync(mdir)) for (const e of jsonl(path.join(mdir, f))) if (e.kind === "memory-redeem") redeemed[e.agent] = (redeemed[e.agent] ?? 0) + e.bytes;

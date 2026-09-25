@@ -203,7 +203,7 @@ function bootstrap(diffs) {
 const mean = (xs) => (xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : null);
 const METRICS = { Q: [["f1", 0.05], ["em", 0.05], ["coverEm", 0.05]], R: [["total", 5]] };
 const arms = bench.arms.map((a) => a.arm);
-const PAIRS = [["SYN0", "SYN"], ["TXT", "SYN"], ["SYNCOLD", "SYN"], ["SYN0", "TXT"]];
+const PAIRS = [["SYN0", "SYN"], ["TXT", "SYN"], ["SYNCOLD", "SYN"], ["SYN0", "TXT"], ["CREWAI", "SYN"], ["AUTOGEN", "SYN"], ["CREWAI", "SYN0"], ["AUTOGEN", "SYN0"]];
 const summary = { byArm: {}, comparisons: {}, experimentId: bench.experimentId, judge: families.R ? { model: JUDGE_MODEL, promptSha256: sha256(judgeTemplate), source: judgeSource, votes: VOTES } : null };
 for (const group of Object.keys(families)) {
 	const kind = families[group].group;

@@ -38,6 +38,14 @@
  *             no-SYNAPSE baseline. Its child tokens come from the per-child
  *             artifacts (<tmp>/artifacts/*_meta.json), the same numbers the
  *             ledger's model-usage rows carry for the other arms.
+ *   CREWAI, AUTOGEN — not pi: the same four roles, model, provider, tools and
+ *             task text in CrewAI (sequential crew) or AutoGen (round-robin
+ *             group chat), each run the framework's default way
+ *             (external-arm.mjs; spec 2026-09-25-synapse-external-framework-arms).
+ *             They do not use pi's provider: they call DeepSeek's official API
+ *             (EXTERNAL_PROVIDER) with their own key, through a recording
+ *             proxy that supplies their token counts. A quota error there stops
+ *             the run (exit 1): the pi-side provider fallback cannot help them.
  *
  * Corpus: when an embedding key exists (and --no-corpus is absent) the runner
  * builds a frozen corpus of the agents' working copy with the product builder
@@ -64,6 +72,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { EXTERNAL_ARMS, EXTERNAL_PROVIDER, FRAMEWORKS_PYTHON, externalArmConfig, piPackageDirOf, resolveExternalKey, runExternalAttempt } from "./external-arm.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..");
@@ -80,7 +89,9 @@ const FAMILY_FILES = {
 const PUBLIC_GROUPS = new Set(["Q", "R"]);
 const TEMPLATE_FILE = path.join(REPO, "prompts", "role-pipeline.md");
 const PIPELINE_ROLES = ["planner", "retriever", "executor", "summarizer"];
-const ARMS = ["TXT", "SYN", "SYN0", "SYNCOLD"];
+const ARMS = ["TXT", "SYN", "SYN0", "SYNCOLD", "CREWAI", "AUTOGEN"];
+// Arms that are not pi at all (external-arm.mjs): no synapse block, no store.
+const isExternal = (arm) => Object.hasOwn(EXTERNAL_ARMS, arm);
 // Arms whose config issues no child contract, so the extension writes no
 // metering ledger at all (child-contract.ts: memory off → null contract).
 const LEDGERLESS_ARMS = new Set(["SYN0"]);
@@ -341,6 +352,7 @@ function synapseBlockFor(arm, storageRoot, embedding, corpusSnapshotId) {
 }
 
 function armConfigFor(arm, expDir, embedding, corpusSnapshotId) {
+	if (isExternal(arm)) return externalArmConfig(arm);
 	// asyncByDefault:false on every arm: each stage blocks the parent, so the
 	// parent's settled event is the pipeline's end rather than its dispatch.
 	const corpus = STATE_ARMS.has(arm) ? corpusSnapshotId : null;
@@ -388,6 +400,17 @@ function prepareArm({ arm, expDir, sourceAgentDir, embedding, corpus, worktree =
 		for (const name of fs.readdirSync(path.join(agentDir, "bin"))) fs.chmodSync(path.join(agentDir, "bin", name), 0o755);
 		copied.push("bin/");
 	}
+	const workDir = path.join(expDir, `work-${arm}`, worktree === null ? "pi-share-agents" : "worktree");
+	if (isExternal(arm)) {
+		// Not pi: models.json names the provider endpoint, bin/ holds the rg/fd pi's tools use. No store.
+		const configPath = path.join(agentDir, "external-config.json");
+		writeJson(configPath, armConfigFor(arm, expDir, embedding, null));
+		if (!fs.existsSync(workDir)) {
+			if (worktree === null) copyTree(REPO, workDir, WORK_COPY_EXCLUDE, WORK_COPY_EXCLUDE_PATHS);
+			else copyTree(worktree, workDir, new Set([".build-manifest.json"]));
+		}
+		return { agentDir, configPath, copied, storeDir: null, workDir };
+	}
 	// The embedding key /synapse-setup stored (credentials.ts reads
 	// <agentDir>/synapse/credentials.json when the env var is absent).
 	const credentials = path.join(sourceAgentDir, "synapse", "credentials.json");
@@ -407,7 +430,6 @@ function prepareArm({ arm, expDir, sourceAgentDir, embedding, corpus, worktree =
 	}
 	// Repository groups read a copy of this repository minus the benchmark; the
 	// public groups read a copy of the built worktree, which holds no answers.
-	const workDir = path.join(expDir, `work-${arm}`, worktree === null ? "pi-share-agents" : "worktree");
 	if (!fs.existsSync(workDir)) {
 		if (worktree === null) copyTree(REPO, workDir, WORK_COPY_EXCLUDE, WORK_COPY_EXCLUDE_PATHS);
 		else copyTree(worktree, workDir, new Set([".build-manifest.json"]));
@@ -943,7 +965,7 @@ async function main() {
 	if (corpus !== null) log(`corpus ${corpus.corpusSnapshotId.slice(0, 12)}…: ${corpus.chunks} chunks (${corpus.alreadyPresent ? "cached" : `built in ${corpus.buildMs} ms`})`);
 	const armConfigs = Object.fromEntries(options.arms.map((arm) => [arm, armConfigFor(arm, expDir, embedding, corpus?.corpusSnapshotId ?? null)]));
 	// Validate each synapse block with the product's own resolver before anything runs.
-	for (const [arm, config] of Object.entries(armConfigs)) resolveSynapseConfig(config.synapse);
+	for (const [arm, config] of Object.entries(armConfigs)) if (!isExternal(arm)) resolveSynapseConfig(config.synapse);
 
 	const plan = [];
 	for (const group of options.groups) {
@@ -978,7 +1000,10 @@ async function main() {
 			SYN: "SYNAPSE synapse mode: memory by reference + autoDistill + state plane (corpus)",
 			SYNCOLD: "SYN block; before every attempt memory/supersessions/objects/receipts/envelopes are moved to store/_cold-archive/<label>/ (metering, corpus, namespace kept): no cross-round memory",
 			SYN0: "memory off → no child contract → SYNAPSE entirely off (no envelope, state, memory or ledger): plain pi subagents",
+			CREWAI: "not pi: CrewAI sequential crew of the same four roles, framework defaults (no memory, no context=), same model/provider/tools/task; tokens from the recording proxy",
+			AUTOGEN: "not pi: AutoGen RoundRobinGroupChat of the same four roles, framework defaults (broadcast, no memory), same model/provider/tools/task; tokens from the recording proxy",
 		},
+		external: options.arms.some(isExternal) ? { provider: { name: EXTERNAL_PROVIDER.name, baseUrl: EXTERNAL_PROVIDER.baseUrl, model: EXTERNAL_PROVIDER.model, modelName: EXTERNAL_PROVIDER.modelName, keyEnv: EXTERNAL_PROVIDER.keyEnv, keySource: resolveExternalKey()?.source ?? "missing" }, providerNote: "independent of the pi arms' provider and of its fallback", python: FRAMEWORKS_PYTHON, piPackageDir: piPackageDirOf(pi.cli), tokens: "llm-calls.jsonl: provider response usage per call, mapped as pi-ai parseChunkUsage; per role by the /<role>/v1 path prefix", params: "the proxy adds what pi sends per role on the provider (reasoning_effort; on DeepSeek also thinking and reasoning_content)" } : null,
 		workCopyExcludes: { names: [...WORK_COPY_EXCLUDE], paths: [...WORK_COPY_EXCLUDE_PATHS] },
 		pathPrepend: options.pathPrepend === null ? null : { dir: options.pathPrepend, pipFreeze: fs.existsSync(path.join(options.pathPrepend, "pip")) ? spawnSync(path.join(options.pathPrepend, "pip"), ["freeze"], { encoding: "utf-8" }).stdout.trim().split("\n") : "unavailable" },
 		worktree: options.worktree === null ? null : { path: options.worktree, build: fs.existsSync(path.join(options.worktree, ".build-manifest.json")) ? readJson(path.join(options.worktree, ".build-manifest.json")) : "unavailable", digest: treeDigest(options.worktree) },
@@ -989,7 +1014,7 @@ async function main() {
 		prompt: { template: path.relative(REPO, TEMPLATE_FILE), templateSha256: sha256(template), expansion: "frontmatter stripped, $@/$ARGUMENTS replaced by the task text; the previous answer is never included" },
 		launch: { flags: ["-e", "<repo>/index.ts", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc"], cwd: "<exp>/work-<arm>/pi-share-agents (repo snapshot without node_modules/.git/.pi)", copiedAgentFiles: COPIED_AGENT_FILES },
 		completion: "RPC agent_settled after the run prompt + async-run widget idle + all task-spans opened this round closed + 3 s quiet (+ a settle after background runs ended, or 90 s); else --round-timeout-ms",
-		validity: "pipeline settled (no timeout, answer present) and >= 1 metering run written during the round; SYN0 (no ledger by design) instead needs >= 1 child artifacts meta file",
+		validity: "pipeline settled (no timeout, answer present) and >= 1 metering run written during the round; SYN0 (no ledger by design) instead needs >= 1 child artifacts meta file; CREWAI/AUTOGEN: harness exit 0, answer present, all four roles made a model call, every successful call reported usage",
 		scripts: { "runner.mjs": sha256File(fileURLToPath(import.meta.url)) },
 		plan: plan.map(({ arm, group, round }) => `${group}/r${String(round).padStart(2, "0")}/${arm}`),
 	};
@@ -1003,9 +1028,10 @@ async function main() {
 		return;
 	}
 	if (!provider || !model) throw new Error("no provider/model: pass --provider/--model or set defaultProvider/defaultModel in settings.json");
+	if (options.arms.some(isExternal) && resolveExternalKey() === null) throw new Error(`external arms need a key: set ${EXTERNAL_PROVIDER.keyEnv} or write it to ${EXTERNAL_PROVIDER.keyFile}`);
 
 	const arms = Object.fromEntries(options.arms.map((arm) => [arm, prepareArm({ arm, corpus, embedding, expDir, sourceAgentDir, worktree: options.worktree })]));
-	for (const [arm, setup] of Object.entries(arms)) log(`arm ${arm}: agentDir ${setup.agentDir} (copied ${setup.copied.join(", ") || "nothing"}), store ${setup.storeDir}`);
+	for (const [arm, setup] of Object.entries(arms)) log(`arm ${arm}: agentDir ${setup.agentDir} (copied ${setup.copied.join(", ") || "nothing"}), store ${setup.storeDir ?? "none (not pi)"}`);
 	await executePlan({ arms, attempts: options.attempts, expDir, families, model, parallelArms: options.parallelArms, pi, plan, provider, roundTimeoutMs: options.roundTimeoutMs, template });
 }
 
@@ -1017,6 +1043,7 @@ async function resumeExperiment({ code, expDir, families, manifestPath, model, o
 	PATH_PREPEND = manifest.pathPrepend?.dir ?? null;
 	const corpus = manifest.corpus !== null && typeof manifest.corpus === "object" ? manifest.corpus : null;
 	const armNames = manifest.arms.map((entry) => entry.arm);
+	if (armNames.some(isExternal) && resolveExternalKey() === null) throw new Error(`external arms need a key: set ${EXTERNAL_PROVIDER.keyEnv} or write it to ${EXTERNAL_PROVIDER.keyFile}`);
 	const groups = manifest.groups.map((entry) => entry.group);
 	for (const entry of manifest.groups) {
 		if (families[entry.group] === undefined) throw new Error(`--resume: pass --groups ${groups.join(",")} (the manifest's groups)`);
@@ -1051,6 +1078,7 @@ async function executePlan({ arms, attempts, expDir, families, model, parallelAr
 			const { arm, group, round } = step;
 			const task = families[group].family.tasks[round - 1];
 			const setup = arms[arm];
+			if (isExternal(arm)) return runExternalStep(step, task, setup);
 			const meteringDir = path.join(setup.storeDir, "metering");
 			const earlier = readRecords(roundsPath).filter((r) => r.arm === arm && r.group === group && r.round === round);
 			if (earlier.some((r) => r.valid)) return;
@@ -1134,6 +1162,56 @@ async function executePlan({ arms, attempts, expDir, families, model, parallelAr
 					throw new ProviderExhaustedError(`provider ${provider} exhausted at ${group} r${round} ${arm} attempt ${attempt}: ${exhausted.join(" | ")}`);
 				}
 			}
+	};
+	const runExternalStep = async ({ arm, group, round }, task, setup) => {
+		const earlier = readRecords(roundsPath).filter((r) => r.arm === arm && r.group === group && r.round === round);
+		if (earlier.some((r) => r.valid)) return;
+		const roundDir = path.join(expDir, "evidence", arm, group, `round-${String(round).padStart(2, "0")}`);
+		const onDisk = fs.existsSync(roundDir) ? fs.readdirSync(roundDir).map((name) => Number(/^attempt-(\d+)$/.exec(name)?.[1] ?? 0)) : [];
+		const first = Math.max(0, ...onDisk, ...earlier.map((r) => r.attempt)) + 1;
+		for (let attempt = first; attempt < first + attempts; attempt += 1) {
+			const evidenceDir = path.join(roundDir, `attempt-${attempt}`);
+			fs.rmSync(evidenceDir, { force: true, recursive: true });
+			fs.mkdirSync(evidenceDir, { recursive: true });
+			fs.copyFileSync(setup.configPath, path.join(evidenceDir, "external-config.json"));
+			fs.writeFileSync(path.join(evidenceDir, "prompt.md"), `${task.task}\n`, "utf-8");
+			const startedAt = new Date();
+			progress({ type: "round-start", arm, group, round, attempt });
+			log(`${group} r${round} ${arm} attempt ${attempt}: ${task.title}`);
+			const record = { arm, group, round, attempt, provider: EXTERNAL_PROVIDER.name, model: EXTERNAL_PROVIDER.model, taskIndex: task.index, startedAt: startedAt.toISOString(), runIds: [], valid: false, problems: [], warnings: [], wallMs: null, usage: null, parentUsage: null, answerBytes: null, agents: [], roles: null, runs: [], totals: null, memory: "N/A", childArtifacts: null, external: null };
+			let exhausted = [];
+			try {
+				const outcome = await runExternalAttempt({ agentDir: setup.agentDir, arm, evidenceDir, exhaustedPattern: PROVIDER_EXHAUSTED, liveChildren: LIVE_CHILDREN, pathPrepend: PATH_PREPEND, piPackageDir: piPackageDirOf(pi.cli), sessionId: `${arm}-${group}-${round}-${attempt}`, task: task.task, timeoutMs: roundTimeoutMs, workDir: setup.workDir });
+				exhausted = outcome.exhausted;
+				record.problems.push(...outcome.problems);
+				record.wallMs = outcome.wallMs;
+				record.usage = outcome.usage;
+				const rolesSeen = PIPELINE_ROLES.filter((role) => (outcome.perRole[role]?.calls ?? 0) > 0);
+				record.agents = rolesSeen;
+				record.roles = { expected: PIPELINE_ROLES, seen: rolesSeen };
+				const handoffBytes = {};
+				for (const handoff of outcome.handoffs) handoffBytes[handoff.kind] = (handoffBytes[handoff.kind] ?? 0) + handoff.bytes;
+				record.external = { framework: EXTERNAL_ARMS[arm].framework, perRole: outcome.perRole, unavailableCalls: outcome.unavailableCalls, handoffs: { count: outcome.handoffs.length, bytes: handoffBytes }, harness: outcome.harnessMeta, exit: outcome.exit, profile: outcome.profile };
+				if (outcome.answer !== null) record.answerBytes = Buffer.byteLength(outcome.answer, "utf-8");
+				else record.problems.push("no final answer (answer.md empty or missing)");
+				if (rolesSeen.length < PIPELINE_ROLES.length) record.problems.push(`pipeline roles with a model call ${rolesSeen.length}/4 (${rolesSeen.join(",") || "none"})`);
+				if (outcome.usage === null) record.problems.push(`token usage unavailable (${outcome.unavailableCalls} call(s) reported no usage)`);
+				else if (outcome.usage.input + outcome.usage.output === 0) record.problems.push("zero token usage recorded");
+				if (outcome.perRole.unattributed) record.warnings.push(`${outcome.perRole.unattributed.calls} model call(s) without a role prefix (counted in the total)`);
+				record.valid = record.problems.length === 0;
+			} catch (error) {
+				record.problems.push(`runner error: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			fs.appendFileSync(roundsPath, `${JSON.stringify(record)}\n`, "utf-8");
+			progress({ type: "round-end", arm, group, round, attempt, valid: record.valid, wallMs: record.wallMs });
+			log(`${group} r${round} ${arm} attempt ${attempt}: ${record.valid ? "VALID" : `invalid (${record.problems.join("; ")})`} wall=${record.wallMs}ms roles=${record.agents.join(",")}`);
+			if (record.valid) break;
+			if (exhausted.length > 0) {
+				// Not ProviderExhaustedError: exit 75 would resume the pi arms on their fallback, which does not change this provider.
+				progress({ type: "provider-exhausted", arm, group, round, attempt, provider: EXTERNAL_PROVIDER.name, model: EXTERNAL_PROVIDER.model, errors: exhausted });
+				throw new Error(`external arms' provider ${EXTERNAL_PROVIDER.name} exhausted at ${group} r${round} ${arm} attempt ${attempt}: ${exhausted.join(" | ")}`);
+			}
+		}
 	};
 	const batches = [];
 	for (const step of plan) {

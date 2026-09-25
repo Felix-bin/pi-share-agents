@@ -2,7 +2,7 @@
 
 - 日期：2026-09-25
 - 状态：设计已逐节确认（2026-09-25 会话），待审阅 spec
-- 相关：`docs/experiments/experiment-design.md`（E1，§3–§9、§11）；`experiments/bench/runner.mjs`、`supervise.sh`；`experiments/analysis/{edge-bytes,agent-split,score-public}.mjs`、`experiments/bench/aggregate.mjs`；`agents/{planner,retriever,executor,summarizer}.md`；旧 harness `experiments/legacy/p50b/`（仅作参考，不复用代码）
+- 相关：`docs/experiments/experiment-design.md`（E1，§3–§9、§11）；`experiments/bench/runner.mjs`、`supervise.sh`；`experiments/analysis/{edge-bytes,agent-split,score-public}.mjs`、`experiments/bench/aggregate.mjs`；`agents/{planner,retriever,executor,summarizer}.md`；旧 harness `experiments/legacy/p50b/`（仅作参考，未复用代码，已在清理中删除）
 
 ## 1. 背景
 
@@ -28,7 +28,7 @@ P50 时期留有 CrewAI 与 AutoGen 的 harness（`experiments/legacy/p50b/`）�
 - 带记忆的外部臂（CrewAI `memory=True`、AutoGen Memory）：留作后续增量。
 - 为了与 pi 同形而改用 CrewAI hierarchical、AutoGen SelectorGroupChat：已否决，理由见 §3。
 - 调优外部框架的提示词或交接方式。
-- `experiments/legacy/p50b/` 的去留：归入另一个任务（清理废弃的实验结果和数据），本 spec 不动它。
+- `experiments/legacy/p50b/` 的去留：归入另一个任务（清理废弃的实验结果和数据）；该任务已将其与 P50 脚本一并删除。
 
 ## 3. 已确认的决策
 
@@ -43,7 +43,7 @@ P50 时期留有 CrewAI 与 AutoGen 的 harness（`experiments/legacy/p50b/`）�
 
 **与 pi 四臂相同（控制变量）**
 
-- 同一个模型、同一个 provider，provider 回退与 pi 臂同步（§5.4）。
+- 同一个模型（DeepSeek-V4.1-Flash）。provider **不同**：外部臂不基于 pi，不读 pi 的 provider 配置，固定走 DeepSeek 官方接口（§5.4）；pi 四臂主用 commandcode，额度耗尽后回退到 DeepSeek 官方。
 - 同样 4 个 agent，角色定义取自 `agents/<角色>.md`（按 §6.1 去掉 pi 专有段）。
 - 工具能力相同（§6.3），推理强度相同（§6.4）。
 - 任务原文原样投喂；工作树内容逐字节一致；PATH 前置同一个 Flask venv。
@@ -61,7 +61,8 @@ P50 时期留有 CrewAI 与 AutoGen 的 harness（`experiments/legacy/p50b/`）�
 |---|---|---|
 | `external-arm.mjs` | `experiments/bench/` | runner 调用的外部臂模块：准备工作树副本，启动代理，拉起 Python harness，收集产物，判定有效性，产出 record。runner 只保留调度入口 |
 | `llm-proxy.mjs` | `experiments/bench/` | 本地 OpenAI 兼容记录代理（Node http），每次尝试一个实例，监听 `127.0.0.1` 随机端口。把 `/<角色>/v1/chat/completions` 透明转发到真实 provider 的 `/chat/completions`（流式与非流式都支持），逐条写 `llm-calls.jsonl` |
-| `external/common.py` | `experiments/bench/external/` | 两个框架共用：读取 round-spec、加载角色提示词、6 个工具的实现、`handoffs.jsonl` 与 `answer.md` 的写入 |
+| `tool-server.mjs` | `experiments/bench/` | 本地工具服务，每次尝试一个实例。直接加载 runner 所用 pi 安装中的 `create*ToolDefinition`（cwd = 该臂工作树），提供 `GET /tools`（schema 与描述）和 `POST /tools/<名称>`（执行，返回 pi 工具的原样文本输出） |
+| `external/common.py` | `experiments/bench/external/` | 两个框架共用：读取 round-spec、加载角色提示词、按 `/tools` 的 schema 生成框架工具（调用转发给 tool-server）、`handoffs.jsonl` 与 `answer.md` 的写入 |
 | `external/run_crewai.py`、`external/run_autogen.py` | 同上 | 各自按框架惯用写法搭 4 角色流水线，跑一轮后退出 |
 | `external/requirements.lock` | 同上 | 钉死 `crewai`、`autogen-agentchat`、`autogen-ext` 及其全部传递依赖的版本 |
 | frameworks-venv | `experiments/data/frameworks-venv/`（不进 git） | 由 `prepare-public-data.sh` 按 lock 文件建立；本机 Python 3.11，两个框架都支持 |
@@ -72,8 +73,9 @@ P50 时期留有 CrewAI 与 AutoGen 的 harness（`experiments/legacy/p50b/`）�
 runner（与 pi 四臂同批，Promise.allSettled）
   └─ external-arm
        ├─ 复制工作树 → work-<臂>/（与 pi 臂同样排除答案文件）
-       ├─ 启动 llm-proxy：上游 = models.json 中当前 provider 的 baseUrl 与 apiKey
-       ├─ 写 round-spec.json：任务原文、角色提示词、工具集、推理强度、模型 id、代理端口
+       ├─ 启动 llm-proxy：上游 = DeepSeek 官方接口（§5.4），key 由代理持有
+       ├─ 启动 tool-server：cwd = work-<臂>/，PATH 前置 Flask venv
+       ├─ 写 round-spec.json：任务原文、角色提示词、各角色工具集、模型 id、代理与工具服务端口
        ├─ spawn frameworks-venv/bin/python external/run_<框架>.py <round-spec.json>
        │     cwd = work-<臂>/，PATH 前置 Flask venv
        │     每个角色一个客户端，base_url = http://127.0.0.1:<端口>/<角色>/v1，api_key = 假 key
@@ -88,11 +90,12 @@ runner（与 pi 四臂同批，Promise.allSettled）
 - 框架如果绕过代理直连 provider，会因鉴权失败而报错，不会出现静默漏计。
 - `llm-calls.jsonl`、`harness.log`、`round-spec.json` 都不含真 key，测试钉住这一点。
 
-### 5.4 provider 与回退
+### 5.4 provider（外部臂自有配置）
 
-- 外部臂使用 runner 的当前 provider 与模型：初次运行为 `commandcode` + `deepseek/deepseek-v4.1-flash`；supervise 回退后为 `deepseek` + `deepseek-flash`（DeepSeek 官方）。按 provider 名在 `~/.pi/agent/models.json` 中查 `baseUrl` 与 `apiKey`。
-- 代理发现上游返回额度或鉴权类错误（沿用 runner 的 `PROVIDER_EXHAUSTED` 正则）时，在调用记录上标 `exhausted`。external-arm 判这次尝试无效，并抛出 `ProviderExhaustedError`。runner 等同批其他臂结束后以退出码 75 退出，supervise 用 `--resume` 切到备用 provider。
-- 续跑时已有效的（臂，组，轮）会跳过，因此同一轮内可能混用 provider。每条记录写明实际 provider，由 experiment-design §8 的混用 provider 敏感性分析覆盖。
+- 外部臂不基于 pi，**不从 pi 取 provider**（用户裁决，2026-09-25）。固定配置在 `external-arm.mjs` 的 `EXTERNAL_PROVIDER`：OpenAI 兼容接口 `https://api.deepseek.com`，模型 id `deepseek-flash`（接口 `/models` 返回的名称为 DeepSeek-V4.1-Flash）。
+- key 来自环境变量 `EXTERNAL_LLM_API_KEY`，没有时读 git 忽略的 `experiments/data/external.env`（权限 0600）；不进仓库、不进 manifest、不进任何日志。runner 在开跑与续跑前检查 key，缺失即拒绝启动。
+- 与 pi 臂的 provider 相互独立：pi 四臂主用 commandcode（`deepseek/deepseek-v4.1-flash`），额度耗尽后 supervise 回退到 DeepSeek 官方；外部臂始终是 DeepSeek 官方。因此回退之前，同一轮内 pi 臂与外部臂的网关不同，模型相同。每条记录写明实际 provider，由 experiment-design §8 的混用 provider 敏感性分析覆盖。
+- 外部臂的上游返回额度或鉴权类错误（沿用 runner 的 `PROVIDER_EXHAUSTED` 正则）时，这次尝试判无效，并以普通错误**终止实验（退出码 1）**，而不是退出码 75：supervise 的回退只切换 pi 臂的 provider，帮不了外部臂。
 
 ### 5.5 manifest
 
@@ -132,21 +135,25 @@ runner（与 pi 四臂同批，Promise.allSettled）
 
 ### 6.3 工具
 
-6 个工具，**名称、参数 schema 与描述逐字取自 pi-coding-agent 的工具定义**，以保证角色提示词里的用法（`read` 的 offset/limit、`grep` 的 `maxMatches`/`context` 等）依然成立。
+6 个工具**直接使用 pi 自己的实现**，不做移植：`tool-server.mjs` 加载 runner 所用 pi 安装导出的 `createReadToolDefinition` 等 6 个工厂，名称、参数 schema、描述与输出都与 pi 逐字节相同。bash 工具需要的 `ctx.sessionManager` 由一个只提供 `getSessionId()` 的桩对象满足（返回本次尝试的标签）。
 
 | 角色 | 工具 |
 |---|---|
 | planner、retriever、summarizer | read、grep、find、ls、write |
 | executor | read、grep、find、ls、bash |
 
-- 行为对齐 pi：read 截断到 2000 行或 50KB；grep 用 ripgrep；bash 在工作树中执行，PATH 前置 Flask venv，超时语义与 pi 相同。
+- 截断、ripgrep、bash 超时等行为因此与 pi 完全一致；bash 在工作树中执行，PATH 前置 Flask venv。
 - 与 pi 一样不设沙箱。
-- 这是一份移植，不可能逐字节相同。用同一组输入分别跑 pi 的工具与移植版，比较输出，差异写进附录 B。
+- 工具结果以 pi 返回的文本原样交给框架；框架如何把工具结果放进上下文，由框架决定。
 
 ### 6.4 推理强度
 
 - planner、summarizer 为 high；retriever、executor 为 medium，与 `agents/*.md` 的 `thinking` 字段一致。
-- **按 provider 对齐 pi 实际发出的字段**：`commandcode` 与 DeepSeek 官方表达推理强度的方式可能不同（`reasoning_effort` 或 thinking 参数）。实现时读 pi 源码，并对两个 provider 各抓一次 pi 的真实请求核对；外部臂在代理日志里验证发出的字段与 pi 相同。映射表写进附录 C。
+- **由代理按角色注入**：代理从路径前缀知道角色，按 pi-ai `openai-completions` 的 compat 逻辑补上 pi 在同一接口上会发出的字段，框架本身不做推理配置。外部臂的接口是 DeepSeek 官方，适用下面的 `deepseek` 一行。已从 pi-ai 源码核实（pi 0.87.0）：
+  - `commandcode`（compat 为默认 openai 分支）：`reasoning_effort: <level>`；
+  - `deepseek`（`thinkingFormat: "deepseek"`）：`thinking: {type: "enabled"}` 与 `reasoning_effort: <level>`；并且 `requiresReasoningContentOnAssistantMessages` 为真，即带工具调用的多轮请求须回传上一轮的 `reasoning_content`。框架通常会丢掉这个字段，代理按 tool_call id 缓存响应里的 `reasoning_content`，在后续请求的对应 assistant 消息上回填。
+- 流式请求一律补 `stream_options.include_usage`（与 pi 相同），保证 usage 可得。
+- DeepSeek 官方 `/models` 声明的推理档位为 `low/high/max`，没有 `medium`；pi 在 DeepSeek 上把 `medium` 原样发出（模型未配置 `thinkingLevelMap`），外部臂同样发 `medium`，接口是否接受由 pilot 验证，结果写进附录 C。
 
 ### 6.5 交接的被动观测
 
@@ -172,6 +179,7 @@ harness 不决定交接什么，只截获框架实际发生的交付，写入 `h
 - usage 映射与 pi 对 `openai-completions` 类 provider 的映射完全相同（实现时读 pi 源码核对）：input = prompt_tokens − cached_tokens，cacheRead = cached_tokens（单列，不并入合计），output = completion_tokens（含推理 token）。
 - 按角色归属：取自请求路径前缀 `/<角色>/v1`。不带合法前缀的调用记为 `unattributed`，**照样计入总 token**。
 - 父会话 token 记为 N/A（没有编排者 LLM）。合计 = 4 个角色 + unattributed。
+- cacheRead 依次取 `prompt_tokens_details.cached_tokens`、`prompt_cache_hit_tokens`（DeepSeek）、`cached_tokens`；cacheWrite 取 `prompt_tokens_details.cache_write_tokens`；input = prompt_tokens − cacheRead − cacheWrite（与 pi-ai `parseChunkUsage` 相同）。
 - 流式响应的 usage：代理请求上游时要求返回 usage（`stream_options.include_usage`）；若上游仍未返回，该调用记 `usage: "unavailable"`，这一轮的总 token 即为 unavailable，不补 0。
 
 ### 7.2 EdgeBytes
@@ -231,7 +239,7 @@ harness 不决定交接什么，只截获框架实际发生的交付，写入 `h
 1. **代理**：上游用本地 stub。流式与非流式都能原样透传；usage 映射正确；按路径前缀归属角色，缺前缀记 `unattributed`；上游返回 401/402 时标记 exhausted；假 key 被替换为真 key，真 key 不出现在任何日志中。
 2. **harness 离线端到端**：stub 按剧本返回（含工具调用），两个框架各跑一轮。断言：4 个角色都被调用；`handoffs.jsonl` 如实记录框架的默认交接（同时完成 §6.2 所列的行为核对）；`answer.md` 取自 summarizer；工具调用真实落在工作树里。
 3. **角色提示词**：§6.1 的删除规则对四个角色的输出与快照一致。
-4. **工具对齐**：同一组输入分别跑 pi 工具与移植版，比较输出，生成附录 B。
+4. **工具服务**：`/tools` 返回的 schema 与 pi 工具定义一致；6 个工具各执行一次，输出与直接调用 pi 工具相同；bash 的 PATH 前置生效。
 5. **分析脚本**：用人工构造的外部臂实验目录，验证 `edge-bytes`、`agent-split`、`aggregate`、`score-public` 能读外部臂，N/A 项不被当成 0，新增对比出现在报告中。
 
 ## 10. 上线步骤
@@ -247,7 +255,7 @@ harness 不决定交接什么，只截获框架实际发生的交付，写入 `h
   - §3、§4：新增 CREWAI、AUTOGEN 的定义、控制变量与对比关系；
   - §6：框架版本与依赖锁定；
   - §7：外部臂的指标口径（本 spec §7）；
-  - §9：新增有效性威胁——架构差异（没有编排者、组内广播）、工具为移植版、框架默认行为；
+  - §9：新增有效性威胁——架构差异（没有编排者、组内广播）、框架默认行为、代理注入的模型参数；
   - §11：**修订 14**，在外部臂的正式数据产生之前登记。
 - `experiments/README.md`、`experiments/bench/README.md`：外部臂的用法与产物说明。
 
@@ -256,13 +264,31 @@ harness 不决定交接什么，只截获框架实际发生的交付，写入 `h
 | 威胁 | 控制 |
 |---|---|
 | 架构不同构：pi 有编排者 LLM，外部框架是 agent 直接交接；AutoGen 组内广播让下游看到全部上游 | 这是被测差异本身，不去消除；用按 Agent 拆分归因 token 花在编排、交接还是干活上 |
-| 工具是移植版，行为与 pi 不完全相同 | schema 与描述逐字取自 pi；附录 B 公开差异 |
+| 工具实现不一致 | 直接调用 pi 自己的工具实现，不存在移植差异 |
 | 框架默认行为未必最优 | 这正是"默认用法"对比的定义；不调优，附录 A 公开框架实际行为 |
 | 框架绕过代理导致漏计 | 假 key，绕过即鉴权失败 |
-| 推理强度字段不对等 | 附录 C 按 provider 对齐并在 pilot 中核对 |
+| 推理强度字段不对等 | 代理按 pi 的 compat 逻辑注入（附录 C） |
+| provider 不同：回退之前 pi 臂走 commandcode、外部臂走 DeepSeek 官方 | 同一模型；每条记录写明 provider；混用 provider 的轮次做剔除后的敏感性分析 |
+| 代理修改请求（注入推理参数、回填 `reasoning_content`） | 只补 pi 本来就会发出的字段，不改消息内容；修改前后的请求都写进 `llm-calls.jsonl` |
 
-## 附录（实现时填写）
+## 附录
 
-- **附录 A**：框架默认行为核对结果（§6.2）。
-- **附录 B**：工具移植版与 pi 工具的输出差异（§6.3）。
-- **附录 C**：按 provider 的推理强度字段映射（§6.4）。
+### 附录 A：框架默认行为（离线端到端测试核实，crewai 1.15.22 / autogen-agentchat 0.7.5）
+
+| 行为 | 核实结果 | 依据 |
+|---|---|---|
+| CrewAI sequential 下，不设 `context=` 时下游收到什么 | **全部上游任务的输出**，拼接为一个 context 字符串（retriever 收到 planner 的；executor 收到 planner+retriever 的；summarizer 收到前三者的） | `crew.py` `_get_context`：同步任务传入累计的 `task_outputs`；`test/external-arm.test.mjs` 断言 |
+| CrewAI 的 LLM 调用路径 | 1.x 直接用 OpenAI SDK（不经 litellm，环境中未安装 litellm），走 chat completions | `crewai/llms/providers/openai/completion.py` |
+| AutoGen 组内广播 | 每个 agent 在自己发言前收到此前**所有** agent 的最终回复（planner→3 个下游，retriever→2 个，executor→1 个）以及任务原文 | 测试断言交接序列 |
+| AutoGen agent 内部工具调用是否外传 | **不外传**：retriever 的第一次请求里没有 planner 的 tool 调用或 tool 结果 | 测试检查 retriever 首次请求的消息 |
+| AutoGen `max_tool_iterations` 默认值 | 1（调用一次工具即结束发言），故设为 25 | `_assistant_agent.py` |
+| retriever frontmatter `description` 含 "and shared memory" | 按 §6.1 的机械规则保留原文，作为 CrewAI 的 `goal`/`expected_output` 与 AutoGen 的 `description` | 如实记录，不另行改写 |
+
+### 附录 C：推理与模型参数（依据 pi-ai 0.87.0 源码）
+
+| 接口 | pi 发出的字段 | 外部臂经代理发出的字段 |
+|---|---|---|
+| DeepSeek 官方（外部臂所用） | `thinking: {type: "enabled"}`，`reasoning_effort: <角色档位>`，每条 assistant 消息带 `reasoning_content`（无则 `""`），流式时 `stream_options.include_usage` | 相同（代理注入；`reasoning_content` 按 tool_call id 或正文匹配回填） |
+| commandcode（pi 臂主用） | `reasoning_effort: <角色档位>` | 不适用（外部臂不走 commandcode） |
+
+usage 映射同 pi-ai `parseChunkUsage`（§7.1）。`medium` 档在 DeepSeek 官方的实际行为见 pilot 记录。

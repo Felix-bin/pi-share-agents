@@ -10,7 +10,7 @@ SYNAPSE 评测所需的一切（产品代码除外）：多臂评测装置、分
 |---|---|---|
 | `bench/` | 评测装置：`runner.mjs`（经真实 pi CLI 跑 臂 × 组 × 轮）、`aggregate.mjs`、`supervise.sh`（provider 额度回退）、`build-public-families.mjs` 与 `prepare-public-data.sh`（生成公开 benchmark 任务族）、`families/` | 是 |
 | `analysis/` | 跑后分析，见下表 | 是 |
-| `legacy/` | 早期实验脚本（`records/` 为预登记、结果报告与标定数据的原件）：P4-5 残差 A/B、P50 token A/B 与 AutoGen/CrewAI 基线、delta 标定。保留它们是为了让对应报告仍可复现 | 是 |
+| `legacy/` | 早期实验脚本（`records/` 为预登记、结果报告与标定数据的原件）：P4-5 残差 A/B、delta 标定。保留它们是为了让对应报告仍可复现。P50 的脚本与旧 AutoGen/CrewAI harness 已删除（被 E1 取代，数据不在仓库内）；其预登记原件仍在 `records/` | 是 |
 | `data/` | 下载的数据集、构建好的工作树和 venv | **否**（写在 `.gitignore` 里，由 `bench/prepare-public-data.sh` 重建） |
 
 `analysis/` 下的脚本：
@@ -18,7 +18,7 @@ SYNAPSE 评测所需的一切（产品代码除外）：多臂评测装置、分
 | 脚本 | 作用 |
 |---|---|
 | `score-public.mjs` | 质量评分：Q 组算 EM/F1/Cover-EM；R 组用 SWE-QA 原版五维评审，每个答案评 5 次 |
-| `edge-bytes.mjs` | 四臂同一口径的 Agent 间通信字节，分下行、上行、按需拉取三部分 |
+| `edge-bytes.mjs` | 各臂同一口径的 Agent 间通信字节，分下行、上行、按需拉取三部分 |
 | `agent-split.mjs` | 把每个 Agent 的 token 拆成"交接"和"自己干活"两部分 |
 | `memhit.mjs` | 对照金标准链接，统计记忆的检索命中与跨轮复用 |
 | `judge.mjs` | G1/G2 的评分要点 judge |
@@ -31,7 +31,7 @@ SYNAPSE 评测所需的一切（产品代码除外）：多臂评测装置、分
 
 ## 臂与任务组
 
-四个臂只在插件的 `synapse` 配置上不同，详见 `bench/README.md`：
+pi 的四个臂只在插件的 `synapse` 配置上不同；CREWAI、AUTOGEN 是外部框架臂，不跑在 pi 上。详见 `bench/README.md`：
 
 | 臂 | 含义 |
 |---|---|
@@ -39,6 +39,8 @@ SYNAPSE 评测所需的一切（产品代码除外）：多臂评测装置、分
 | TXT | text 模式：全文转贴，记忆正文以文本形式注入 |
 | **SYN** | 完整系统：结果块加句柄交接、按引用取回记忆、状态向量、自动蒸馏 |
 | SYNCOLD | 和 SYN 相同，但每次尝试前清空记忆（没有跨轮记忆） |
+| **CREWAI** | CrewAI 默认协作（sequential crew），同样四个角色、模型与工具，不开记忆 |
+| **AUTOGEN** | AutoGen 默认协作（RoundRobinGroupChat 广播），同样四个角色、模型与工具，不开记忆 |
 
 | 组 | 来源 | 任务 | 评分 |
 |---|---|---|---|
@@ -49,16 +51,18 @@ SYNAPSE 评测所需的一切（产品代码除外）：多臂评测装置、分
 ## 复现
 
 ```sh
-# 1. 准备数据：MuSiQue、SWE-QA、锁定 commit 的 Flask、工作树、venv（放到 experiments/data/）
+# 1. 准备数据：MuSiQue、SWE-QA、锁定 commit 的 Flask、工作树、venv、外部框架环境（放到 experiments/data/）
+#    外部框架臂的 DeepSeek key：export EXTERNAL_LLM_API_KEY=…，或写进 experiments/data/external.env（已被 git 忽略）
 experiments/bench/prepare-public-data.sh
 
-# 2. 运行：每臂每轮最多 2 次尝试，同一轮四臂并发；commandcode 额度用完自动切到 DeepSeek 官方
+# 2. 运行：每臂每轮最多 2 次尝试，同一轮六臂并发；pi 臂 commandcode 额度用完自动切到 DeepSeek 官方
+#    （外部框架臂始终走 DeepSeek 官方，额度用完即终止实验）
 #    Q、R 可以放在一个实验里一起跑，也可以分开跑（见下文）
 experiments/bench/supervise.sh s5-public-q-<日期> --groups Q --rounds 10 \
-  --arms TXT,SYN,SYNCOLD,SYN0 --attempts 2 --parallel-arms \
+  --arms TXT,SYN,SYNCOLD,SYN0,CREWAI,AUTOGEN --attempts 2 --parallel-arms \
   --worktree experiments/data/worktree --path-prepend experiments/data/venv/bin
 experiments/bench/supervise.sh s5-public-r-<日期> --groups R --rounds 10 \
-  --arms TXT,SYN,SYNCOLD,SYN0 --attempts 2 --parallel-arms \
+  --arms TXT,SYN,SYNCOLD,SYN0,CREWAI,AUTOGEN --attempts 2 --parallel-arms \
   --worktree experiments/data/worktree --path-prepend experiments/data/venv/bin
 
 # 3. 分析（EXP=~/.pi/agent/synapse/experiments/<实验 id>）

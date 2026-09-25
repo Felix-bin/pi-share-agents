@@ -59,6 +59,7 @@
     "test:unit": "node --experimental-strip-types --import ./test/support/isolated-temp-root.mjs --test test/unit/*.test.ts",
     "test:integration": "node --experimental-strip-types --import ./test/support/register-loader.mjs --test test/integration/*.test.ts",
     "test:all": "npm run test:unit && npm run test:integration",
+    "test:bench": "node --test --test-concurrency=1 experiments/bench/test/*.test.mjs",
     "lint:synapse": "oxlint src/synapse"
   },
   "pi": {

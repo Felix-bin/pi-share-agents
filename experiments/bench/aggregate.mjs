@@ -14,7 +14,7 @@
  *  - Paired differences are TXT − SYN over the (group, round) pairs where BOTH
  *    arms have a valid round and a numeric value; a positive difference means
  *    SYN spent less. Each carries a percentile bootstrap 95% interval
- *    (B = 10000, seed 20260921 — the p50-aggregate.mjs implementation).
+ *    (B = 10000, seed 20260921).
  *
  * Parent tokens are the parent's own assistant messages (record.parentUsage,
  * or the same sum re-read from the round's pi-rpc.log for records written
@@ -30,6 +30,10 @@
  * process (source recorded per round). A round whose child usage is unavailable
  * has unavailable total tokens.
  *
+ * External-framework arms (record.external) have no parent session: their
+ * tokens are the proxy's per-call provider usage over all four roles
+ * (record.usage), parent tokens are N/A, and the total is the four roles.
+ *
  * "N/A" (not applicable) differs from "unavailable" (not reported): SYN0 has no
  * envelope, state or memory at all, so those metrics are N/A for it.
  */
@@ -40,9 +44,10 @@ const BOOTSTRAP_B = 10_000;
 const BOOTSTRAP_SEED = 20260921;
 const UNAVAILABLE = "unavailable";
 const NOT_APPLICABLE = "N/A";
-// Arms with SYNAPSE entirely off (memory off → no child contract): no envelope,
-// state, memory or ledger exists, so those metrics are not applicable.
-const NO_SYNAPSE_ARMS = new Set(["SYN0"]);
+// Arms with SYNAPSE entirely off (memory off → no child contract) or not pi at
+// all (CREWAI, AUTOGEN): no envelope, state, memory or ledger exists, so those
+// metrics are not applicable.
+const NO_SYNAPSE_ARMS = new Set(["SYN0", "CREWAI", "AUTOGEN"]);
 const SYNAPSE_ONLY_METRICS = ["crossAgentReuses", "distilled", "envelopeBytes", "handoffBytes", "hitRate", "hits", "messages", "queries", "reuses", "stateBytes", "stateSent"];
 
 function mulberry32(seed) {
@@ -120,6 +125,11 @@ function parentUsageFromLog(logFile) {
 let EXP_DIR = null;
 
 /** Per-round metrics from one valid rounds.jsonl record. Missing stays unavailable. */
+function externalTokens(record) {
+	const tokens = tokensOf(record.usage);
+	return { childSource: isNum(tokens) ? "proxy-usage" : UNAVAILABLE, childTokens: tokens, parentSource: NOT_APPLICABLE, parentTokens: NOT_APPLICABLE, tokens };
+}
+
 function roundMetrics(record) {
 	const t = record.totals;
 	const get = (fn) => {
@@ -137,13 +147,14 @@ function roundMetrics(record) {
 	const parentTokens = isNum(ledgerParent) ? ledgerParent : ownParent;
 	const parentSource = isNum(ledgerParent) ? "ledger" : isNum(ownParent) ? (record.parentUsage ? "rpc-message-end" : "rpc-message-end (re-read from pi-rpc.log)") : UNAVAILABLE;
 	const tokens = isNum(childTokens) && isNum(parentTokens) ? childTokens + parentTokens : UNAVAILABLE;
+	const ext = record.external ? externalTokens(record) : null;
 	const queries = get((x) => x.memory?.queries);
 	const hitRate = get((x) => x.memory?.hitRate);
 	const hits = isNum(queries) && isNum(hitRate) ? Math.round(hitRate * queries) : isNum(queries) && queries === 0 ? 0 : UNAVAILABLE;
 	const metrics = {
 		answerBytes: isNum(record.answerBytes) ? record.answerBytes : UNAVAILABLE,
-		childSource,
-		childTokens,
+		childSource: ext?.childSource ?? childSource,
+		childTokens: ext?.childTokens ?? childTokens,
 		crossAgentReuses: get((x) => x.memory?.crossAgentReuses),
 		distilled: get((x) => x.memory?.distilled),
 		envelopeBytes: get((x) => x.control?.envelopeBytes),
@@ -151,15 +162,15 @@ function roundMetrics(record) {
 		hitRate,
 		hits,
 		messages: get((x) => x.messages?.delivered),
-		parentSource,
-		parentTokens,
+		parentSource: ext?.parentSource ?? parentSource,
+		parentTokens: ext?.parentTokens ?? parentTokens,
 		queries,
 		reuses: get((x) => x.memory?.reuses),
 		roles: record.roles?.seen?.length ?? UNAVAILABLE,
 		runs: record.runIds?.length ?? 0,
 		stateBytes: get((x) => x.state?.sentBytes),
 		stateSent: get((x) => x.state?.sent),
-		tokens,
+		tokens: ext?.tokens ?? tokens,
 		wallMs: isNum(record.wallMs) ? record.wallMs : UNAVAILABLE,
 	};
 	if (NO_SYNAPSE_ARMS.has(record.arm)) for (const key of SYNAPSE_ONLY_METRICS) metrics[key] = NOT_APPLICABLE;
@@ -282,12 +293,20 @@ const PAIRS = [
 	["SYNCOLD", "SYN"],
 	["SYN0", "SYN"],
 	["SYN0", "TXT"],
+	["CREWAI", "SYN"],
+	["AUTOGEN", "SYN"],
+	["CREWAI", "SYN0"],
+	["AUTOGEN", "SYN0"],
 ];
 const PAIR_TITLES = {
 	"TXT-SYN": "协议效果（text 模式 vs synapse 模式，记忆均开启）",
 	"SYNCOLD-SYN": "跨轮记忆效果（同一协议与状态面，SYNCOLD 每轮清空记忆）",
 	"SYN0-SYN": "SYNAPSE 整体效果（无 SYNAPSE 基线 vs 完整系统）",
 	"SYN0-TXT": "text 模式 + 文本记忆效果（无 SYNAPSE 基线 vs TXT）",
+	"CREWAI-SYN": "SYNAPSE 相对 CrewAI 默认协作（主流框架对照）",
+	"AUTOGEN-SYN": "SYNAPSE 相对 AutoGen 默认协作（主流框架对照）",
+	"CREWAI-SYN0": "不开 SYNAPSE 的 pi 相对 CrewAI 默认协作",
+	"AUTOGEN-SYN0": "不开 SYNAPSE 的 pi 相对 AutoGen 默认协作",
 };
 
 // ---------------------------------------------------------------------------
@@ -316,7 +335,7 @@ function buildReport(summary, manifest) {
 	lines.push(`- 每组轮数：${manifest.rounds}；每轮最多尝试 ${manifest.attempts} 次；语义检索：${manifest.semantic === UNAVAILABLE ? "不可用（未配置 embedding key，SYN 仅关键词+标签检索）" : `${manifest.semantic}（${manifest.embedding?.representationId ?? "来源不明"}；TXT 为 text 模式，SYN0 为 SYNAPSE 全关）`}`);
 	const corpus = manifest.corpus;
 	lines.push(`- 语料库（状态面）：${corpus && typeof corpus === "object" ? `${String(corpus.corpusSnapshotId).slice(0, 12)}…，${corpus.chunks} chunks，窗口 ${corpus.window}/${corpus.overlap}，仅 SYN/SYNCOLD 配置` : corpus ?? "未配置（旧装置：SYN 不发状态）"}`);
-	lines.push(`- 各臂配置：${(manifest.arms ?? []).map((a) => `${a.arm} = ${JSON.stringify({ ...a.config.synapse, storageRoot: undefined })}`).join("；")}`);
+	lines.push(`- 各臂配置：${(manifest.arms ?? []).map((a) => (a.config.external ? `${a.arm} = ${a.config.external.framework}（${a.config.external.orchestration}）` : `${a.arm} = ${JSON.stringify({ ...a.config.synapse, storageRoot: undefined })}`)).join("；")}`);
 	if (manifest.armSemantics) lines.push(`- 各臂含义：${Object.entries(manifest.armSemantics).filter(([arm]) => arms.includes(arm)).map(([arm, text]) => `${arm}：${text}`).join("；")}`);
 	lines.push(`- 执行顺序：每组内逐轮、各臂交替（${arms.map((arm) => `${arm} r1`).join(" → ")} → …）；store 跨轮、跨任务组保留（SYNCOLD 每次尝试前清空记忆）`);
 	lines.push(`- 配对差 = A − B（正值 = B 更省）；节省 % = (A − B) / A；bootstrap B=${BOOTSTRAP_B}，seed=${BOOTSTRAP_SEED}；"不可用"表示没有上报，从不按 0 计`);
@@ -387,6 +406,7 @@ function buildReport(summary, manifest) {
 	lines.push("- 消息数、交接字节、信封字节、状态次数/字节、记忆查询/复用均来自 `aggregateMetering`（src/synapse/metering.ts）对该轮全部 metering 运行的汇总。");
 	lines.push("- 父会话 token 只算父会话自己的 assistant 消息（RPC `message_end` usage）；`get_session_stats` 已含进程内子会话，不再使用（此前的总 token 因此重复计入子会话）。");
 	lines.push("- 子会话 token 来自账本 `model-usage`（role child）；SYN0 无账本（SYNAPSE 全关），取各子 Agent 的 `artifacts/*_meta.json` usage（与账本同源：两者并存的轮次逐位一致），来源记录在 summary.json（tokens.child.sources / tokens.parent.sources）。");
+	lines.push("- CREWAI/AUTOGEN 不是 pi：没有父会话（父会话 token 为 N/A），token 取自记录代理逐次调用的 provider usage（四个角色合计，映射同 pi-ai parseChunkUsage）。");
 	lines.push("- \"N/A\" 表示该臂不存在这项机制（SYN0 没有信封、状态与记忆），\"不可用\" 表示应有而未上报；两者都从不按 0 计。");
 	lines.push("- 命中率 = 有授权有效命中的查询数 / 查询数；查询数为 0 时为 N/A（不是 0%）。累计命中率按轮累加查询与命中后相除。");
 	lines.push("- 区间跨 0 的差异不能表述为显著节省；配对数少于总轮数时，缺失轮的原因见“有效性”。");

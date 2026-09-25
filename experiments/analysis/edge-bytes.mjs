@@ -18,6 +18,12 @@
  *           handle's text is communication too: a result block that sends its
  *           detail by handle must not look free by leaving the reads out.
  *
+ * External-framework arms (CREWAI, AUTOGEN; spec
+ * 2026-09-25-synapse-external-framework-arms §7.2) have no orchestrator and no
+ * handles: down is every delivery their harness recorded in handoffs.jsonl (the
+ * task text to each agent, plus CrewAI's context or AutoGen's broadcast to each
+ * recipient), up and pull are 0.
+ *
  * UTF-8 bytes and characters are both reported. Paired differences use the
  * aggregate's bootstrap (B = 10000, seed 20260921) over (group, round) pairs.
  */
@@ -55,6 +61,14 @@ function measure(record) {
 		sum[slot].bytes += bytesOf(text);
 		sum[slot].chars += charsOf(text);
 	};
+	if (record.external) {
+		for (const handoff of readJsonl(path.join(evidence, "handoffs.jsonl"))) {
+			add("down", handoff.text);
+			sum.handoffs += 1;
+		}
+		const total = { bytes: sum.down.bytes, chars: sum.down.chars };
+		return { ...sum, total };
+	}
 	if (fs.existsSync(artifacts)) {
 		for (const file of fs.readdirSync(artifacts).filter((name) => name.endsWith("_transcript.jsonl"))) {
 			const entries = readJsonl(path.join(artifacts, file));
@@ -130,7 +144,7 @@ const perArm = Object.fromEntries(arms.map((arm) => {
 	const mine = rows.filter((row) => row.arm === arm);
 	return [arm, { rounds: mine.length, totalBytes: mean(mine.map((r) => r.total.bytes)), totalChars: mean(mine.map((r) => r.total.chars)), downBytes: mean(mine.map((r) => r.down.bytes)), upBytes: mean(mine.map((r) => r.up.bytes)), pullBytes: mean(mine.map((r) => r.pull.bytes)), redeemedBytes: mean(mine.map((r) => r.redeemedBytes)), pulls: mean(mine.map((r) => r.pulls)) }];
 }));
-const PAIRS = [["SYN0", "SYN"], ["TXT", "SYN"], ["SYNCOLD", "SYN"], ["SYN0", "TXT"]];
+const PAIRS = [["SYN0", "SYN"], ["TXT", "SYN"], ["SYNCOLD", "SYN"], ["SYN0", "TXT"], ["CREWAI", "SYN"], ["AUTOGEN", "SYN"], ["CREWAI", "SYN0"], ["AUTOGEN", "SYN0"]];
 const comparisons = {};
 for (const [a, b] of PAIRS) {
 	if (!arms.includes(a) || !arms.includes(b)) continue;
@@ -151,7 +165,7 @@ for (const [a, b] of PAIRS) {
 const outDir = path.join(expDir, "edge-bytes");
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, "rounds.jsonl"), `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
-fs.writeFileSync(path.join(outDir, "summary.json"), `${JSON.stringify({ comparisons, definition: "down (child task + injected user messages + redeemed memory) + up (subagent tool results to the parent) + pull (child synapse_read results); UTF-8 bytes", experimentId: manifest.experimentId, perArm }, null, "\t")}\n`);
+fs.writeFileSync(path.join(outDir, "summary.json"), `${JSON.stringify({ comparisons, definition: "down (child task + injected user messages + redeemed memory; external arms: every recorded delivery into an agent's context) + up (subagent tool results to the parent; 0 without an orchestrator) + pull (child synapse_read results; 0 without handles); UTF-8 bytes", experimentId: manifest.experimentId, perArm }, null, "\t")}\n`);
 const kb = (n) => (n === null ? "n/a" : `${(n / 1000).toFixed(1)}k`);
 const lines = [`# EdgeBytes — ${manifest.experimentId}`, "", "| arm | rounds | total/round | down | up | pull (reads) | redeemed |", "|---|---|---|---|---|---|---|"];
 for (const [arm, a] of Object.entries(perArm)) lines.push(`| ${arm} | ${a.rounds} | ${kb(a.totalBytes)} | ${kb(a.downBytes)} | ${kb(a.upBytes)} | ${kb(a.pullBytes)} (${a.pulls?.toFixed(1) ?? "n/a"}) | ${kb(a.redeemedBytes)} |`);

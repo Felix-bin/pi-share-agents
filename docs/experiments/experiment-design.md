@@ -14,7 +14,7 @@
 
 | 评分项（分值） | 要证明什么 | 实验 | 主要证据 | 状态 |
 |---|---|---|---|---|
-| 通信效率（25） | 在质量不下降的前提下，Agent 间通信比纯文本协作更少，总 token 不增加 | **E1** 四臂主实验（Q、R 两组公开 benchmark） | EdgeBytes、总 API token、按 Agent 拆分的交接占比；质量非劣 | 冒烟通过，正式重跑待启动 |
+| 通信效率（25） | 在质量不下降的前提下，Agent 间通信比纯文本协作（pi 自身与主流框架 CrewAI、AutoGen）更少，总 token 不增加 | **E1** 六臂主实验（Q、R 两组公开 benchmark） | EdgeBytes、总 API token、按 Agent 拆分的交接占比；质量非劣 | 冒烟通过，正式重跑待启动 |
 | 状态传递创新（20） | 向量确实携带任务特定信息；传向量比传文本省字节；接收方真的用上了它 | **E2a** causal-state（离线因果审计）、**E2b** transport（传输代价）、E1 在线状态面 | 正确 / 错配 / 随机 / 零向量四组对照的 hit@k；各路径字节与时延；E1 中的 state.sent / consumed | E2a、E2b 已出数 |
 | 记忆复用（20） | 关联任务链上，后面的轮次复用前面轮次的记忆，命中有金标准可查，并带来收益 | **E3**：SYNCOLD 对 SYN（同协议，只差跨轮记忆），memhit | 跨轮复用率、dep 召回、anchor 精度；token 与质量的差异 | 随 E1 |
 | 系统完整性（20） | 4 个角色、每组 10 轮以上连续运行、失败不被吞掉 | **E4**：E1 的 80 轮本身 | 有效率、重试、超时、结果块回退、provider 回退 | 随 E1 |
@@ -58,7 +58,7 @@
 
 | 编号 | 名称 | 问题 | 方法 | 数据 |
 |---|---|---|---|---|
-| **E1** | 四臂主实验 | 相比纯文本协作，是否少通信、少 token，且质量不下降 | 4 臂 × 2 组（Q、R）× 10 轮，同一轮的四臂并发 | §10.7 冒烟；正式重跑待启动 |
+| **E1** | 六臂主实验 | 相比纯文本协作（pi 自身，以及 CrewAI、AutoGen 的默认协作），是否少通信、少 token，且质量不下降 | 6 臂 × 2 组（Q、R）× 10 轮，同一轮的六臂并发 | §10.7 冒烟；正式重跑待启动 |
 | **E2a** | causal-state | 向量是否携带任务特定信息 | 离线：同一接收方、同一语料，分别给正确、错配、随机、零向量，比较 hit@k | §10.1 |
 | **E2b** | transport | 一次交接在各条传输路径上的字节与时延 | 离线：直接调用产品模块，每条路径 2000 次 | §10.2 |
 | **E3** | 记忆复用 | 跨轮记忆是否被复用、命中是否正确、是否带来收益 | 从 E1 中取 SYNCOLD 对 SYN；memhit 对照金标准链接 | 随 E1 |
@@ -71,7 +71,7 @@
 
 ### 4.1 定义
 
-四个臂只在插件 `synapse` 配置块上有差别，其余条件全部相同（§4.2）：
+pi 的四个臂只在插件 `synapse` 配置块上有差别；另有两个外部框架臂，不跑在 pi 上（§4.4）。其余条件见 §4.2：
 
 | 臂 | 配置 | 含义 |
 |---|---|---|
@@ -79,6 +79,8 @@
 | **TXT** | `{mode:"text", memory:"project"}` | SYNAPSE 的 text 模式：阶段之间全文转贴，召回的记忆正文以文本形式随任务下发，没有状态面 |
 | **SYN** | `{mode:"synapse", memory:"project", autoDistill:true, corpusSnapshotId, embedding}` | 完整系统：结果块加句柄交接、按引用取回记忆、状态向量、自动蒸馏 |
 | **SYNCOLD** | 与 SYN 相同，另外在每次尝试前把 `memory/ supersessions/ objects/ receipts/ envelopes/` 移到 `store/_cold-archive/<标签>/` | 同一套协议和状态面，但**没有跨轮记忆**（同一轮内部的交接照常） |
+| **CREWAI** | CrewAI 1.15.22，`Process.sequential`，四个角色各一个 Task，框架默认 | 主流框架的默认协作：纯文本交接，不开记忆，不设 `context=` |
+| **AUTOGEN** | autogen-agentchat 0.7.5，`RoundRobinGroupChat`，框架默认广播 | 主流框架的默认协作：纯文本交接，不开记忆 |
 
 ### 4.2 控制变量（四臂完全相同）
 
@@ -86,7 +88,7 @@
 - 同一个编排模板、同一段任务文本、相同的题目顺序。
 - 同一套角色定义，同一份工作树副本（内容逐字节一致），同一个 venv（`--path-prepend`）。
 - 相同的超时（单轮 30 分钟）、尝试次数（每轮最多 2 次）和有效性规则。
-- 同一轮的四臂并发（`--parallel-arms`），处在同一个 provider 时间窗口；四臂都结束后才进入下一轮。
+- 同一轮的各臂并发（`--parallel-arms`），处在同一个时间窗口；所有臂都结束后才进入下一轮。外部框架臂的 provider 与 pi 臂不同（§4.4）。
 - 每个臂有独立的记忆库，跨轮、跨组都不清空（SYNCOLD 除外）。
 
 ### 4.3 对比关系
@@ -97,8 +99,20 @@
 | TXT → SYN | text 模式换成 synapse 模式：协议、结果块、状态面一起变化 | 分解 |
 | SYNCOLD → SYN | 跨轮记忆的效果（协议和状态面相同） | E3 记忆复用 |
 | SYN0 → TXT | text 模式加文本记忆，相对不开 SYNAPSE | 分解 |
+| **CREWAI → SYN**、**AUTOGEN → SYN** | SYNAPSE 相对主流框架的默认协作 | **主结论**（与 SYN0 → SYN 并列） |
+| CREWAI → SYN0、AUTOGEN → SYN0 | 不开 SYNAPSE 的 pi 相对主流框架 | 辅助 |
 
 状态面的单独效果不在 E1 中隔离；"向量携带信息"由 E2a 证明。
+
+### 4.4 外部框架臂（CREWAI、AUTOGEN）
+
+设计见 `docs/superpowers/specs/2026-09-25-synapse-external-framework-arms-design.md`，要点：
+
+- **与 pi 臂相同**：四个角色（角色定义取自 `agents/*.md`，机械删去共享记忆段与 `contact_supervisor`）、同一模型 DeepSeek-V4.1-Flash、推理档位（planner/summarizer high，retriever/executor medium）、任务原文、工作树、PATH 前置的 Flask venv、超时与尝试次数，并与 pi 四臂同批并发、按（组，轮）配对。
+- **工具**：直接调用 pi 自己的六个工具实现（`experiments/bench/tool-server.mjs`），不做移植，schema、描述与输出与 pi 相同。
+- **由框架决定**：任务分配、上下文传递、交接内容，一律用框架默认，`role-pipeline.md` 不施加给外部框架。CrewAI 默认把全部上游输出拼接后交给下游；AutoGen 默认把每条最终回复广播给后续发言的 agent，agent 内部的工具调用不外传。只设循环上限：CrewAI `max_iter` 取默认 25；AutoGen `max_tool_iterations=25`、`reflect_on_tool_use=True`、`MaxMessageTermination(5)`。
+- **provider**：外部臂不基于 pi，不读 pi 的 provider 配置，固定走 DeepSeek 官方 OpenAI 兼容接口（`https://api.deepseek.com`，模型 id `deepseek-flash`），key 来自 `EXTERNAL_LLM_API_KEY` 或 git 忽略的 `experiments/data/external.env`。pi 臂主用 commandcode，回退之前两者网关不同、模型相同（§9）。外部臂的额度耗尽直接终止实验，不触发 pi 侧的 provider 回退。
+- **计量**：每次尝试一个本地记录代理（`experiments/bench/llm-proxy.mjs`），各角色经 `/<角色>/v1` 访问，token 取自 provider 响应的 usage（映射同 pi-ai），框架只持有假 key。代理按角色补上 pi 在同一接口会发出的推理参数（DeepSeek：`thinking`、`reasoning_effort`，并回填 `reasoning_content`）。
 
 ---
 
@@ -188,10 +202,11 @@
 | judge | `z-ai/glm-5.3-flashx`：与被测模型不同族，避免模型偏向自己的回答。Q 组不需要 judge |
 | 嵌入 | SiliconFlow `BAAI/bge-m3`，1024 维 |
 | 语料库 | 由工作树构建，窗口 40 行、重叠 8 行（产品默认 200/40 的最大块会超出 bge-m3 的输入上限），共 1005 块；只配给 SYN 和 SYNCOLD |
-| 并发与轮次 | 同一轮的四臂并发（`--parallel-arms`）；每组 10 轮；Q、R 可以放在一个实验里，也可以分开跑（分开时记忆库也分开） |
+| 并发与轮次 | 同一轮的六臂并发（`--parallel-arms`）；每组 10 轮；Q、R 可以放在一个实验里，也可以分开跑（分开时记忆库也分开） |
 | 超时与尝试 | 单轮 30 分钟；每轮最多 2 次尝试；所有尝试都保留证据 |
 | 有效性 | 流水线正常结束，且有最终回答；有账本的臂要求本轮至少写出一个计量运行，SYN0 要求至少有一个子 Agent 的 meta 文件 |
 | 续跑 | `--resume`：臂、组、轮次、语料库和各臂配置都取自原 manifest；有效轮次跳过；新尝试的编号排在磁盘上已有尝试之后 |
+| 外部框架臂 | CrewAI 1.15.22、autogen-agentchat 0.7.5，版本钉在 `experiments/bench/external/requirements.lock`，环境为 `experiments/data/frameworks-venv/`（`prepare-public-data.sh` 建立）；provider 见 §4.4 |
 | 产物 | `~/.pi/agent/synapse/experiments/<id>/`：manifest（代码、pi、模型、配置、工作树摘要、pip freeze）、rounds.jsonl、progress.ndjson、evidence/（每次尝试的 rpc 日志、prompt、answer、计量副本）、tmp/（每个子 Agent 的 input、output、transcript、meta）、store-/work-/agent-<臂>/ |
 
 ---
@@ -205,10 +220,13 @@
    - **上行**：父会话收到的所有 subagent 工具结果，包括 workflowScript 的返回值。
    - **按需拉取**：子 Agent 所有 `synapse_read` 调用的结果。按句柄读取全文也算通信，不能因为走了句柄就当成免费。
 
+   外部框架臂没有编排者与句柄：下行是 harness 记录在 `handoffs.jsonl` 里的每一次送达（任务文本送达各 agent，加上 CrewAI 的 context 或 AutoGen 的广播，按收件人各计一次），上行与按需拉取为 0。
+
    这里不用产品自带的 `text.handoffBytes` 做跨臂比较，因为它不可比：synapse 模式下召回的记忆写进系统提示词，不经过它计量的那条通道；SYN0 又没有账本。
 2. **总 API token**：父会话自己的 token 加各子会话的 token，只计 input + output，cacheRead 单列。
    - 父会话 token：累加 RPC 流中父会话每条 assistant `message_end` 的 usage（`record.parentUsage`）。**不用** `get_session_stats`，因为它已经包含了进程内子会话，用它会把子会话算两遍（§11 修订 8）。
    - 子会话 token：有账本的臂用账本里的 `model-usage`（role=child）；SYN0 用各子 Agent `*_meta.json` 中 usage 的总和。两种来源在同一轮都存在时，逐位一致。
+   - 外部框架臂：没有父会话（记为 N/A），总 token 为四个角色经记录代理的逐次调用 usage 之和（`llm-calls.jsonl`）。
 3. **按 Agent 拆分**（`experiments/analysis/agent-split.mjs`）：把每个 Agent 的处理量（prompt 的 input + cacheRead，再加 output）拆成两部分。
    - **交接**：读取其他 Agent 交来的内容，乘以它在上下文中停留的调用次数；再加上它写给其他 Agent 的内容。
    - **自己干活**：固定开销（系统提示和工具定义）、工具结果与自身历史、推理与工具调用。
@@ -289,6 +307,10 @@
 | **样本量小**（每组 10 轮） | 配对设计、bootstrap 区间、区间跨 0 时不下结论；Q、R 两组合并与分组各报一次 |
 | **任务选择偏差**（公开题集的一个子簇） | 选题规则固定，写死 id，重建结果不变；局限写入报告（§13） |
 | **自建题的"自证"** | 主实验只用公开 benchmark；G1/G2 只作演示 |
+| **外部框架臂与 pi 架构不同构**（没有编排者 LLM；AutoGen 组内广播） | 这是被测差异本身，不去消除；用按 Agent 拆分归因 token 花在编排、交接还是干活上 |
+| **外部框架的默认行为未必最优** | 这正是"默认用法"对比的定义；不调优，spec 附录 A 公开框架的实际行为 |
+| **provider 不同**（回退前 pi 臂走 commandcode、外部臂走 DeepSeek 官方） | 同一模型；每条记录写明 provider；混用 provider 的轮次做剔除后的敏感性分析 |
+| **代理修改外部臂的请求**（注入推理参数、回填 `reasoning_content`） | 只补 pi 在同一接口本来会发出的字段，不改消息内容；发往上游的请求原样记入 `llm-calls.jsonl` |
 
 ---
 
@@ -368,7 +390,7 @@
 
 - **设计**：SYN 对 TXT，单轮单个 retriever 委派，30 题独立任务；另有 AutoGen / CrewAI 作跨系统参照。
 - **数据**：已跑过，数据存放在仓库之外。当时的 SYN 臂记忆一直闲置：30 轮跑完，记忆库是 0 条。这直接催生了宿主侧自动蒸馏。
-- **现状**：P50 的任务是单轮独立题，不满足"关联的连续任务"，已被 E1 取代。
+- **现状**：P50 的任务是单轮独立题，不满足"关联的连续任务"，已被 E1 取代。其脚本与旧 AutoGen/CrewAI harness 已从仓库删除（2026-09-25），预登记原件仍在 `experiments/legacy/records/`；跨框架对照改由 E1 的 CREWAI、AUTOGEN 臂承担（§4.4）。
 - **P50M**：记忆复用三臂实验。预登记后一直没有执行，已废止，由 E3 取代。
 
 ### 10.6 优化前基线：`s5-main-20260925`（G1 前 7 轮，2026-09-25 暂停）
@@ -434,6 +456,7 @@
 | 11 | 09-25 | **任务族改为公开 benchmark**：Q（MuSiQue）、R（SWE-QA Flask）；G1/G2 降为补充演示 | 自建题说服力不足 |
 | 12 | 09-25 | Q 组的格式说明收紧为"只写实体、数字或短语，不加解释" | 冒烟中答案内容都对，但 ANSWER 行写成整句，EM 被判错 |
 | 13 | 09-25 | R 组提供 Flask venv，并用 `--path-prepend` 加入 PATH；实验文件统一移到 `experiments/`；本文取代分散的文档 | 冒烟中 executor 全盘搜索 pytest 导致超时；目录整理 |
+| 14 | 09-25 | **E1 新增 CREWAI、AUTOGEN 两个外部框架臂**（§4.4），与 pi 四臂同批配对；外部臂固定走 DeepSeek 官方接口；EdgeBytes 与 token 口径扩展到外部臂（§7.1）；新增 4 组对比与有效性威胁（§4.3、§9） | E1 缺少与其他多智能体框架的对比；登记于外部臂正式数据产生之前 |
 
 ---
 
@@ -443,12 +466,12 @@
 # 1. 数据（写到 experiments/data/，不进 git）
 experiments/bench/prepare-public-data.sh
 
-# 2. 运行（Q、R 分开跑；同一轮的四臂并发；额度用尽时自动回退）
+# 2. 运行（Q、R 分开跑；同一轮的六臂并发；pi 臂额度用尽时自动回退，外部臂的 key 见 §4.4）
 experiments/bench/supervise.sh s5-public-q-<日期> --groups Q --rounds 10 \
-  --arms TXT,SYN,SYNCOLD,SYN0 --attempts 2 --parallel-arms \
+  --arms TXT,SYN,SYNCOLD,SYN0,CREWAI,AUTOGEN --attempts 2 --parallel-arms \
   --worktree experiments/data/worktree --path-prepend experiments/data/venv/bin
 experiments/bench/supervise.sh s5-public-r-<日期> --groups R --rounds 10 \
-  --arms TXT,SYN,SYNCOLD,SYN0 --attempts 2 --parallel-arms \
+  --arms TXT,SYN,SYNCOLD,SYN0,CREWAI,AUTOGEN --attempts 2 --parallel-arms \
   --worktree experiments/data/worktree --path-prepend experiments/data/venv/bin
 
 # 3. 分析
@@ -476,7 +499,7 @@ node --experimental-strip-types experiments/analysis/transport.mjs
 
 **待办**：
 
-1. 正式重跑 E1：Q、R 各 10 轮 × 4 臂。
+1. 正式重跑 E1：Q、R 各 10 轮 × 6 臂（含 CREWAI、AUTOGEN）。
 2. 用 E1 数据产出 E3、E4 的统计。
 3. 在 openEuler 24.03-LTS-SP3 真机上完成：transport 复测（uds 的 10 ms）、S1/S2/S3 验收、E5 内核账本对账。
 4. 可选：换一个模型档位，复跑 SYN0 对 SYN。

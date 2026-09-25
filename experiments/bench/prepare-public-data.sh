@@ -7,6 +7,8 @@
 #   worktree/{musique,flask}/    what the agents read (built by build-public-families.mjs)
 #   venv/                        Python with Flask installed from worktree/flask and pytest<9,
 #                                so the executor can run the repository's own tests
+#   frameworks-venv/             CrewAI and AutoGen for the external-framework arms, installed
+#                                from external/requirements.lock (exact versions)
 # Idempotent: downloads are skipped when present; families and worktree are rebuilt.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -30,4 +32,9 @@ fi
 "$DATA/venv/bin/pip" install -q --disable-pip-version-check -e "$DATA/worktree/flask" "pytest<9"
 "$DATA/venv/bin/pip" freeze > "$DATA/venv-freeze.txt"
 (cd "$DATA/worktree/flask" && "$DATA/venv/bin/python" -m pytest -q tests/test_json_tag.py >/dev/null) && echo "venv ok: Flask tests run"
+if [ ! -x "$DATA/frameworks-venv/bin/python" ]; then
+	python3 -m venv "$DATA/frameworks-venv"
+fi
+"$DATA/frameworks-venv/bin/pip" install -q --disable-pip-version-check -r "$HERE/external/requirements.lock"
+"$DATA/frameworks-venv/bin/python" -c "import crewai, autogen_agentchat; print('frameworks ok: crewai', crewai.__version__, '/ autogen-agentchat', autogen_agentchat.__version__)"
 echo "data ready in $DATA"

@@ -1,6 +1,6 @@
 # synapse-bench：连续关联任务评测
 
-两组各 10 轮的关联任务（后一轮显式依赖前一轮结论），用真实 pi CLI 跑四角色流水线（planner → retriever → executor → summarizer），在最多四个臂上比较通信、状态传递与记忆复用的账本。臂的定义与对比口径见 `docs/experiments/experiment-design.md` §4。
+两组各 10 轮的关联任务（后一轮显式依赖前一轮结论），用真实 pi CLI 跑四角色流水线（planner → retriever → executor → summarizer），另可在 CrewAI、AutoGen 中跑同样四个角色，在最多六个臂上比较通信、状态传递与记忆复用的账本。臂的定义与对比口径见 `docs/experiments/experiment-design.md` §4。
 
 - `families/q-musique.json`、`families/r-sweqa-flask.json`：公开 benchmark 组（见下）
 - `families/g1-openeuler.json`：openEuler 系统能力调研链（iSulad → IPC namespace → tmpfs → AF_UNIX → eBPF → 归因 → 验收清单）
@@ -49,9 +49,23 @@ node experiments/bench/aggregate.mjs ~/.pi/agent/synapse/experiments/<experiment
 | SYN | `{mode:"synapse", memory:"project", autoDistill:true, corpusSnapshotId}` | 完整系统：引用交接、自动蒸馏、状态面 |
 | SYNCOLD | 同 SYN | 每次尝试前把记忆移到 `store-SYNCOLD/_cold-archive/<标签>/`：无跨轮记忆 |
 | SYN0 | `{mode:"synapse", memory:"off"}` | SYNAPSE 全关：memory off 不签发 child contract，没有信封、状态、记忆和账本，等于纯 pi 多 Agent |
+| CREWAI | `external-arm.mjs`：CrewAI sequential crew | 不是 pi：同样四个角色、模型、工具与任务，编排与交接按 CrewAI 默认 |
+| AUTOGEN | `external-arm.mjs`：AutoGen RoundRobinGroupChat | 不是 pi：同样四个角色、模型、工具与任务，编排与交接按 AutoGen 默认 |
 
-- 对比：TXT→SYN（协议＋状态面）、SYNCOLD→SYN（跨轮记忆）、SYN0→SYN（SYNAPSE 整体）、SYN0→TXT（text 模式＋文本记忆）。
+- 对比：TXT→SYN（协议＋状态面）、SYNCOLD→SYN（跨轮记忆）、SYN0→SYN（SYNAPSE 整体）、SYN0→TXT（text 模式＋文本记忆）、CREWAI/AUTOGEN→SYN（相对主流框架）、CREWAI/AUTOGEN→SYN0（辅助）。
 - SYN0 的子会话 token 取自各子 Agent 的 `tmp/<臂>-<组>-<轮>-<尝试>/artifacts/*_meta.json`（每轮记为 `childArtifacts`，与账本同源）。它的消息、字节、状态、记忆指标记为 N/A（该臂没有这些机制），不是"不可用"。
+
+## 外部框架臂（CREWAI、AUTOGEN）
+
+设计见 `docs/superpowers/specs/2026-09-25-synapse-external-framework-arms-design.md`。每次尝试：
+
+- `llm-proxy.mjs`：本地记录代理。各角色经 `http://127.0.0.1:<端口>/<角色>/v1` 调用，代理持有真 key，按角色补上 pi 在同一接口会发出的推理参数，逐次记录请求、响应与 provider 的 usage（`llm-calls.jsonl`）。框架只拿到假 key。
+- `tool-server.mjs`：加载 pi 自己的六个工具实现，cwd 为该臂的工作树副本，PATH 前置与 pi 臂相同。
+- `external/run_crewai.py`、`external/run_autogen.py`：按框架默认方式跑一轮，写 `answer.md`（summarizer 的最终输出）与 `handoffs.jsonl`（框架实际做出的每次交付）。
+- provider：外部臂不读 pi 的 provider，固定走 DeepSeek 官方（`https://api.deepseek.com`，`deepseek-flash`）。key 取自 `EXTERNAL_LLM_API_KEY`，没有时读 git 忽略的 `experiments/data/external.env`（一行 `EXTERNAL_LLM_API_KEY=…`）。额度用尽即终止实验（退出码 1），不触发 pi 侧回退。
+- 环境：`experiments/data/frameworks-venv/`，由 `prepare-public-data.sh` 按 `external/requirements.lock` 建立。
+- 有效性：harness 正常退出、答案非空、四个角色都有模型调用、每次成功调用都报了 usage。父会话 token 为 N/A；SYNAPSE 机制指标为 N/A。
+- 测试：`npm run test:bench`（代理、工具服务、离线端到端、分析脚本）。
 
 ## 语料库与防泄露
 
@@ -70,7 +84,7 @@ node experiments/bench/aggregate.mjs ~/.pi/agent/synapse/experiments/<experiment
 - `manifest.json`：实验条件（git sha/dirty、pi 版本、模型、两组配置、任务组 sha256、轮数）
 - `rounds.jsonl`：每次尝试一行（有效性、问题、耗时、usage、本轮 metering 的 `aggregateMetering` 汇总）
 - `progress.ndjson`：round-start / round-end / arm-done / experiment-done，供控制台实时显示
-- `evidence/<arm>/<group>/round-NN/attempt-K/`：`pi-rpc.log`、`answer.md`、`prompt.md`、`synapse-config.json`、本轮 metering 副本
+- `evidence/<arm>/<group>/round-NN/attempt-K/`：`pi-rpc.log`、`answer.md`、`prompt.md`、`synapse-config.json`、本轮 metering 副本；外部框架臂为 `answer.md`、`prompt.md`、`external-config.json`、`round-spec.json`、`handoffs.jsonl`、`llm-calls.jsonl`、`harness.log`、`harness-meta.json`
 - `tmp/<arm>-<group>-<round>-<attempt>/artifacts/`：各子 Agent 的 input/output/transcript/meta（meta 中的 usage 即子会话 token）
 - `agent-<arm>/`、`store-<arm>/`、`work-<arm>/`：各臂独立的 agentDir、共享记忆库（跨轮、跨任务组不清空；SYNCOLD 例外）与仓库快照（已排除答案文件）
 
