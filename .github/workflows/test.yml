@@ -4,7 +4,7 @@ name: Tests
 # Installer, loader-selection, Bun parity and official-binary coverage lives in
 # deep.yml, which runs on pushes to main, weekly, and on demand.
 #
-# README.md and docs/** are deliberately NOT in paths-ignore: subagent-guide
+# README.md and guides/** are deliberately NOT in paths-ignore: subagent-guide
 # reads them from disk and test/unit/subagent-guide.test.ts asserts on their
 # contents, so a documentation edit can legitimately fail this job.
 
@@ -12,21 +12,17 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - CHANGELOG.md
       - VISION.md
       - LICENSE
-      - banner.png
-      - .github/assets/**
       - reference/**
+      - experiments/**
   pull_request:
     branches: [main]
     paths-ignore:
-      - CHANGELOG.md
       - VISION.md
       - LICENSE
-      - banner.png
-      - .github/assets/**
       - reference/**
+      - experiments/**
 
 permissions:
   contents: read
