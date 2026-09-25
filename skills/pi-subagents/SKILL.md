@@ -44,7 +44,7 @@ durable `.chain.md` execution are inspection or migration material only.
 Use `runs.lanes(...)` only inside a `workflowScript`, not as a top-level mode,
 when a broad, predeclared plan benefits from visible per-lane stages; otherwise
 use ordinary `runs.run(...)` / `runs.all(...)`. See the [canonical staged-lane
-example](../../docs/workflows.md#parallel-sequential-lanes). Keep assignments
+example](../../guides/workflows.md#parallel-sequential-lanes). Keep assignments
 bounded, but do not add stages or ceremony just to satisfy this skill.
 
 When composing `runs.run(...)`, `runs.all(...)`, or `runs.lanes(...)`, always

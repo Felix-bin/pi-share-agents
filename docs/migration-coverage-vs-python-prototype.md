@@ -1,6 +1,6 @@
 # 初赛机制迁移覆盖核验（对照 Python 原型）
 
-> **核验日期**：2026-09-20
+> **核验日期**：2026-09-20；**2026-09-25 更新**：见 §7，表中已被 §7 更正的行都加了"→ §7"标记
 > **基准（初赛交付）**：Python 原型 `master`，`源代码及readme文档/src/synapse/` 共 41 个文件（含各包
 > `__init__.py`）。`master` 上的模块清单经 `git ls-tree -r --name-only master` 逐条取定，
 > **不含** v5 分支新增的 `runtime/oeipc.py`、`runtime/node.py`、`qa/distributed.py`、
@@ -22,9 +22,9 @@
 | M4 | 非文本中间状态传递（生成/传递/接收/使用四环） | ✅ 四环齐备；可靠性校验为「密码学完整性（始终）+ 语义校验（`synapse.stateVerify`，默认关）」两层（见 §3） | `embedding.ts`（生成）、`state-payload.ts:89-119`（选档+封装）、`content-store.ts`（存储）、`state-retrieval.ts`（接收+排序）、`envelope.ts:57-66`（`StateRef`） |
 | M5 | 共享记忆单元（ID/来源 Agent/创建时间/任务主题/摘要） | ✅ 五项元数据齐备，另有种类、确信度、标签、来源指纹、取代状态 | `memory-store.ts:64-77`（`MemoryRecord`）、`memory-store.ts:57-62`（`provenance.agent`） |
 | M6 | 关键词/标签/语义检索 + 跨 Agent 跨任务复用 | ✅ 三路检索（0.3/0.2/0.5 语义融合；无向量时如实报 unavailable），跨 Agent 复用计数在计量里 | `retrieval.ts`、`metering.ts:107-108`（`memory-query`/`memory-reuse`） |
-| M7 | ≥2 组关联性连续任务验证 | ❌ **未迁移**：本仓库无任务族定义，也没有 A/B 运行器 | 见 §2「缺口 A」 |
+| M7 | ≥2 组关联性连续任务验证 | ✅ → §7：`experiments/bench/`（多臂 runner），任务族为公开 benchmark 组 Q（MuSiQue）和 R（SWE-QA Flask）；G1/G2 为自建补充 | `experiments/bench/runner.mjs`、`experiments/bench/families/` |
 | M8 | 消息数/文本开销/非文本规模/耗时/命中率/提升 | ✅ 计量层覆盖全部六项，且**拒绝代理值** | `metering.ts:48-123`（事件）、`metering.ts:200-206`（聚合：`hitRate`/`crossAgentReuses`/`textBytes`/`payloadBytes`/`duration.byTask`）、`metering.ts:201`（`transportBytes: "N/A"`——不报代理值） |
-| M9 | 五大模块 + ≥10 轮连续任务 | 🟡 五大模块齐备（协议/状态/记忆/运行时/计量）；**≥10 轮的执行装置未迁移** | 同 M7 |
+| M9 | 五大模块 + ≥10 轮连续任务 | ✅ → §7：五大模块齐备；每组 10 轮 × 4 臂的执行装置已就绪 | 同 M7 |
 | M10 | 源码+文档+部署+实验报告+视频，openEuler 可复现 | 🟡 本仓库层面：openEuler 适配归操作系统分支；文档在 | `docs/`、README |
 | M11 | CodeAct + 轻量沙箱（加分） | ❌ **不迁移（用户裁决 2026-09-20：暂不引入）**，按四档纪律记为**规划中**，不作为已实现能力计分 | 见 §2「缺口 B」 |
 
@@ -52,9 +52,9 @@
 | `runtime/team.py`（`build_team`：角色 + 能力 + check_fn） | `roles.ts` + Pi 委派运行时 | 已迁移 |
 | `runtime/exec_child.py`（子侧启动契约） | `child-contract.ts`、`lifecycle.ts`、`access.ts` | 已迁移 |
 | `runtime/model.py`、`runtime/subprocess_executor.py`（CodeAct 双档执行器） | —— | **不迁移**（用户裁决 2026-09-20：暂不引入；赛题 M11 属加分项，材料中按「规划中」表述，不得写成已实现） |
-| `eval/harness.py`（`ABRunner`）、`eval/manifest.py`、`eval/schema.py`、`eval/metrics.py` | `metering.ts` + `docs/experiments/` | **部分迁移**：计量与指标在且更强（拒报代理值、父侧 writer 才计总时长）；**缺 A/B 运行器、manifest 自动采集、结果 schema 校验** |
-| `qa/dataset.py`、`qa/pipeline.py`、`qa/harness.py`、`qa/scoring.py`、`qa/stats.py` | —— | **未迁移**：数据集加载、F1/EM 打分、bootstrap CI 与配对检验在本仓库没有对应物 |
-| `tasks.py`（G1/G2 关联任务族、漂移序列、负样本族） | —— | **未迁移**：连续任务序列目前写在实验 runbook 里人工冻结 |
+| `eval/harness.py`（`ABRunner`）、`eval/manifest.py`、`eval/schema.py`、`eval/metrics.py` | `metering.ts` + `experiments/bench/` + `experiments/analysis/` | **已迁移** → §7：多臂 runner（manifest 自动采集、失败留证、续跑、provider 回退）、aggregate、配对 bootstrap；结果 schema 校验仍未做 |
+| `qa/dataset.py`、`qa/pipeline.py`、`qa/harness.py`、`qa/scoring.py`、`qa/stats.py` | `experiments/bench/build-public-families.mjs`、`experiments/analysis/score-public.mjs` | **形态不同地迁移** → §7：公开数据集（MuSiQue）经四角色流水线作答，EM/F1 评分与配对 bootstrap；原型的 CoQA 未迁 |
+| `tasks.py`（G1/G2 关联任务族、漂移序列、负样本族） | `experiments/bench/families/` | **已迁移** → §7（关联任务族）；漂移序列与负样本族未迁 |
 | `cli.py`（`smoke`/`probe`/`ab`/`signal`/`m7`/数据集子命令） | `setup-command.ts` + Pi 斜杠命令 | **降级迁移**：只剩配置与状态报告入口，无自检/探针/A-B 子命令 |
 | `config.py`、`prompts.py` | `config.ts`、`agents/*.md` | 已迁移 |
 
@@ -118,7 +118,7 @@ node --experimental-strip-types --test test/integration/synapse-*.test.ts
 
 | 机制 | 位置 | 与原型的关系 |
 |---|---|---|
-| **全账口径的归因、聚合与冷/热分层** | `src/synapse/metering.ts`（`FullAccount`、`fullAccount.fallback`、`hotBase.bytesIfBaseResident`）、`docs/experiments/full-account-attribution-rule.md` | 原型的 `eval/metrics.py` 只有分项计数，没有把"这笔字节由谁付"编码进事件，也没有冷/热两行与一致性检查；原型 README 自陈部分字节口径是代理值，本仓库在无法实测处直接记 `"N/A"` 而不报代理值 |
+| **全账口径的归因、聚合与冷/热分层** | `src/synapse/metering.ts`（`FullAccount`、`fullAccount.fallback`、`hotBase.bytesIfBaseResident`）、`experiments/legacy/records/full-account-attribution-rule.md` | 原型的 `eval/metrics.py` 只有分项计数，没有把"这笔字节由谁付"编码进事件，也没有冷/热两行与一致性检查；原型 README 自陈部分字节口径是代理值，本仓库在无法实测处直接记 `"N/A"` 而不报代理值 |
 | **记录向量驻留索引** | `src/synapse/vector-cache.ts`、`synapse.vectorCache`（默认关） | 原型的 `stateplane/vector_index.py` 是**接收侧**恢复面的文本句柄→量化向量表；本仓库的索引针对**发送侧选基**的重复读取，使"每轮读全部记录"变为"每进程一次" |
 | **表示空间守卫** | `corpus.ts`（跨表示空间的幂等命中拒绝）、`state-payload.ts`（`requiredRepresentationId` 校验） | 无等价物：同一份语料在两种嵌入空间下会得到同一个快照 id，静默复用会把占位向量当真实向量用 |
 | **跨进程计量的写者归属** | `metering.ts` 的 `writer` 字段与 `totalMs` 只取父侧读数 | 原型单进程计量，无此问题 |
@@ -127,3 +127,18 @@ node --experimental-strip-types --test test/integration/synapse-*.test.ts
 **追平进度（2026-09-20 更新）**：接收侧**语义校验**已落地（`synapse.stateVerify`，重嵌入比对余弦，
 失配走恢复链；默认关——原型 VLC 是常开），见预登记 §12；**运行期能力探测**已落地（`capability-probe.ts`，
 TTL 缓存 + 协商消费，强于原型的仅查询）——R-2 剩余项清零。
+
+---
+
+## 7. 2026-09-25 更新
+
+| 项 | 变化 | 位置 |
+|---|---|---|
+| **协议的"结果"半边** | 原型消息有 result 字段，本仓库此前只有请求半边（信封），回执的 `outputRef` 恒为 null。现在中间阶段（planner / retriever / executor）交回 `[SYNAPSE result]` 块：结论行加句柄，全文存为记忆记录。回执新增 `result` 字段，`outputRef` 指向全文对象 | `src/synapse/stage-result.ts`、`src/runs/shared/synapse-delegation.ts`、spec `2026-09-25-synapse-stage-result-handoff-design.md` |
+| **句柄交接回到阶段层** | 对应原型"消息只带句柄，正文放在 CAS"的做法。下游按句柄用 `synapse_read` 读取全文；自动召回注入的记忆只带预览加句柄 | `src/synapse/redemption.ts`、`prompts/role-pipeline.md` |
+| **宿主侧自动蒸馏** | 前台路径的蒸馏此前一直拿到空文本，已修复 | `src/runs/foreground/execution.ts` |
+| **连续任务与评测装置**（M7 / M9） | 四臂 runner、公开 benchmark 任务族、统一口径的计量与评分脚本 | `experiments/` |
+| **计量** | 新增 `stage-result` 与 `memory-redeem` 事件；synapse 模式下写进系统提示词的召回记忆，此前一直没有被计量，现在已计入 | `src/synapse/metering.ts` |
+
+以下各项仍按原判定：CodeAct 沙箱（M11）、ToM 显式建模、记忆巩固、JL 投影，都未迁移。
+

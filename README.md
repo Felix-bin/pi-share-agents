@@ -142,10 +142,10 @@ pi -e ./index.ts --prompt-template ./prompts
 | 信封投递与接收侧校验 | **已接入。** 信封写入 `<storageRoot>/envelopes/<runId>/<childIndex>.json`，子 Agent 在首个回合读取并按协议解析，命名空间、能力 ID 与重算的快照 ID 任一不符即拒绝执行。信封不进模型上下文，零 token 开销。 |
 | 非文本状态传递（向量载荷） | **已实现且已验证**（限 AC-04/05/11 集成测试范围；集成测试经本地 HTTP stub 提供合成向量，真实 provider 验证待实验批次）：retrieve 委派协商为 state 时，发送侧嵌入查询并把 float32 向量发布到 CAS，信封携带 `stateRef`，接收侧校验（sha-256/维度/表示）后对固定的 `corpusSnapshotId` 语料做余弦 top-k 检索；prepare/send/receive/consume 四类事件分开计量，信封字节与失败/拒绝也入日志，对象损坏按重传≤1、文本回退≤1 的有限恢复链处理。生产宿主的检索委派触发点尚未接线（模块级 API 已就绪）。 |
 | 语义检索 / 嵌入 | **已实现且已验证**（限单元与集成测试范围 + 一次真实 provider 的端到端）：配置 `synapse.embedding` 后记忆检索带语义余弦分量（冻结 0.3/0.2/0.5 权重），无嵌入配置时诚实报 `unavailable`；状态检索（`stateId`）走独立路径消费已验证的向量载荷。**两个 provider**：`siliconflow`（请求并解析 base64 float32）与 `paratera`（普通 OpenAI 兼容网关，返回 JSON 数字数组，可经 `dimensions` 指定输出宽度）——线格式按 provider 选择，绝不从响应里嗅探，因为"把数字当 base64 解"会得到一个看似合理的错向量。`/synapse-setup` 的 `semantic` 行报告的是**与运行路径同一个**解析结果，不是常量。 |
-| 全账计量与归因 | **已实现且已验证**（单元 + 真实触发路径集成测试）：`metering.ts` 的 `FullAccount` 按冻结口径给出 ② 的分量与总和（首发/重传互斥且完备、信封控制字节、两侧基读取），并把不进入口径但必须报告的两项（接收侧载荷读取、语料排序读取）单列；回退链按 `hops` 分类计数并带 `partitionConsistent` 一致性位；冷基为实测、热基以 `hotBase.bytesIfBaseResident` 标注为**推导**。归因规则见 `docs/experiments/full-account-attribution-rule.md`，与预登记 §10/§11 对齐。**不报代理值**：无法实测的字节记 `"N/A"`。 |
+| 全账计量与归因 | **已实现且已验证**（单元 + 真实触发路径集成测试）：`metering.ts` 的 `FullAccount` 按冻结口径给出 ② 的分量与总和（首发/重传互斥且完备、信封控制字节、两侧基读取），并把不进入口径但必须报告的两项（接收侧载荷读取、语料排序读取）单列；回退链按 `hops` 分类计数并带 `partitionConsistent` 一致性位；冷基为实测、热基以 `hotBase.bytesIfBaseResident` 标注为**推导**。归因规则见 `experiments/legacy/records/full-account-attribution-rule.md`，与预登记 §10/§11 对齐。**不报代理值**：无法实测的字节记 `"N/A"`。 |
 | 接收侧语义校验 | **已实现且已验证**（单元 + 集成 + 对 P4-5 冻结证据 30 轮合法载荷的离线重算；默认关闭）：`synapse.stateVerify = "reembed"` 时，接收方用**发送方在信封里携带的那条查询**重新嵌入，与解码向量在**浮点域**算余弦，低于冻结阈值 `0.98` 即拒绝。拒绝**不走重传**（字节完好、语义已偏，重复载荷只会再失败一次）而直接走文本回退。每次校验写一条 `state-verify` 事件（含实测余弦），聚合为 `state.verifications` / `state.verificationRefusals`（在拒绝发生处计数）；拒绝触发的 hop 另记 `cause`。契约要求校验而接收方无法执行时**拒绝消费**而非静默放行。**阈值依据**（预登记 §14 勘误三）：编码器的 0.99 停止条件在**量化域**生效，目标向量自身量化损失 ≈ dim/(24·grid²)，冻结点（dim 1024/grid 127）下合法残差的浮点域余弦带实测为 [0.9868, 0.9882]——0.99 会拒绝全部合法载荷，故取 0.98（低于带下界 ≈0.007）；换 dim/grid 须重估并另立修订，回归测试已钉死"冻结编码器发出的任何残差必须清过阈值"。**能覆盖**解码失真、基错配、语义漂移与"信封文本与实际编码不一致"；**不能覆盖**"一致地过期编码"与"双方一起偏"（两侧嵌入的是同一条信封文本，一致即通过）。**成本**：每消费一条状态多一次嵌入调用，默认关闭时零额外调用。 |
 | 记录向量驻留索引 | **已实现且已验证**（单元 + 集成；默认关闭）：`synapse.vectorCache` 打开后，记录向量按内容 id 驻留进程内，选基与 recall 的重复读取从"每次排序"降为"每进程一次"，每次命中的排序写一条 `vector-cache` 事件。默认关闭以保住冻结的冷基口径；打开与关闭必须**排序一致**（差异即缺陷，有测试锁定）。已知欠债：子代理工具路径的开关接线无专项测试（见[已知缺口](#已知缺口)第 10 条）。 |
-| 残差（`delta`）编码 | **已实现且已验证（模块级）**，范围与档位分三部分如实标注：①**编解码**（限单元测试与 Python 参照黄金用例一致性）：`src/synapse/delta.ts` 的量化（round-half-even）、稀疏残差编解码与量化域余弦，与 `stateplane/residual.py` 的三组黄金用例逐字节一致，并覆盖畸形输入拒绝；②**发送/接收/消费/恢复链**（限集成测试，向量由本地 stub 提供）：发送侧按载荷占比选档并把 `encoding`/`baseMemoryId` 写进 `stateRef`，接收侧用**自己记忆库**里的基重建后排序，基缺失或载荷损坏按"重传一次→文本回退一次"的有限链处理；③**标定**（按判据属**原型或代理验证**档）：冻结为网格 127 / 阈值 0.99（int8、两字节索引），**标定结论是负结果**——没有组合达到 100% 检索一致性，按最高档降级冻结，实测 top-1 一致 97.9%、top-5 集合一致 79.1%、有序一致 56.9%（均为**前 240 轮子样本**，扩样 990 对后有序一致降至 45.35%），平均载荷 1789.73 B（较 4096 B 完整向量降 56.3%，**仅载荷口径**）；净收益待全账计量，**不得据此声称收益为正**，扫描表与成立条件见 `docs/experiments/delta-calibration-20260919.md`。**通路已接生产**：`synapse.delta`（默认 `false`）决定是否在发送侧注入基选择；开启时发送方在**接收方能读的范围内**选基，选基失败记 `error` 后回落完整向量、不使委派失败；关闭时不读任何基。真实会话中的端到端验证仍待实验批次（同上一行的范围限定）。 |
+| 残差（`delta`）编码 | **已实现且已验证（模块级）**，范围与档位分三部分如实标注：①**编解码**（限单元测试与 Python 参照黄金用例一致性）：`src/synapse/delta.ts` 的量化（round-half-even）、稀疏残差编解码与量化域余弦，与 `stateplane/residual.py` 的三组黄金用例逐字节一致，并覆盖畸形输入拒绝；②**发送/接收/消费/恢复链**（限集成测试，向量由本地 stub 提供）：发送侧按载荷占比选档并把 `encoding`/`baseMemoryId` 写进 `stateRef`，接收侧用**自己记忆库**里的基重建后排序，基缺失或载荷损坏按"重传一次→文本回退一次"的有限链处理；③**标定**（按判据属**原型或代理验证**档）：冻结为网格 127 / 阈值 0.99（int8、两字节索引），**标定结论是负结果**——没有组合达到 100% 检索一致性，按最高档降级冻结，实测 top-1 一致 97.9%、top-5 集合一致 79.1%、有序一致 56.9%（均为**前 240 轮子样本**，扩样 990 对后有序一致降至 45.35%），平均载荷 1789.73 B（较 4096 B 完整向量降 56.3%，**仅载荷口径**）；净收益待全账计量，**不得据此声称收益为正**，扫描表与成立条件见 `experiments/legacy/records/delta-calibration-20260919.md`。**通路已接生产**：`synapse.delta`（默认 `false`）决定是否在发送侧注入基选择；开启时发送方在**接收方能读的范围内**选基，选基失败记 `error` 后回落完整向量、不使委派失败；关闭时不读任何基。真实会话中的端到端验证仍待实验批次（同上一行的范围限定）。 |
 
 完整的已知缺口见[下文](#已知缺口)。
 
@@ -363,7 +363,7 @@ npm run typecheck
    运行清单见 `synapse/_state/p45-runs/RUN-MANIFEST.md`。
    **仍未验证的**：后台子会话（分离进程）路径。两臂差异的量化**已完成**（P4-5，2026-09-20 出数：
    判定＝净亏，生产默认关 delta、float32 直传为参赛主实现；全文披露与勘误见
-   `docs/experiments/P45-results-20260920.md` 与预登记 §14）。
+   `experiments/legacy/records/P45-results-20260920.md` 与预登记 §14）。
    能力协商按“角色声明的工具 + 扩展注册的工具”计算——此前只按前者，导致出厂角色下协商恒判
    “接收方不能消费”，信封一封也不会发出。残差通路同样已接（`synapse.delta`，默认关闭）。
    另有一条已知陷阱（已修）：`resolveConfiguredEmbedder` 原先只读环境变量，用 `/synapse-setup key` 存的
@@ -392,7 +392,7 @@ npm run typecheck
    ＋协商 `probe-unverified` 回落；承诺边界＝构造与语料可加载性，不含 endpoint 应答）。仍缺的是
    **评测与执行层**：CodeAct 与轻量沙箱（M11 加分项，
    **用户 2026-09-20 裁决：暂不引入**，按四档纪律记为规划中）、
-   A/B 运行器与 manifest 自动采集的**产品化形态**（P4-5 评测装置 `scripts/p45-*.mjs` 已在实验层交付）、
+   A/B 运行器与 manifest 自动采集的**产品化形态**（P4-5 评测装置 `experiments/legacy/p45-*.mjs` 已在实验层交付）、
    数据集流水线与配对统计的 CLI 化、G1/G2 关联任务族，以及 `memory/consolidate.py`。
    **在补齐之前，本仓库不得声称"覆盖初赛全部机制"。**
 10. **子代理自身 recall 路径的向量缓存开关无专项测试**（变异体 V7 存活）。发送侧选基的开关有集成
@@ -418,12 +418,11 @@ tests and cleanup"、"run this in the background"、"show active async runs"。�
 子 Agent 的实时检查器，`/subagents-doctor` 检查安装配置，`/subagents-guide [topic]` 提供与所装版本
 一致的文档。
 
-完整的上游参考文档位于 [`docs/`](./docs)：[agents](docs/agents.md)、[models](docs/models.md)、
-[workflows](docs/workflows.md)、[watchdog](docs/watchdog.md)、
-[tool reference](docs/tool-reference.md)、[observability](docs/observability.md)、
-[missions and schedules](docs/missions.md)、[configuration](docs/configuration.md)、
-[extension API](docs/extension-api.md)、
-[standalone background execution](docs/standalone-background.md)。
+完整的使用指南位于 [`guides/`](./guides)，`subagent` 工具的 `guide` 动作在运行时读取的就是这些文件：[agents](guides/agents.md)、[models](guides/models.md)、
+[workflows](guides/workflows.md)、[watchdog](guides/watchdog.md)、
+[tool reference](guides/tool-reference.md)、[observability](guides/observability.md)、
+[missions and schedules](guides/missions.md)、[configuration](guides/configuration.md)、
+[extension API](guides/extension-api.md)。项目文档（SYNAPSE 设计、实验方案、验收手册）见 [`docs/`](./docs)。
 
 ## 许可证
 

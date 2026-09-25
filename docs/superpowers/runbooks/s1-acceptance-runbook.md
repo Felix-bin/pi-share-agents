@@ -3,7 +3,6 @@
 写给：要在远程 openEuler 服务器上跑 S1 验收的人（开发在 Windows，验收在服务器）。
 
 - 设计：[S1 iSulad 容器化运行时](../specs/2026-09-20-synapse-isulad-runtime-design.md)
-- 计划：[实现计划](../plans/2026-09-20-synapse-isulad-runtime.md)
 
 ## 这份验收要回答什么
 

@@ -126,7 +126,7 @@ items a short verb + behavior `label`, preserving explicit user labels. The firs
 stage from every lane is launched together, then later stages sequence per lane.
 `resume: "previous"` requires the retained predecessor, and a failed or blocked
 stage blocks only that lane. The returned board exposes lane/stage results for
-the parent. See the [canonical staged-lane example](../../../docs/workflows.md#parallel-sequential-lanes).
+the parent. See the [canonical staged-lane example](../../../guides/workflows.md#parallel-sequential-lanes).
 
 Use raw `runs.run(...)`/`runs.all(...)` instead when branching or rolling fanout
 depends on runtime data rather than a predeclared stage plan.

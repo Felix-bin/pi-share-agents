@@ -114,8 +114,8 @@ describe("registered subagent tool description", () => {
 		assert.ok(COMPACT_SUBAGENT_TOOL_DESCRIPTION.length < FULL_SUBAGENT_TOOL_DESCRIPTION.length);
 		assert.match(FULL_SUBAGENT_TOOL_DESCRIPTION, /runs.lanes.*structuredOutput.verdict === 'blocked'.*never reviewer prose/);
 		assert.match(FULL_SUBAGENT_TOOL_DESCRIPTION, /mission:false.*state.get.*state.set/);
-		const workflows = fs.readFileSync(path.join(projectRoot, "docs/workflows.md"), "utf8");
-		const reference = fs.readFileSync(path.join(projectRoot, "docs/tool-reference.md"), "utf8");
+		const workflows = fs.readFileSync(path.join(projectRoot, "guides/workflows.md"), "utf8");
+		const reference = fs.readFileSync(path.join(projectRoot, "guides/tool-reference.md"), "utf8");
 		for (const heading of ["Parallel sequential lanes", "Host command steps", "Advanced rolling child runs", "Worktree isolation"]) assert.ok(workflows.includes(heading));
 		for (const heading of ["Acceptance gates", "Retained children", "Management actions", "Workflow steering"]) assert.ok(reference.includes(heading));
 		assert.match(reference, /JSON-encoded object strings/);

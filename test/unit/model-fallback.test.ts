@@ -41,7 +41,7 @@ describe("model fallback helpers", () => {
 		assert.match(error, /Expected 'openai\/gpt-5-mini:high' but observed 'unknown-provider\/wrong-model'/);
 		assert.match(error, /independently verified/);
 		assert.match(error, /modelResponseAliases in ~\/\.pi\/agent\/extensions\/subagent\/config\.json/);
-		assert.match(error, /docs\/configuration\.md#modelresponsealiases/);
+		assert.match(error, /guides\/configuration\.md#modelresponsealiases/);
 		assert.match(error, /resolved provider\/model ID without its thinking suffix/);
 		assert.match(error, /outgoing request unchanged/);
 		assert.match(error, /Configuration changes affect new independent native runs; resumed native runs retain their launch-time declaration\. External CLI adapters do not use this setting\./);

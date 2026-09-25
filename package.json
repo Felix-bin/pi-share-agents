@@ -50,9 +50,8 @@
     "agents/",
     "skills/**/*",
     "prompts/**/*",
-    "docs/**/*",
-    "README.md",
-    "CHANGELOG.md"
+    "guides/**/*",
+    "README.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

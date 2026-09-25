@@ -29,7 +29,7 @@ export function readSubagentGuide(topic = "overview", root = packageRoot): strin
 	}
 	const filePath = topic === "overview"
 		? path.join(root, "README.md")
-		: path.join(root, "docs", `${topic}.md`);
+		: path.join(root, "guides", `${topic}.md`);
 	try {
 		return fs.readFileSync(filePath, "utf-8");
 	} catch (error) {

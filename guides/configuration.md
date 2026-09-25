@@ -422,7 +422,7 @@ export PI_SUBAGENT_PI_BINARY=/path/to/pi-or-wrapper
 
 Overrides the `pi` command pi-subagents spawns for project panes and the profile model probe. On a supported Bun-compiled Pi host it also selects the detached background host executable. That executable must accept Pi's bootstrap arguments and supply its compatible embedded SDK and adjacent release resources; bare Bun is not a substitute. Empty or whitespace-only values are ignored. Failed launches are not retried with another runtime.
 
-Foreground children remain sessions inside the parent. Npm background children retain their Node runner and host-package peer aliases; this variable does not turn npm Pi into a binary-backed runner. See [Standalone background execution](standalone-background.md) for the official tested target.
+Foreground children remain sessions inside the parent. Npm background children retain their Node runner and host-package peer aliases; this variable does not turn npm Pi into a binary-backed runner.
 
 ## `intercomBridge`
 

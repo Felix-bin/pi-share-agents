@@ -3,7 +3,6 @@
 写给：要在远程 openEuler 服务器上跑 S2 验收的人（开发在 Windows，验收在服务器）。
 
 - 设计：[S2 跨进程共享内存数据面](../specs/2026-09-20-synapse-shared-memory-dataplane-design.md)
-- 计划：[实现计划](../plans/2026-09-20-synapse-shared-memory-dataplane.md)
 - 前一份：[S1 真机验收运行手册](./s1-acceptance-runbook.md)
 
 ## 这份验收要回答什么
