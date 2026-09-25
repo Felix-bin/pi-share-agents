@@ -780,7 +780,7 @@ export function readAcceptance(dir: string): AcceptanceOverview {
 }
 
 // ---------------------------------------------------------------------------
-// Experiments written by scripts/synapse-bench
+// Experiments written by experiments/bench
 // ---------------------------------------------------------------------------
 
 export type ExperimentSummary = {

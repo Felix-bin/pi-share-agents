@@ -3,7 +3,7 @@ import type { DeltaParams } from "./delta.ts";
 /**
  * The frozen delta parameters (task card P4-2).
  *
- * Chosen by `scripts/calibrate-delta.mjs` over 239 recorded (query, base) pairs
+ * Chosen by `experiments/legacy/calibrate-delta.mjs` over 239 recorded (query, base) pairs
  * from G1's reserved rounds — the frozen snapshot at commit 3491b37, recorded in
  * the follow-up register AC-17 names as the controlled condition — and judged by
  * retrieval consistency: the top-5 a receiver ranks from the decoded vector must
@@ -55,10 +55,10 @@ export const SYNAPSE_DELTA_PARAMS: DeltaParams = { grid: 127, threshold: 0.99 };
  */
 export const SYNAPSE_DELTA_LAYOUT = "int8";
 
-/** The calibration this file was frozen from: `docs/experiments/<id>.md` and its `.json` twin. */
+/** The calibration this file was frozen from: `experiments/legacy/records/<id>.md` and its `.json` twin. */
 /**
  * The expanded calibration (991 rounds / 990 pairs, same corpus and provider) is
- * in docs/experiments/delta-calibration-20260919-expanded.md. It did not move this
+ * in experiments/legacy/records/delta-calibration-20260919-expanded.md. It did not move this
  * point: the paired difference against the literal pick stayed at +1.41pp with a
  * 95% CI of [-1.66, +4.49]pp, and resolving it would need about 4680 pairs while
  * the memory store's own record cap allows roughly 995 — so the difference is

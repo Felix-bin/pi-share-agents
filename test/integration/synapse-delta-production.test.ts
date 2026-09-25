@@ -33,7 +33,7 @@ import { startEmbeddingStub, type StubEmbeddingServer } from "../support/embeddi
  * store under the receiver's scope, that a provider failure degrades to a full
  * vector instead of costing the run. Whether the residual path is a net win once
  * the base read is on its side of the ledger is the AC-17 question, answered by
- * measurement (see docs/experiments/AC-17-acceptance-preregistration-20260919.md).
+ * measurement (see experiments/legacy/records/AC-17-acceptance-preregistration-20260919.md).
  */
 
 const DIM = 8;

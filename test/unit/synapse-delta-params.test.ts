@@ -39,8 +39,9 @@ const REPORT_PATH = path.join(
 	path.dirname(fileURLToPath(import.meta.url)),
 	"..",
 	"..",
-	"docs",
 	"experiments",
+	"legacy",
+	"records",
 	`${SYNAPSE_DELTA_CALIBRATION_ID}.json`,
 );
 

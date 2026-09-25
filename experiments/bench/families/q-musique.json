@@ -1,0 +1,212 @@
+{
+ "group": "Q",
+ "title": "MuSiQue-Ans 多跳问答链（公开 benchmark）",
+ "description": "MuSiQue-Ans dev 集中共享同一桥接链（永乐帝接见受诏者之城 → 南京）的 10 道 3/4 跳问题，每题问该城市的不同属性。段落池为 10 道题各自 20 段的并集（含干扰段），每段一个文件，位于工作树 musique/。评分：对末行 ANSWER 做 SQuAD 式归一化后的 EM / F1（答案与别名取最大）。",
+ "pathConvention": "musique/NNN-<title>.md",
+ "scoring": "exact-match/F1 against answer and answerAliases (experiments/analysis/score-public.mjs)",
+ "tasks": [
+  {
+   "index": 1,
+   "title": "MuSiQue 3hop1__857_846_7701",
+   "task": "When did the city where the Yongle emperor greeted the person to whom the edict was addressed become the Chinese national capital?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [],
+   "anchors": [
+    "musique/001-Nanjing.md",
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7701",
+    "hops": 3
+   },
+   "answer": "Jin dynasty",
+   "answerAliases": []
+  },
+  {
+   "index": 2,
+   "title": "MuSiQue 3hop1__857_846_7702",
+   "task": "What is the meaning of the name of the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    1
+   ],
+   "anchors": [
+    "musique/001-Nanjing.md",
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7702",
+    "hops": 3
+   },
+   "answer": "\"Southern Capital\"",
+   "answerAliases": [
+    "Nanjing",
+    "Nankin",
+    "Nanking"
+   ]
+  },
+  {
+   "index": 3,
+   "title": "MuSiQue 3hop1__857_846_7798",
+   "task": "What was the overwhelming ethnic majority in the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    2
+   ],
+   "anchors": [
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/028-Nanjing.md",
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7798",
+    "hops": 3
+   },
+   "answer": "Han nationality",
+   "answerAliases": []
+  },
+  {
+   "index": 4,
+   "title": "MuSiQue 3hop1__857_846_7794",
+   "task": "In 2010, what was the population of the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    3
+   ],
+   "anchors": [
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/033-Nanjing.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7794",
+    "hops": 3
+   },
+   "answer": "8.005 million",
+   "answerAliases": []
+  },
+  {
+   "index": 5,
+   "title": "MuSiQue 3hop1__857_846_7769",
+   "task": "How many square miles is the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    4
+   ],
+   "anchors": [
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/036-Nanjing.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7769",
+    "hops": 3
+   },
+   "answer": "2,548 sq mi",
+   "answerAliases": []
+  },
+  {
+   "index": 6,
+   "title": "MuSiQue 3hop1__857_846_7846",
+   "task": "Which opera company is based in the city where the Yongle Emperor greeted the leader that the edict was addressed to?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    5
+   ],
+   "anchors": [
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/037-Nanjing.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7846",
+    "hops": 3
+   },
+   "answer": "Jiangsu Peking Opera Institute",
+   "answerAliases": []
+  },
+  {
+   "index": 7,
+   "title": "MuSiQue 3hop1__857_846_7872",
+   "task": "What is the name of the football club from the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    6
+   ],
+   "anchors": [
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/043-Nanjing.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7872",
+    "hops": 3
+   },
+   "answer": "Jiangsu Sainty",
+   "answerAliases": []
+  },
+  {
+   "index": 8,
+   "title": "MuSiQue 3hop1__857_846_7752",
+   "task": "Who moved the capitol from the city where the Yongle emperor greeted the person to whom the edict was addressed to Beijing?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    7
+   ],
+   "anchors": [
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/048-Nanjing.md",
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7752",
+    "hops": 3
+   },
+   "answer": "Yuan Shikai",
+   "answerAliases": []
+  },
+  {
+   "index": 9,
+   "title": "MuSiQue 3hop1__857_846_7810",
+   "task": "What was where the Yongle emperor greeted who the edict addressed GDP per person in 2013?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    8
+   ],
+   "anchors": [
+    "musique/053-Nanjing.md",
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "3hop1__857_846_7810",
+    "hops": 3
+   },
+   "answer": "RMB 98,174(US$16041)",
+   "answerAliases": []
+  },
+  {
+   "index": 10,
+   "title": "MuSiQue 4hop3__857_846_326964_7713",
+   "task": "How long had the city where the Yongle emperor greeted the person to whom the edict was addressed been the capitol of Yaxing Coach's headquarters location?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "dependsOn": [
+    9
+   ],
+   "anchors": [
+    "musique/061-Nanjing.md",
+    "musique/062-Yaxing-Coach.md",
+    "musique/002-Sino-Tibetan-relations-during-the-Ming-dynasty.md",
+    "musique/003-Sino-Tibetan-relations-during-the-Ming-dynasty.md"
+   ],
+   "source": {
+    "benchmark": "MuSiQue-Ans v1.0 dev",
+    "id": "4hop3__857_846_326964_7713",
+    "hops": 4
+   },
+   "answer": "about 400 years",
+   "answerAliases": []
+  }
+ ]
+}

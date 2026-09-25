@@ -15,7 +15,7 @@ import type { PredictedBase } from "./predict-base.ts";
  * at dim 1024, so counting it here would make every residual lose, the mechanism
  * would never run, and there would be nothing to measure. Whether the base read
  * makes the whole path a net loss is the full-account question, answered by
- * measurement in P4-5 (see docs/experiments/AC-17-acceptance-preregistration-20260919.md),
+ * measurement in P4-5 (see experiments/legacy/records/AC-17-acceptance-preregistration-20260919.md),
  * not hidden inside the sender's choice.
  *
  * Both directions live here so the sender and the receiver cannot drift: the
