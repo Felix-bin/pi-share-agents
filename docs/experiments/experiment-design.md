@@ -29,6 +29,7 @@
 - **宿主**：pi coding agent（`@earendil-works/pi-coding-agent@0.87.0`），以 RPC 模式运行。每轮启动一个父会话，只加载本插件：`-e index.ts --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-session`。
 - **编排**：父会话读取 `prompts/role-pipeline.md` 模板加上本轮任务文本，依次委派 planner → retriever → executor → summarizer 四个子会话。父会话可以用单次调用、chain 或 workflowScript 三种方式编排，编排方式由模型自行选择。
 - **子会话**：每个阶段都是全新的子会话，按 `asyncByDefault:false` 在前台运行，父会话等它完成后再继续。
+- **父会话只编排**：父会话以 `--tools subagent` 启动，只有委派工具，不能自己 read、grep、bash，也没有 SYNAPSE 工具（§11 修订 15）。子会话的工具来自各自的角色定义，不受影响。
 
 ### 2.2 四个角色（`agents/*.md`，所有臂相同）
 
@@ -457,6 +458,7 @@ pi 的四个臂只在插件 `synapse` 配置块上有差别；另有两个外部
 | 12 | 09-25 | Q 组的格式说明收紧为"只写实体、数字或短语，不加解释" | 冒烟中答案内容都对，但 ANSWER 行写成整句，EM 被判错 |
 | 13 | 09-25 | R 组提供 Flask venv，并用 `--path-prepend` 加入 PATH；实验文件统一移到 `experiments/`；本文取代分散的文档 | 冒烟中 executor 全盘搜索 pytest 导致超时；目录整理 |
 | 14 | 09-25 | **E1 新增 CREWAI、AUTOGEN 两个外部框架臂**（§4.4），与 pi 四臂同批配对；外部臂固定走 DeepSeek 官方接口；EdgeBytes 与 token 口径扩展到外部臂（§7.1）；新增 4 组对比与有效性威胁（§4.3、§9） | E1 缺少与其他多智能体框架的对比；登记于外部臂正式数据产生之前 |
+| 15 | 09-25 | **pi 父会话只保留 `subagent` 工具**（runner 以 `--tools subagent` 启动父会话；只改实验条件，不改产品），四个 pi 臂相同 | 外部臂 pilot 的归因：SYN 比 CrewAI 多出的 token 在 Q 组几乎全部来自父会话亲自调用 bash/read（19 次调用、44k）；外部框架没有编排者。登记于修订后数据产生之前；此前的冒烟与 pilot 不与之后的数据合并 |
 
 ---
 

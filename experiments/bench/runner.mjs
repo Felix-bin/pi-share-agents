@@ -60,6 +60,12 @@
  * extension's async-run widget to go idle, every stage task-span to close, and
  * the parent's wake-up turn to settle.
  *
+ * Parent tools: the parent pi session runs with `--tools subagent`, so it
+ * orchestrates and nothing else — no read/grep/bash of its own, no synapse
+ * tools (revision 15: in the pilot the parent's own tool work was the largest
+ * single cost against the frameworks, which have no orchestrator). The stage
+ * children keep their roles' tools: their allowlists come from the agent files.
+ *
  * Order: per group, per round, arms interleaved (TXT r1, SYN r1, TXT r2, …) to
  * reduce provider drift between arms. Every attempt is kept under evidence/.
  *
@@ -148,6 +154,11 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 		process.exit(130);
 	});
 }
+
+// The parent session's tool allowlist (pi --tools); the children's come from their agent files.
+const PARENT_TOOLS = ["subagent"];
+// What this run launches the parent with; a resumed experiment keeps its manifest's (null = no allowlist).
+let PARENT_TOOLS_IN_USE = PARENT_TOOLS;
 
 // A directory put first on the agents' PATH (--path-prepend), e.g. the venv that
 // lets the executor run the Flask repository's own tests. Same for every arm.
@@ -625,6 +636,7 @@ function runPiRound({ cli, provider, model, agentDir, workDir, tempRoot, prompt,
 	fs.rmSync(tempRoot, { force: true, recursive: true });
 	fs.mkdirSync(tempRoot, { recursive: true });
 	const args = [cli, "-e", path.join(REPO, "index.ts"), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc"];
+	if (PARENT_TOOLS_IN_USE !== null) args.push("--tools", PARENT_TOOLS_IN_USE.join(","));
 	if (provider) args.push("--provider", provider);
 	if (model) args.push("--model", model);
 	const child = spawn(process.execPath, args, {
@@ -1012,7 +1024,8 @@ async function main() {
 		order: options.parallelArms ? "per group, per round, all arms of a round concurrently (--parallel-arms), next round once all are done; store kept across rounds and across groups (SYNCOLD: memory reset before every attempt)" : "per group, per round, arms interleaved; store kept across rounds and across groups (SYNCOLD: memory reset before every attempt)",
 		parallelArms: options.parallelArms,
 		prompt: { template: path.relative(REPO, TEMPLATE_FILE), templateSha256: sha256(template), expansion: "frontmatter stripped, $@/$ARGUMENTS replaced by the task text; the previous answer is never included" },
-		launch: { flags: ["-e", "<repo>/index.ts", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc"], cwd: "<exp>/work-<arm>/pi-share-agents (repo snapshot without node_modules/.git/.pi)", copiedAgentFiles: COPIED_AGENT_FILES },
+		parentTools: PARENT_TOOLS,
+		launch: { flags: ["-e", "<repo>/index.ts", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc", "--tools", PARENT_TOOLS.join(",")], cwd: "<exp>/work-<arm>/pi-share-agents (repo snapshot without node_modules/.git/.pi)", copiedAgentFiles: COPIED_AGENT_FILES },
 		completion: "RPC agent_settled after the run prompt + async-run widget idle + all task-spans opened this round closed + 3 s quiet (+ a settle after background runs ended, or 90 s); else --round-timeout-ms",
 		validity: "pipeline settled (no timeout, answer present) and >= 1 metering run written during the round; SYN0 (no ledger by design) instead needs >= 1 child artifacts meta file; CREWAI/AUTOGEN: harness exit 0, answer present, all four roles made a model call, every successful call reported usage",
 		scripts: { "runner.mjs": sha256File(fileURLToPath(import.meta.url)) },
@@ -1041,6 +1054,7 @@ async function resumeExperiment({ code, expDir, families, manifestPath, model, o
 	const manifest = readJson(manifestPath);
 	// The environment the experiment started with, whatever this invocation passed.
 	PATH_PREPEND = manifest.pathPrepend?.dir ?? null;
+	PARENT_TOOLS_IN_USE = manifest.parentTools ?? null;
 	const corpus = manifest.corpus !== null && typeof manifest.corpus === "object" ? manifest.corpus : null;
 	const armNames = manifest.arms.map((entry) => entry.arm);
 	if (armNames.some(isExternal) && resolveExternalKey() === null) throw new Error(`external arms need a key: set ${EXTERNAL_PROVIDER.keyEnv} or write it to ${EXTERNAL_PROVIDER.keyFile}`);
