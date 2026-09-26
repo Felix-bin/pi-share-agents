@@ -2,11 +2,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-export const ARMS = ["share", "nico", "tintinweb"];
-export const PACKAGES = { share: ".", nico: "npm:pi-subagents@0.71.0", tintinweb: "npm:@tintinweb/pi-subagents@0.19.0" };
-// The parent session holds only the extension's delegation tool (spec §2.2).
-export const PARENT_TOOLS = { share: ["subagent"], nico: ["subagent"], tintinweb: ["Agent"] };
-export const MODEL = { provider: "deepseek", id: "deepseek-flash", thinking: "high" };
+// share-pipeline is the same package as share, driven by its own role-pipeline prompt template (spec §2.1).
+export const ARMS = ["share", "share-pipeline", "nico", "tintinweb"];
+export const SHARE_ARMS = ["share", "share-pipeline"];
+export const PACKAGES = { share: ".", "share-pipeline": ".", nico: "npm:pi-subagents@0.71.0", tintinweb: "npm:@tintinweb/pi-subagents@0.19.0" };
+// Every arm launches its installed package (extensions, skills, prompts) with Pi's default tools; the
+// package does the rest (spec §2.2). maxTokens is set because the catalog leaves it undeclared (E1 revision 16).
+export const MODEL = { provider: "commandcode", id: "deepseek/deepseek-v4.1-flash", thinking: "high",
+	baseUrl: "https://api.commandcode.ai/provider/v1", maxTokens: 32768, contextWindow: 1048576 };
 export const PER_REPO = 4;
 export const SEED = 20260926;
 
@@ -99,8 +102,14 @@ export function loadSample(file, selected = []) {
 	return rows.filter((row) => selected.includes(row.id));
 }
 
-// The SWE-QA question verbatim, the R-group note, then the delegation condition (spec §2.4).
-// The reference answer never reaches the prompt.
-export function taskPrompt(item) {
-	return `${item.question}\n\nThe code is the ${item.repo} repository at commit ${item.shortCommit}, in the ${item.name}/ directory of this worktree. Answer from the code, citing the files and functions involved.\n\nYou can act only through the delegation tool of the installed subagent extension. Delegate the investigation of the repository to child agents and wait for their results in the foreground (blocking); do not leave background work running. When the results are in, reply with the complete answer in your final message.`;
+// The SWE-QA question verbatim and the R-group note (spec §2.4). The reference answer never reaches the prompt.
+export function questionText(item) {
+	return `${item.question}\n\nThe code is the ${item.repo} repository at commit ${item.shortCommit}, in the ${item.name}/ directory of this worktree. Answer from the code, citing the files and functions involved.`;
+}
+
+// share-pipeline invokes the package's own template, which Pi expands; the other arms get the delegation
+// condition without being told which tool or pattern to use.
+export function taskPrompt(item, arm) {
+	if (arm === "share-pipeline") return `/role-pipeline ${questionText(item)}`;
+	return `${questionText(item)}\n\nUse the installed subagent extension to delegate the investigation of the repository to child agents. Wait until all of their results are back before you answer, and do not leave background work running. Reply with the complete answer in your final message.`;
 }

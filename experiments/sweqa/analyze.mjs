@@ -47,9 +47,11 @@ function delegatedTasks(args) {
 	return out;
 }
 
-export function attributeSessions(calls, prompt) {
+// The parent is the session the attempt's first call opens: no child can start before the parent's first
+// response. (share-pipeline's prompt is a template Pi expands, so the prompt text cannot identify it.)
+export function attributeSessions(calls) {
 	const sessions = [], unattributed = [];
-	for (const c of calls) {
+	for (const c of [...calls].sort((a, b) => a.seq - b.seq)) {
 		const messages = c.request?.messages ?? [];
 		const keys = messages.map(keyOf);
 		let best = null;
@@ -65,9 +67,9 @@ export function attributeSessions(calls, prompt) {
 			firstUser: flat(messages.filter((m) => m.role === "user").map((m) => textOf(m.content)).join("\n")),
 			parent: false });
 	}
-	const parent = sessions.find((s) => !s.inheritedHistory && s.firstUser === flat(prompt));
+	const parent = sessions[0] && !sessions[0].inheritedHistory ? sessions[0] : null;
 	if (parent) parent.parent = true;
-	const restarts = sessions.filter((s) => s !== parent && !s.inheritedHistory && s.firstUser === flat(prompt)).length;
+	const restarts = parent ? sessions.filter((s) => s !== parent && !s.inheritedHistory && s.firstUser === parent.firstUser).length : 0;
 	for (const s of sessions) delete s.lastKeys;
 	return { sessions, unattributed, parentFound: Boolean(parent), restarts };
 }
@@ -89,10 +91,10 @@ const absolutePaths = (text) => [...text.matchAll(/(?:^|[\s"'=:(`])(\/[^\s"'`<>|
 const pathFields = (name, args) => (name === "bash" ? [args.command] : [args.path, args.file_path, args.cwd]).filter((x) => typeof x === "string");
 const insideAny = (p, roots) => roots.some((root) => root && (p === root || p.startsWith(`${root}/`)));
 
-export function analyzeAttempt({ calls: allCalls, prompt, arm, workRoot, repoRoot, placeholders = [], ownDirs = [] }) {
+export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, placeholders = [], ownDirs = [] }) {
 	const calls = allCalls.filter((c) => c.path === "/chat/completions" && c.request);
 	const bySeq = new Map(calls.map((c) => [c.seq, c]));
-	const { sessions, unattributed, parentFound, restarts } = attributeSessions(calls, prompt);
+	const { sessions, unattributed, parentFound, restarts } = attributeSessions(calls);
 	const sessionOf = new Map();
 	for (const s of sessions) for (const q of s.calls) sessionOf.set(q, s);
 	const problems = [];
@@ -272,8 +274,7 @@ function main(runDir) {
 		const resultFile = path.join(evidence, "result.json");
 		if (!fs.existsSync(resultFile)) continue;
 		const result = JSON.parse(fs.readFileSync(resultFile, "utf8"));
-		const m = analyzeAttempt({ calls: readJsonl(path.join(evidence, "llm-calls.jsonl")), prompt: fs.readFileSync(path.join(evidence, "prompt.md"), "utf8"),
-			arm, workRoot: result.workRoot ?? "", repoRoot: manifest.repoRoot, ownDirs: [result.storageRoot, result.tmpDir].filter(Boolean),
+		const m = analyzeAttempt({ calls: readJsonl(path.join(evidence, "llm-calls.jsonl")), arm, workRoot: result.workRoot ?? "", repoRoot: manifest.repoRoot, ownDirs: [result.storageRoot, result.tmpDir].filter(Boolean),
 			placeholders: [[result.storageRoot, "<storage>"], [result.tmpDir, "<tmp>"], [result.attemptKey, "<attempt>"]] });
 		const answer = fs.existsSync(path.join(evidence, "answer.md")) ? fs.readFileSync(path.join(evidence, "answer.md"), "utf8") : "";
 		m.problems = [...(result.problem ? [result.problem] : []), ...(answer.trim() ? [] : ["empty answer"]), ...m.problems];

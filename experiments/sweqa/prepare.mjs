@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, MODEL, PACKAGES, parseRepoCommits, sampleQuestions, sha256 } from "./matrix.mjs";
+import { ARMS, MODEL, PACKAGES, SHARE_ARMS, parseRepoCommits, sampleQuestions, sha256 } from "./matrix.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const argv = process.argv.slice(2);
@@ -27,16 +27,18 @@ function installArms() {
 	const source = path.join(os.homedir(), ".pi", "agent", "models.json");
 	const catalog = JSON.parse(fs.readFileSync(source, "utf8"));
 	const provider = catalog.providers?.[MODEL.provider];
-	const model = provider?.models?.find((m) => m.id === MODEL.id);
-	if (!model) throw new Error(`Pi model catalog must contain ${MODEL.provider}/${MODEL.id}`);
+	const found = provider?.models?.find((m) => m.id === MODEL.id);
+	if (!found) throw new Error(`Pi model catalog must contain ${MODEL.provider}/${MODEL.id}`);
+	// Undeclared limits get the frozen values: Pi would otherwise truncate output at its 16384 default.
+	const model = { ...structuredClone(found), maxTokens: found.maxTokens ?? MODEL.maxTokens, contextWindow: found.contextWindow ?? MODEL.contextWindow };
 	for (const arm of ARMS) {
 		const agentDir = path.join(out, "agent", arm);
 		fs.mkdirSync(agentDir, { recursive: true });
-		const packageSource = arm === "share" ? repo : PACKAGES[arm];
+		const packageSource = SHARE_ARMS.includes(arm) ? repo : PACKAGES[arm];
 		run(process.execPath, [piCli, "install", packageSource], { cwd: repo, env: { ...process.env, PI_CODING_AGENT_DIR: agentDir }, timeout: 300_000 });
 		// Only the model definition is copied, never credentials; run.mjs points it at the recorder per attempt.
 		fs.writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { [MODEL.provider]: {
-			api: provider.api, baseUrl: "https://api.deepseek.com", models: [structuredClone(model)] } } }, null, 2));
+			api: provider.api, baseUrl: MODEL.baseUrl, models: [model] } } }, null, 2));
 		fs.chmodSync(path.join(agentDir, "models.json"), 0o600);
 		// Pi's grep and find tools look for rg and fd in <agentDir>/bin first; --offline forbids downloading them.
 		const tools = {};
@@ -48,13 +50,13 @@ function installArms() {
 			fs.chmodSync(to, 0o755);
 			tools[bin] = sha256(to);
 		}
-		const packageDir = arm === "share" ? repo : path.join(agentDir, "npm", "node_modules", arm === "nico" ? "pi-subagents" : "@tintinweb/pi-subagents");
+		const packageDir = SHARE_ARMS.includes(arm) ? repo : path.join(agentDir, "npm", "node_modules", arm === "nico" ? "pi-subagents" : "@tintinweb/pi-subagents");
 		const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8"));
 		const entry = manifest.pi?.extensions?.[0];
 		if (!entry) throw new Error(`${arm} package has no Pi extension entry`);
 		const lockFile = path.join(agentDir, "npm", "package-lock.json");
 		const info = { arm, packageSource, packageDir, entry: path.resolve(packageDir, entry), version: manifest.version,
-			commit: arm === "share" ? run("git", ["rev-parse", "HEAD"], { cwd: repo }) : null,
+			commit: SHARE_ARMS.includes(arm) ? run("git", ["rev-parse", "HEAD"], { cwd: repo }) : null,
 			packageLockSha256: fs.existsSync(lockFile) ? sha256(lockFile) : null, tools };
 		fs.writeFileSync(path.join(agentDir, "installed.json"), JSON.stringify(info, null, 2));
 		console.log(`${arm}: ${manifest.name}@${manifest.version} ${info.commit ?? "npm package"}`);

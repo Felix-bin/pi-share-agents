@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { analyzeAttempt, attributeSessions, calibrate, commonAffixes, finalizeRun } from "./analyze.mjs";
-import { ARMS, PARENT_TOOLS, loadSample, parseRepoCommits, sampleQuestions, shuffledIndices, taskPrompt } from "./matrix.mjs";
+import { ARMS, MODEL, loadSample, parseRepoCommits, sampleQuestions, shuffledIndices, taskPrompt } from "./matrix.mjs";
 import { compare } from "./report.mjs";
 import { judgePrompt, judgeTemplate, parseScores, vote } from "./score.mjs";
 
@@ -23,7 +23,7 @@ const asst = (text, calls = [], reasoning = "") => ({ role: "assistant", content
 const tool = (id, content) => ({ role: "tool", tool_call_id: id, content });
 const usage = (input, output = 10, cacheRead = 0) => ({ input, output, cacheRead, cacheWrite: 0, reasoning: 2 });
 let seq = 0;
-const call = (messages, response, u = usage(100), model = "deepseek-flash") =>
+const call = (messages, response, u = usage(100), model = MODEL.id) =>
 	({ seq: ++seq, path: "/chat/completions", status: 200, request: { model, messages }, response, usage: u });
 
 const PROMPT = "How does the session serializer work?\n\nThe code is ...";
@@ -68,10 +68,14 @@ test("sampling is deterministic, stratified and never overwrites", () => {
 	assert.equal(new Set(first.map((row) => row.id)).size, 8);
 	const row = first[0];
 	assert.equal(row.referenceAnswer, row.question.replace(" q", " a"));
-	const prompt = taskPrompt(row);
+	const prompt = taskPrompt(row, "share");
 	assert.ok(prompt.startsWith(row.question));
 	assert.ok(!prompt.includes(row.referenceAnswer));
 	assert.match(prompt, /in the flask\/ directory of this worktree/);
+	assert.match(prompt, /delegate the investigation/);
+	const pipeline = taskPrompt(row, "share-pipeline");
+	assert.ok(pipeline.startsWith(`/role-pipeline ${row.question}`));
+	assert.ok(!pipeline.includes("delegate the investigation") && !pipeline.includes(row.referenceAnswer));
 	const file = path.join(dir, "sample.jsonl");
 	write(file, first.map((x) => JSON.stringify(x)).join("\n"));
 	assert.equal(loadSample(file).length, 8);
@@ -79,8 +83,8 @@ test("sampling is deterministic, stratified and never overwrites", () => {
 	assert.throws(() => loadSample(file), /duplicate id/);
 });
 
-test("sessions chain by message prefix; the parent is the one holding the task prompt", () => {
-	const { sessions, unattributed } = attributeSessions(scenario(), PROMPT);
+test("sessions chain by message prefix; the parent is the session the first call opens", () => {
+	const { sessions, unattributed } = attributeSessions(scenario());
 	assert.equal(unattributed.length, 0);
 	assert.equal(sessions.length, 2);
 	assert.equal(sessions[0].parent, true);
@@ -89,7 +93,7 @@ test("sessions chain by message prefix; the parent is the one holding the task p
 });
 
 test("dispatch, tokens and communication are measured per session", () => {
-	const m = analyzeAttempt({ calls: scenario(), prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo" });
+	const m = analyzeAttempt({ calls: scenario(), arm: "share", workRoot: WORK, repoRoot: "/repo" });
 	assert.deepEqual(m.problems, []);
 	assert.equal(m.dispatch.children, 1);
 	assert.equal(m.dispatch.delegationCalls, 2);
@@ -114,25 +118,25 @@ test("dispatch, tokens and communication are measured per session", () => {
 
 test("an attempt without a child, with a foreign model, or with an unattributable call is invalid", () => {
 	const calls = scenario();
-	const noChild = analyzeAttempt({ calls: calls.filter((c) => ![3, 4, 5].includes(c.seq)), prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo" });
+	const noChild = analyzeAttempt({ calls: calls.filter((c) => ![3, 4, 5].includes(c.seq)), arm: "share", workRoot: WORK, repoRoot: "/repo" });
 	assert.ok(noChild.problems.includes("no child session"));
 	const foreign = scenario();
 	foreign[3].request.model = "claude-sonnet";
-	assert.ok(analyzeAttempt({ calls: foreign, prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo" }).problems.some((p) => /model/.test(p)));
+	assert.ok(analyzeAttempt({ calls: foreign, arm: "share", workRoot: WORK, repoRoot: "/repo" }).problems.some((p) => /model/.test(p)));
 	const broken = scenario();
 	// Same system prompt as the child, history present, but no prefix match: a rewritten context.
 	broken.push(call([broken[2].request.messages[0], user("x"), asst("y"), tool("z", "w")], asst("q")));
-	const b = analyzeAttempt({ calls: broken, prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo" });
+	const b = analyzeAttempt({ calls: broken, arm: "share", workRoot: WORK, repoRoot: "/repo" });
 	assert.ok(b.problems.some((p) => /unattributed/.test(p)));
 	const missing = scenario();
 	missing[1].usage = "unavailable";
-	assert.ok(analyzeAttempt({ calls: missing, prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo" }).problems.some((p) => /usage/.test(p)));
+	assert.ok(analyzeAttempt({ calls: missing, arm: "share", workRoot: WORK, repoRoot: "/repo" }).problems.some((p) => /usage/.test(p)));
 });
 
 test("a child with inherited history but its own system prompt opens a session", () => {
 	const calls = scenario();
 	calls.push(call([sys("forked worker system"), user(PROMPT), asst("earlier"), user(`Continue: ${TASK} and more`)], asst("done")));
-	const m = analyzeAttempt({ calls, prompt: PROMPT, arm: "tintinweb", workRoot: WORK, repoRoot: "/repo" });
+	const m = analyzeAttempt({ calls, arm: "tintinweb", workRoot: WORK, repoRoot: "/repo" });
 	assert.equal(m.dispatch.children, 2);
 	assert.equal(m.sessions[2].inheritedHistory, true);
 	assert.ok(!m.problems.some((p) => /unattributed/.test(p)));
@@ -145,7 +149,7 @@ test("an unmatched child is attributed to the delegation call whose window it st
 	const calls = [call(P, asst("", [wf])), call([sys("scout sys"), user("Task: something generated by the script")], asst("r")),
 		call([sys('<active_agent name="scout"/>\nscout sys'), user("Task: another generated task")], asst("r"))];
 	calls.push(call([...P, asst("", [wf]), tool("p1", "workflow output")], asst("answer")));
-	const m = analyzeAttempt({ calls, prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo" });
+	const m = analyzeAttempt({ calls, arm: "share", workRoot: WORK, repoRoot: "/repo" });
 	assert.equal(m.sessions[1].spawnedBy, 0);
 	assert.equal(m.sessions[1].agentType, "unmatched");
 	assert.equal(m.sessions[2].agentType, "scout");
@@ -166,7 +170,7 @@ test("leak audit invalidates benchmark access and counts out-of-bounds paths", (
 		call([...C, asst("", [find]), tool("c1", "/usr/lib/x.py")], asst("", [peek])),
 		call([...C, asst("", [find]), tool("c1", "/usr/lib/x.py"), asst("", [peek]), tool("c2", "{}")], asst("done")),
 		call([...P, asst("", [spawn]), tool("p1", "done")], asst("answer"))];
-	const m = analyzeAttempt({ calls, prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo" });
+	const m = analyzeAttempt({ calls, arm: "share", workRoot: WORK, repoRoot: "/repo" });
 	assert.ok(m.problems.includes("possible answer leak"));
 	assert.equal(m.audit.leaks.length, 1);
 	assert.deepEqual(m.audit.outOfBoundsPaths, ["/", "/repo/experiments/data/swe-qa/Benchmark/flask.jsonl"]);
@@ -175,7 +179,7 @@ test("leak audit invalidates benchmark access and counts out-of-bounds paths", (
 	const note = tc("c3", "write", { path: "/tmp/own/context.md", content: "a / b and /etc/passwd" });
 	const quiet = [call(P, asst("", [spawn])), call(C, asst("", [note])), call([...C, asst("", [note]), tool("c3", "ok")], asst("done")),
 		call([...P, asst("", [spawn]), tool("p1", "done")], asst("answer"))];
-	const q = analyzeAttempt({ calls: quiet, prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo", ownDirs: ["/tmp/own"] });
+	const q = analyzeAttempt({ calls: quiet, arm: "share", workRoot: WORK, repoRoot: "/repo", ownDirs: ["/tmp/own"] });
 	assert.equal(q.audit.outOfBounds, 0);
 	assert.deepEqual(q.problems, []);
 });
@@ -185,11 +189,11 @@ test("system-prompt variable parts and the byte-per-token ratio are computed acr
 	assert.deepEqual(commonAffixes(["aa", "aa"]), { prefix: "aa", suffix: "" });
 	const withId = (calls, id) => calls.map((c) => [3, 4, 5].includes(c.seq)
 		? { ...c, request: { ...c.request, messages: [sys(c.request.messages[0].content.replace(" tail", ` out /tmp/x/${id}/context.md tail`)), ...c.request.messages.slice(1)] } } : c);
-	const a = analyzeAttempt({ calls: withId(scenario(), "0fe695b3-7463-40e5-8a19-dbc18eaa0b29"), prompt: PROMPT, arm: "share", workRoot: WORK, repoRoot: "/repo" });
+	const a = analyzeAttempt({ calls: withId(scenario(), "0fe695b3-7463-40e5-8a19-dbc18eaa0b29"), arm: "share", workRoot: WORK, repoRoot: "/repo" });
 	const b = analyzeAttempt({ calls: withId(scenario().map((c) => c.seq === 3 || c.seq === 4 || c.seq === 5
 		? { ...c, request: { ...c.request, messages: [sys(`scout system RECALLED MEMORY <cwd>\n/tmp/other\n</cwd> tail`), ...c.request.messages.slice(1)] } } : c), "8dafb8f8-f7b2-4e39-8054-68fac57d6358"),
 		prompt: PROMPT, arm: "share", workRoot: "/tmp/other", repoRoot: "/repo" });
-	const lonely = analyzeAttempt({ calls: scenario(), prompt: PROMPT, arm: "nico", workRoot: WORK, repoRoot: "/repo" });
+	const lonely = analyzeAttempt({ calls: scenario(), arm: "nico", workRoot: WORK, repoRoot: "/repo" });
 	const run = finalizeRun([a, b, lonely]);
 	assert.equal(a.comm.downlink.system, 0);
 	assert.equal(b.comm.downlink.system, bytes("RECALLED MEMORY "));
@@ -226,21 +230,21 @@ test("pairs use only questions where both arms are valid; rules decide at the CI
 		attempts.push(attempt(id, "nico", 3, 2000 + i, id === "q2" ? null : 80, id !== "q4"));
 		attempts.push(attempt(id, "tintinweb", 1, 900 + i, 60));
 	}
-	const nico = compare(attempts, "nico");
+	const nico = compare(attempts, "share", "nico");
 	assert.equal(nico.children.n, 3);
 	assert.equal(nico.children.excluded, 1);
 	assert.equal(nico.children.meanDiff, -2);
-	assert.equal(nico.children.shareFewer, true);
-	assert.equal(nico.totalTokens.shareFewer, true);
+	assert.equal(nico.children.fewer, true);
+	assert.equal(nico.totalTokens.fewer, true);
 	assert.equal(nico.score.n, 2);
 	assert.equal(nico.score.nonInferior, true);
-	const tin = compare(attempts, "tintinweb");
-	assert.equal(tin.totalTokens.shareFewer, false);
+	const tin = compare(attempts, "share", "tintinweb");
+	assert.equal(tin.totalTokens.fewer, false);
 	assert.equal(tin.score.nonInferior, true);
-	assert.equal(tin.children.shareFewer, false);
+	assert.equal(tin.children.fewer, false);
 });
 
-test("runner isolates each arm: tmp worktree, pinned pi on a narrowed PATH, delegation-only tools", () => {
+test("runner isolates each arm: tmp worktree, pinned pi on a narrowed PATH, whole package, default tools", () => {
 	const dir = temp(), out = path.join(dir, "data"), commit = "c".repeat(40);
 	const item = { id: "demo#3", repo: "acme/demo", name: "demo", repoUrl: "https://github.com/acme/demo", commit, shortCommit: "ccccccc",
 		sourceIndex: 3, question: "How does demo work?", referenceAnswer: "It demos." };
@@ -252,7 +256,8 @@ test("runner isolates each arm: tmp worktree, pinned pi on a narrowed PATH, dele
 	write(path.join(dir, "fake-extension.js"), "export default function() {}\n");
 	for (const arm of ARMS) {
 		write(path.join(out, "agent", arm, "installed.json"), JSON.stringify({ entry: path.join(dir, "fake-extension.js"), version: "test" }));
-		write(path.join(out, "agent", arm, "models.json"), JSON.stringify({ providers: { deepseek: { api: "openai-completions", models: [{ id: "deepseek-flash" }] } } }));
+		write(path.join(out, "agent", arm, "models.json"), JSON.stringify({ providers: { [MODEL.provider]: { api: "openai-completions", models: [{ id: MODEL.id }] } } }));
+		write(path.join(out, "agent", arm, "settings.json"), JSON.stringify({ packages: [`npm:${arm}`] }));
 		for (const bin of ["rg", "fd"]) { write(path.join(out, "agent", arm, "bin", bin), `#!/bin/sh\necho ${bin}-${arm}\n`); fs.chmodSync(path.join(out, "agent", arm, "bin", bin), 0o755); }
 	}
 	const fakePi = path.join(dir, "fake-pi");
@@ -269,7 +274,7 @@ process.stdin.on("data", (chunk) => { input += chunk; let at; while ((at = input
     console.log(JSON.stringify({ id: command.id, type: "response", success: true }));
     let claude = true;
     try { execSync("command -v claude", { stdio: "pipe", shell: "/bin/sh" }); } catch { claude = false; }
-    const facts = { tools: process.argv[process.argv.indexOf("--tools") + 1], repo: fs.existsSync("demo/README.md"), cwd: process.cwd(),
+    const facts = { args: process.argv.slice(2), repo: fs.existsSync("demo/README.md"), cwd: process.cwd(),
       claude, child: execSync("pi --version", { encoding: "utf8" }).trim(), proxy: process.env.HTTPS_PROXY ?? null,
       rg: execSync("rg", { encoding: "utf8" }).trim(), tmp: process.env.TMPDIR };
     fs.writeFileSync(process.env.TMPDIR + "/artifact.md", "kept");
@@ -281,7 +286,7 @@ process.stdin.on("data", (chunk) => { input += chunk; let at; while ((at = input
 	fs.chmodSync(fakePi, 0o755);
 	const id = `fake-${process.pid}`;
 	const result = spawnSync(process.execPath, [path.join(here, "run.mjs"), "--out", out, "--id", id, "--pi", fakePi, "--timeout-ms", "5000"],
-		{ encoding: "utf8", timeout: 60_000, env: { ...process.env, DEEPSEEK_API_KEY: "unused-in-test", HTTPS_PROXY: "http://127.0.0.1:9" } });
+		{ encoding: "utf8", timeout: 60_000, env: { ...process.env, COMMANDCODE_API_KEY: "unused-in-test", HTTPS_PROXY: "http://127.0.0.1:9" } });
 	assert.equal(result.status, 0, result.stderr);
 	const runDir = path.join(out, "runs", id);
 	for (const arm of ARMS) {
@@ -290,7 +295,9 @@ process.stdin.on("data", (chunk) => { input += chunk; let at; while ((at = input
 		assert.equal(attempt.problem, null);
 		assert.equal(attempt.childPiLaunches, 1);
 		const facts = JSON.parse(fs.readFileSync(path.join(evidence, "answer.md"), "utf8"));
-		assert.equal(facts.tools, PARENT_TOOLS[arm].join(","));
+		for (const flag of ["-e", "--no-extensions", "--no-skills", "--no-prompt-templates", "--tools"]) assert.ok(!facts.args.includes(flag), flag);
+		assert.ok(facts.args.includes("--no-context-files"));
+		assert.equal(facts.args[facts.args.indexOf("--model") + 1], MODEL.id);
 		assert.equal(facts.repo, true);
 		assert.equal(facts.claude, false);
 		assert.equal(facts.child, "0.87.0");

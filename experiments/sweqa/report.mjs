@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARMS, evidenceName, mulberry32 } from "./matrix.mjs";
 
-export const BASELINES = ["nico", "tintinweb"];
+// [treatment, baseline]: each share arm against each upstream extension, and the pipeline against free use.
+export const PAIRS = [["share", "nico"], ["share", "tintinweb"], ["share-pipeline", "nico"], ["share-pipeline", "tintinweb"], ["share-pipeline", "share"]];
 export const NON_INFERIORITY = 5;
 // [name, value of one attempt, rule]: "fewer" needs the CI upper bound below 0; "quality" needs the lower bound above −δ.
 export const METRICS = [
@@ -34,7 +35,7 @@ const mean = (xs) => (xs.length ? xs.reduce((n, x) => n + x, 0) / xs.length : nu
 const sum = (xs) => xs.reduce((n, x) => n + x, 0);
 
 // Only questions where both arms are valid and the metric exists are paired; the rest are counted, never zeroed.
-export function compare(attempts, baseline) {
+export function compare(attempts, treatment, baseline) {
 	const byKey = new Map(attempts.map((a) => [`${a.id}|${a.arm}`, a]));
 	const ids = [...new Set(attempts.map((a) => a.id))];
 	const out = {};
@@ -42,14 +43,14 @@ export function compare(attempts, baseline) {
 		const diffs = [];
 		let excluded = 0;
 		for (const id of ids) {
-			const s = byKey.get(`${id}|share`), b = byKey.get(`${id}|${baseline}`);
+			const s = byKey.get(`${id}|${treatment}`), b = byKey.get(`${id}|${baseline}`);
 			const x = s?.metrics.valid ? get(s) : null, y = b?.metrics.valid ? get(b) : null;
 			if (typeof x !== "number" || typeof y !== "number") { excluded++; continue; }
 			diffs.push(x - y);
 		}
 		const ci = diffs.length ? bootstrap(diffs) : [null, null];
 		const row = { n: diffs.length, excluded, meanDiff: mean(diffs), ci, rule };
-		if (rule === "fewer") row.shareFewer = ci[1] !== null && ci[1] < 0;
+		if (rule === "fewer") row.fewer = ci[1] !== null && ci[1] < 0;
 		if (rule === "quality") row.nonInferior = ci[0] !== null && ci[0] > -NON_INFERIORITY;
 		out[name] = row;
 	}
@@ -99,10 +100,11 @@ function markdown(report) {
 		lines.push(`| ${arm} | ${s.valid}/${s.attempts} | ${fmt(s.dispatch.meanChildren, 2)} | ${fmt(s.tokens.meanTotal)} | ${fmt(s.comm.meanBytes)} | ${s.comm.tokens.downlink}/${s.comm.tokens.uplink}/${s.comm.tokens.pull} | ${fmt(s.score.mean, 1)} (${s.score.scored}) | ${Object.entries(s.failures).map(([k, v]) => `${k} ×${v}`).join("; ") || "—"} |`);
 	}
 	for (const [pair, rows] of Object.entries(report.pairs)) {
-		lines.push("", `## ${pair} (${rows.qualityQualifier})`, "", "| metric | n | excluded | mean diff (share − baseline) | 95% CI | verdict |", "|---|---|---|---|---|---|");
+		const [treatment, baseline] = pair.split(" vs ");
+		lines.push("", `## ${pair} (${rows.qualityQualifier})`, "", `| metric | n | excluded | mean diff (${treatment} − ${baseline}) | 95% CI | verdict |`, "|---|---|---|---|---|---|");
 		for (const [name] of METRICS) {
 			const r = rows[name];
-			const verdict = r.rule === "fewer" ? (r.shareFewer ? "share fewer" : "not shown fewer") : r.rule === "quality" ? (r.nonInferior ? "non-inferior" : "not shown non-inferior") : "—";
+			const verdict = r.rule === "fewer" ? (r.fewer ? `${treatment} fewer` : "not shown fewer") : r.rule === "quality" ? (r.nonInferior ? "non-inferior" : "not shown non-inferior") : "—";
 			lines.push(`| ${name} | ${r.n} | ${r.excluded} | ${fmt(r.meanDiff, 1)} | [${fmt(r.ci[0], 1)}, ${fmt(r.ci[1], 1)}] | ${verdict} |`);
 		}
 	}
@@ -127,7 +129,7 @@ function main(runDir) {
 	const judge = fs.existsSync(path.join(runDir, "judge.json")) ? JSON.parse(fs.readFileSync(path.join(runDir, "judge.json"), "utf8")).judge : null;
 	const report = { runId: manifest.id, questions: manifest.instances.length, ratio: run.ratio ?? null, judge,
 		arms: Object.fromEntries(ARMS.map((arm) => [arm, summarizeArm(attempts, arm)])),
-		pairs: Object.fromEntries(BASELINES.map((b) => [`share-vs-${b}`, compare(attempts, b)])) };
+		pairs: Object.fromEntries(PAIRS.map(([a, b]) => [`${a} vs ${b}`, compare(attempts, a, b)])) };
 	fs.writeFileSync(path.join(runDir, "report.json"), JSON.stringify(report, null, 2));
 	fs.writeFileSync(path.join(runDir, "report.md"), markdown(report));
 	console.log(markdown(report));

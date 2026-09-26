@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 import { startLlmProxy } from "../bench/llm-proxy.mjs";
-import { ARMS, MODEL, PARENT_TOOLS, evidenceName, loadSample, sha256, taskPrompt } from "./matrix.mjs";
+import { ARMS, MODEL, SHARE_ARMS, evidenceName, loadSample, sha256, taskPrompt } from "./matrix.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const defaultOut = path.join(repo, "experiments/data/sweqa");
@@ -57,6 +57,11 @@ function command(cmd, argv, opts = {}) {
 	return r.stdout.trim();
 }
 
+// The arm's installed package is loaded whole (extensions, skills, prompt templates); nothing else is.
+// Pi's default tools stay on. Context files stay off: no AGENTS.md from above the attempt directory.
+const LAUNCH = ["--no-themes", "--no-context-files", "--no-session", "--offline", "--mode", "rpc",
+	"--provider", MODEL.provider, "--model", MODEL.id, "--thinking", MODEL.thinking];
+
 // Node scripts run under this node; anything else (a test double) is executed directly.
 const piLaunch = (argv) => (args.pi.endsWith(".js") ? [process.execPath, [args.pi, ...argv]] : [args.pi, argv]);
 
@@ -64,6 +69,9 @@ function installed(arm) {
 	const dir = path.join(args.out, "agent", arm);
 	const meta = JSON.parse(fs.readFileSync(path.join(dir, "installed.json"), "utf8"));
 	if (!fs.existsSync(meta.entry)) throw new Error(`${arm} extension missing: ${meta.entry}`);
+	// Pi loads whatever the agent directory has installed; each arm must hold exactly its own package.
+	const packages = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8")).packages ?? [];
+	if (packages.length !== 1) throw new Error(`${arm} agent directory must install exactly one package, found ${packages.length}`);
 	for (const bin of ["rg", "fd"]) if (!fs.existsSync(path.join(dir, "bin", bin))) throw new Error(`${arm} lacks bin/${bin}; rerun prepare.mjs`);
 	return { dir, ...meta, commit: undefined };
 }
@@ -129,9 +137,7 @@ function lastAnswer(events) {
 
 async function piAttempt({ arm, setup, cwd, prompt, evidence, env }) {
 	const logFile = path.join(evidence, "pi-rpc.jsonl");
-	const [piBin, piArgs] = piLaunch(["-e", setup.entry, "--no-extensions", "--no-skills", "--no-prompt-templates",
-		"--no-themes", "--no-context-files", "--no-session", "--offline", "--mode", "rpc", "--provider", MODEL.provider,
-		"--model", MODEL.id, "--thinking", MODEL.thinking, "--tools", PARENT_TOOLS[arm].join(",")]);
+	const [piBin, piArgs] = piLaunch(LAUNCH);
 	const child = spawn(piBin, piArgs, { cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
 	if (child.pid) active.add(child.pid);
 	let carry = "", stderr = "", exited = false, exitCode = null, settled = false;
@@ -200,10 +206,10 @@ async function runArm(item, arm, setup, apiKey) {
 		fs.rmSync(storageRoot, { recursive: true, force: true });
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 		fs.mkdirSync(tmpDir, { recursive: true });
-		proxy = await startLlmProxy({ upstreamBaseUrl: "https://api.deepseek.com", apiKey, roles: ["pi"], logFile: path.join(evidence, "llm-calls.jsonl") });
+		proxy = await startLlmProxy({ upstreamBaseUrl: MODEL.baseUrl, apiKey, roles: ["pi"], logFile: path.join(evidence, "llm-calls.jsonl") });
 		modelCatalog(setup.dir, proxy);
-		if (arm === "share") configureShare(setup.dir, storageRoot);
-		const prompt = taskPrompt(item);
+		if (SHARE_ARMS.includes(arm)) configureShare(setup.dir, storageRoot);
+		const prompt = taskPrompt(item, arm);
 		fs.writeFileSync(path.join(evidence, "prompt.md"), prompt);
 		const invocations = path.join(evidence, "pi-invocations.log");
 		fs.writeFileSync(invocations, "");
@@ -226,18 +232,15 @@ async function runArm(item, arm, setup, apiKey) {
 	}
 }
 
+// Only the recorder holds the key, and only from the environment: it is never written to disk or the manifest.
 function resolveApiKey() {
-	if (process.env.DEEPSEEK_API_KEY) return process.env.DEEPSEEK_API_KEY;
-	const catalog = path.join(os.homedir(), ".pi", "agent", "models.json");
-	if (fs.existsSync(catalog)) {
-		const key = JSON.parse(fs.readFileSync(catalog, "utf8")).providers?.deepseek?.apiKey;
-		if (typeof key === "string" && key.trim()) return key;
-	}
-	throw new Error("DeepSeek API key missing: set DEEPSEEK_API_KEY or configure Pi's deepseek provider");
+	const key = process.env.COMMANDCODE_API_KEY?.trim();
+	if (!key) throw new Error("COMMANDCODE_API_KEY is not set");
+	return key;
 }
 
 async function main() {
-	if (command("git", ["status", "--porcelain", "--", "index.ts", "src", "package.json", "package-lock.json"], { cwd: repo })) {
+	if (command("git", ["status", "--porcelain", "--", "index.ts", "src", "prompts", "skills", "package.json", "package-lock.json"], { cwd: repo })) {
 		throw new Error("local share extension source is dirty; commit product changes before a frozen run");
 	}
 	const all = loadSample(args.sample, args.ids);
@@ -248,12 +251,13 @@ async function main() {
 	if (!/^\d+\.\d+\.\d+/.test(piVersion)) throw new Error(`Pi version probe failed: ${JSON.stringify(piVersion)}`);
 	const here = path.dirname(fileURLToPath(import.meta.url));
 	// The share arm loads this checkout; what is frozen is its product source, not the experiment commits around it.
-	const shareSource = Object.fromEntries(["src", "index.ts", "package.json", "package-lock.json"]
+	const shareSource = Object.fromEntries(["src", "index.ts", "prompts", "skills", "package.json", "package-lock.json"]
 		.map((p) => [p, command("git", ["rev-parse", `HEAD:${p}`], { cwd: repo })]));
 	const manifest = { id: args.id, samplePath: args.sample, sampleSha256: sha256(args.sample),
 		matrixSha256: sha256(path.join(here, "matrix.mjs")), runnerSha256: sha256(fileURLToPath(import.meta.url)),
 		instances: items.map((x) => x.id), arms: setups, shareSource, headCommit: command("git", ["rev-parse", "HEAD"], { cwd: repo }), piCli: args.pi, piVersion, model: `${MODEL.provider}/${MODEL.id}`,
-		thinking: MODEL.thinking, parentTools: PARENT_TOOLS, timeoutMs: args.timeoutMs, repoRoot: repo,
+		thinking: MODEL.thinking, upstream: MODEL.baseUrl, launch: LAUNCH, parentTools: "Pi defaults (read, bash, edit, write) and the package's tools",
+		timeoutMs: args.timeoutMs, repoRoot: repo,
 		path: "<bin>:/usr/local/bin:/usr/bin:/bin", concurrency: "arms of one question in parallel", createdAt: new Date().toISOString() };
 	if (args.dryRun) { console.log(JSON.stringify(manifest, null, 2)); return; }
 	const apiKey = resolveApiKey();
@@ -261,7 +265,7 @@ async function main() {
 	const manifestFile = path.join(runDir, "manifest.json");
 	if (fs.existsSync(manifestFile)) {
 		const prior = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
-		for (const field of ["sampleSha256", "matrixSha256", "runnerSha256", "piVersion", "model", "thinking", "timeoutMs", "instances", "arms", "shareSource", "parentTools"]) {
+		for (const field of ["sampleSha256", "matrixSha256", "runnerSha256", "piVersion", "model", "thinking", "timeoutMs", "instances", "arms", "shareSource", "launch", "upstream"]) {
 			if (JSON.stringify(prior[field]) !== JSON.stringify(manifest[field])) throw new Error(`run manifest changed: ${field}`);
 		}
 	} else fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));

@@ -1,7 +1,7 @@
-# 同一 Pi harness 三臂 SWE-QA 实验：分发、token 与 Agent 间通信
+# 同一 Pi harness 四臂 SWE-QA 实验：分发、token 与 Agent 间通信
 
 - 日期：2026-09-26
-- 状态：设计已逐节确认（2026-09-26 会话），待审阅 spec
+- 状态：设计已逐节确认（2026-09-26 会话）；pilot2 之后按用户裁定改为四臂（见修订记录）
 - 相关：`experiments/swebench/`（本设计取代它）；`experiments/bench/llm-proxy.mjs`；`experiments/analysis/score-public.mjs`（SWE-QA judge 与 bootstrap 的现有实现）；`docs/experiments/experiment-design.md` §5.3、§7.1
 - 取代：`a5e961f` 引入的 SWE-bench Lite 三臂 harness（硬切换，不保留）
 
@@ -35,29 +35,32 @@
 
 ## 2. 实验条件
 
-### 2.1 三个臂
+### 2.1 四个臂
 
-| 臂 | 包 | 委派工具 | 配置 |
+| 臂 | 包 | 题面 | 配置 |
 |---|---|---|---|
-| `share` | 本仓库 checkout（commit 记入 manifest） | `subagent` | `asyncByDefault: false`；`synapse: { mode: "synapse", memory: "project", autoDistill: true, storageRoot: <每次尝试一个新目录> }` |
-| `nico` | `npm:pi-subagents@0.71.0` | `subagent` | 包的默认配置 |
-| `tintinweb` | `npm:@tintinweb/pi-subagents@0.19.0` | `Agent` | 包的默认配置 |
+| `share` | 本仓库 checkout（产品源码哈希记入 manifest） | 题目 + 委派说明（§2.4） | `asyncByDefault: false`；`synapse: { mode: "synapse", memory: "project", autoDistill: true, storageRoot: <每次尝试一个新目录> }` |
+| `share-pipeline` | 同上，装在自己的 agent 目录里 | `/role-pipeline <题目>`，由 Pi 按包自带的模板展开 | 同 share |
+| `nico` | `npm:pi-subagents@0.71.0` | 题目 + 委派说明 | 包的默认配置 |
+| `tintinweb` | `npm:@tintinweb/pi-subagents@0.19.0` | 题目 + 委派说明 | 包的默认配置 |
 
-安装方式沿用 `prepare.mjs`：每个臂装在独立的 agent 目录里，模型目录只复制 `deepseek-flash` 的定义，不复制任何凭据。
+share-pipeline 和 share 用的是同一个包，差别只在于它按插件推荐的四角色流水线（planner → retriever → executor → summarizer）工作。share 的阶段结果块、句柄兑现、自动蒸馏等机制主要挂在这四个角色上，自由编排时多数不会触发。
+
+安装方式沿用 `prepare.mjs`：每个臂装在独立的 agent 目录里，且只装自己的那一个包。模型目录只复制模型定义，不复制任何凭据。
 
 ### 2.2 固定条件
 
 - **Pi**：父会话和所有子会话都用同一个 CLI，即 `../pi-web` 的 0.87.0，版本记入 manifest。
-- **模型**：`deepseek/deepseek-flash`，`--thinking high`。
-- **启动参数**：`-e <extension> --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-session --offline --mode rpc`。
-- **父会话工具**：只开委派工具（`--tools subagent`，或 `--tools Agent`），读仓库的工作全部由子 agent 完成。如果 pilot 证明某个臂只有这一个工具就完成不了前台委派，就补上它必需的最少工具，并在正式跑之前记入 manifest 和本 spec 的修订记录。
+- **模型**：commandcode 上的 `deepseek/deepseek-v4.1-flash`，`--thinking high`。目录里这个模型没有声明 `maxTokens` 和 `contextWindow`，分别设为 32768（同 E1 修订 16）和 1048576（与 DeepSeek 官方定义一致），都记入 manifest。
+- **启动参数**：`--no-themes --no-context-files --no-session --offline --mode rpc --provider commandcode --model deepseek/deepseek-v4.1-flash --thinking high`。不带 `-e`，也不带 `--no-extensions --no-skills --no-prompt-templates`：Pi 加载 agent 目录里已安装的整个插件包，包括扩展、skills 和 prompt 模板，剩下的由插件自己决定。
+- **父会话工具**：Pi 的默认内置工具（`read`、`bash`、`edit`、`write`），加上插件注册的全部工具。
 - **PATH**：Pi 进程的 PATH 只包含：
   - 一个包装目录，里面有两样东西：`pi`，指向上面那个 0.87.0 CLI，每次被调用都把 argv 追加写入证据目录的 `pi-invocations.log`；`node`，一个指向当前 node 可执行文件的链接；
   - `/usr/local/bin:/usr/bin:/bin`。
 
-  这样一来，`claude`、`codex`、`cursor-agent` 在三个臂里都会显示为 missing，Windows 那边的路径也不会进入 PATH。
-- **网络**：Pi 只能访问本地记录代理，代理用真实 key 连接 DeepSeek，Pi 和子进程拿到的是假 key（沿用现有做法）。
-- **并发**：同一题的三个臂并发跑，让它们处在同一个 API 时间窗口里；题与题之间顺序执行。每次尝试用一个独立的代理实例。
+  这样一来，`claude`、`codex`、`cursor-agent` 在四个臂里都会显示为 missing，Windows 那边的路径也不会进入 PATH。
+- **网络**：Pi 只能访问本地记录代理，代理用真实 key 连接 `https://api.commandcode.ai/provider/v1`，Pi 和子进程拿到的是假 key。真实 key 只通过环境变量 `COMMANDCODE_API_KEY` 交给 runner，不写入任何文件。
+- **并发**：同一题的四个臂并发跑，让它们处在同一个 API 时间窗口里；题与题之间顺序执行。每次尝试用一个独立的代理实例。
 - **超时**：每次尝试 20 分钟，只跑一次，失败的记录保留。
 - **跨题状态**：没有。每次尝试都是全新的 Pi 会话；share 用全新的 `storageRoot`；上游两个臂各自的 agent 目录里如果有持久化状态，在每次尝试前清空，具体清哪些目录在 pilot 中核实后列入 manifest。
 
@@ -74,14 +77,14 @@
 - **题面**：由三部分组成：
   1. SWE-QA 原题，一字不改；
   2. R 组的固定说明："The code is the <owner>/<repo> repository at commit <短 sha>, in the <repo>/ directory of this worktree. Answer from the code, citing the files and functions involved."；
-  3. 委派说明，大意是：你只能通过已安装扩展提供的委派工具工作；把调查交给子 agent，并在前台等待结果；最后一条回复写出完整答案。
+  3. 委派说明，share-pipeline 没有这一部分：用已安装的子代理扩展把仓库调查交给子 agent；等所有结果都回来再回答，不要留下后台任务；最后一条回复写出完整答案。说明里不写工具名，也不规定怎么派。
 
   题面文本放在 `matrix.mjs` 里，SHA-256 记入 manifest。
 - **答案**：父会话最后一条 assistant `message_end` 的文本部分。
 
 ## 3. 计量口径
 
-所有计量都由离线脚本 `analyze.mjs` 从证据文件中计算，三个臂用同一套逻辑，不依赖任何扩展自己的账本。数据来源：
+所有计量都由离线脚本 `analyze.mjs` 从证据文件中计算，四个臂用同一套逻辑，不依赖任何扩展自己的账本。数据来源：
 
 - `llm-calls.jsonl`：记录代理保存的每次调用的完整请求、响应和 usage；
 - `pi-rpc.jsonl`：父会话的 RPC 事件流。
@@ -93,7 +96,7 @@
 1. 一次调用的消息如果只有 system 加若干 user、还没有 assistant 轮，就开启一个新会话。
 2. 如果它的消息以某个现有会话上一次调用的请求消息为前缀，就接到那个会话上。有多个候选时，取前缀最长的那个。比较消息时忽略 `reasoning_content`。
 2a. 如果它带有历史消息、又接不上任何会话，但 system prompt 与所有现有会话都不同，就视为一个继承了父上下文的新会话，标记 `inheritedHistory`。如果它的 system prompt 与某个现有会话相同，就算作归因不了。
-3. 首条 user 消息等于题面的会话是**父会话**，其余都是**子会话**。
+3. 本次尝试的第一次调用开出的会话是**父会话**，前提是它不带历史消息；其余都是**子会话**。子会话要等父会话的第一次响应返回之后才可能启动。share-pipeline 的题面是由 Pi 展开的模板，不能靠题面文本来识别父会话。
 4. 子会话的归属和 agent 类型按以下方式确定：父会话委派调用的参数里有任务文本，找到被包含在子会话首条 user 消息中的那一段，取对应调用的 agent 参数。匹配不上时，归到它启动时正处于执行窗口内的那次委派调用（窗口从该调用的响应开始，到发起方的下一次调用为止；有多个窗口时取最内层的那个），agent 类型记为 `unmatched`。会话本身照常计数。子会话再派出的子会话同样计入，并记录发起它的会话。
 5. 归因不了的调用逐条列出，保留它们在日志中的原始顺序。
 
@@ -144,16 +147,16 @@
 3. 如果某个 agent 类型在整次运行里只出现过一次，可变部分就无法计算，标记为 unavailable，该次尝试的通信合计标为"部分"。
 4. 如果一段 system prompt 有多个注入点，中间夹着的固定文本也会被算进可变部分，所以可变部分是一个上界。报告里会注明这一点。
 
-**单位**：字节数精确统计。换算成 token 用本次运行自己标定的比例：对同一会话内相邻的两次调用，计算 Δprompt_tokens 与新增消息的 Δbytes 之比，全部三个臂合在一起取中位数，报告里附上四分位范围。三个臂用同一个比例，所以按字节还是按 token 做判定，结论相同。判定按字节进行。
+**单位**：字节数精确统计。换算成 token 用本次运行自己标定的比例：对同一会话内相邻的两次调用，计算 Δprompt_tokens 与新增消息的 Δbytes 之比，全部四个臂合在一起取中位数，报告里附上四分位范围。四个臂用同一个比例，所以按字节还是按 token 做判定，结论相同。判定按字节进行。
 
 ## 4. 评分
 
 - **judge 提示词**：从 `experiments/data/swe-qa/Benchmark construction/score/llm-as-a-judge.py` 原样读取，提取方式和 `score-public.mjs` 相同。五个维度（correctness、completeness、relevance、clarity、reasoning）各 1–20 分，满分 100。
-- **judge 模型**：deepseek provider 上的 `deepseek-flash`，调用方式为 `pi -p --no-tools --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --offline`。
+- **judge 模型**：被测模型本身，即 commandcode 上的 `deepseek/deepseek-v4.1-flash`，调用方式为 `pi -p --no-tools --no-session --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --offline`。judge 也经过它自己的记录代理，token 用量取自 `judge-calls.jsonl`。
 - **投票**：每个回答评 5 次，每个维度取中位数。解析失败最多重试 10 次，仍然拿不到分数就记为 unavailable。
 - **盲评**：judge 只看到题目、参考答案和父会话的最终答案，看不到臂名。评分顺序按固定种子打乱。
 - **时机**：评分在跑数全部结束后单独进行。judge 自己的 token 消耗单独记账，不计入实验。
-- **披露**：judge 和被测模型是同一个模型，分数只能作为三臂之间的相对比较，不能和旧 R 组（judge 为 `glm-5.3-flashx`）的分数直接对比。
+- **披露**：judge 和被测模型是同一个模型，分数只能作为四臂之间的相对比较，不能和旧 R 组（judge 为 `glm-5.3-flashx`）的分数直接对比。
 
 ## 5. 有效性与判定规则（在跑数之前冻结）
 
@@ -180,9 +183,9 @@
 
 ### 5.3 配对比较与判定
 
-- **比较对象**：share 对 nico、share 对 tintinweb。
+- **比较对象**：share 对 nico、share 对 tintinweb、share-pipeline 对 nico、share-pipeline 对 tintinweb、share-pipeline 对 share（流水线相对自由编排）。
 - **范围**：只在双方都有效的题上比较，同时报告因无效被排除的题数。
-- **统计方法**：每项指标取配对差 share − 基线，报告均值和 bootstrap 95% CI。重采样 10000 次，种子 20260921，复用 `score-public.mjs` 的实现。
+- **统计方法**：每项指标取配对差（处理臂 − 基线），报告均值和 bootstrap 95% CI。重采样 10000 次，种子 20260921，复用 `score-public.mjs` 的实现。
 - **"更少"**（分发数量、总 token、通信字节）：配对差 CI 的上界小于 0。
 - **质量非劣**：配对差 CI 的下界大于 −5 分（δ = 5，满分 100，与 R 组相同）。
 - **token 节省的证据资格**：质量没有被判为非劣时，token 或通信的节省照常报告，但标注"质量未证非劣"。
@@ -195,10 +198,10 @@
 |---|---|
 | `matrix.mjs` | 臂、包、委派工具、父会话工具、通信类工具清单、题面、抽样函数 |
 | `prepare.mjs` | 安装三个扩展；建仓库镜像；解析完整 sha；冻结 `sample.jsonl` |
-| `run.mjs` | 逐题并发跑三个臂；manifest 记录 share 产品源码（`src`、`index.ts`、`package*.json`）的 git 对象哈希，续跑时比对；收窄 PATH、包装 `pi`；导出和清理工作树；取答案；写证据和 `result.json` |
+| `run.mjs` | 逐题并发跑四个臂；manifest 记录 share 产品源码（`src`、`index.ts`、`prompts`、`skills`、`package*.json`）的 git 对象哈希，续跑时比对；收窄 PATH、包装 `pi`；导出和清理工作树；取答案；写证据和 `result.json` |
 | `analyze.mjs` | 会话归因、分发、token、通信、泄露审计、比例标定；写每次尝试的 `metrics.json` |
 | `score.mjs` | SWE-QA judge；写 `scores.jsonl` |
-| `report.mjs` | 汇总三臂，配对 bootstrap，套用判定规则；写 `report.json` 和 `report.md` |
+| `report.mjs` | 汇总四臂，配对 bootstrap，套用判定规则；写 `report.json` 和 `report.md` |
 | `test.mjs` | 单元测试和集成测试（§7） |
 | `README.md` | 准备、跑数、评分、报告的步骤和口径说明 |
 
@@ -261,3 +264,10 @@ pilot 的数据不与正式数据合并。pilot 暴露问题后，修改会在�
   9. **通信类工具清单。** 实际观察到的工具都在现有清单之内（工作类工具、`subagent`、`Agent`），没有未分类的工具。清单维持不变。
 
   观察记录（不是修订）：share 在 requests#7 上用 workflowScript 并行派出 scout ×2、retriever、reviewer 四个子会话。reviewer 以 1–60 行的窗口大量读取，上下文涨到 15.9 万 token，51 次调用累计约 401 万 prompt token；同一题 nico 用了 51 万，tintinweb 用了 26 万。这是被测扩展自身的行为，由正式数据来衡量。
+- pilot `pilot2-20260926`（3 题 × 3 臂，9 次尝试全部完成，数据不用于任何结论）之后，用户裁定四项改动，均在正式数据产生之前完成：
+  1. **父会话工具**：去掉 `--tools` 限制，改用 Pi 默认工具加插件工具。题面仍然要求委派，但不规定方式；没有子会话的尝试仍然判为无效。
+  2. **新增 `share-pipeline` 臂**：share 的自由编排不会走 role-pipeline，协议机制多数不触发（pilot2 中 `memory-redeem` 为 0，也没有出现句柄）。配对比较相应扩展为 5 组。
+  3. **整包加载插件**：每个臂都加载已安装的整个插件包，不再只用 `-e` 入口，也不再关闭 skills 和 prompt 模板。RPC `get_commands` 核实：share 系有 7 个模板（含 `role-pipeline`）和 2 个 skill；nico 有 6 个模板和 2 个 skill；tintinweb 只有扩展命令。
+  4. **provider 改为 commandcode**：模型为 `deepseek/deepseek-v4.1-flash`，key 只通过环境变量传入。judge 同步改用这个模型。
+
+  随之调整：§3.1 父会话按第一次调用来识别；share 产品源码的冻结范围加入 `prompts/` 和 `skills/`。

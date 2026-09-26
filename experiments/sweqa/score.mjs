@@ -8,6 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
+import { startLlmProxy } from "../bench/llm-proxy.mjs";
 import { ARMS, MODEL, evidenceName, loadSample, sha256, shuffledIndices, SEED } from "./matrix.mjs";
 
 export const DIMS = ["correctness", "completeness", "relevance", "clarity", "reasoning"];
@@ -51,26 +53,16 @@ export async function vote(ask, votes) {
 	return { ...dims, total: DIMS.reduce((n, d) => n + dims[d], 0), votes: got.length, parseFailures: failures };
 }
 
-function askPi(piCli, prompt, usage) {
+function askPi(piCli, agentDir, prompt) {
 	return new Promise((resolve) => {
-		const argv = [piCli, "-p", "--mode", "json", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
+		const argv = [piCli, "-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
 			"--no-themes", "--no-context-files", "--offline", "--provider", MODEL.provider, "--model", MODEL.id];
-		const child = spawn(process.execPath, argv, { cwd: os.tmpdir(), env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+		const env = { PATH: process.env.PATH, HOME: process.env.HOME, PI_CODING_AGENT_DIR: agentDir, NODE_USE_ENV_PROXY: "0" };
+		const child = spawn(process.execPath, argv, { cwd: os.tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
 		let out = "";
 		child.stdout.on("data", (chunk) => { out += chunk; });
 		const timer = setTimeout(() => child.kill("SIGTERM"), 240_000);
-		child.on("close", () => {
-			clearTimeout(timer);
-			let text = "";
-			for (const line of out.split("\n")) {
-				let event;
-				try { event = JSON.parse(line); } catch { continue; }
-				if (event.type !== "message_end" || event.message?.role !== "assistant") continue;
-				text = (event.message.content ?? []).filter((x) => x.type === "text").map((x) => x.text).join("\n");
-				for (const key of ["input", "output", "cacheRead", "cacheWrite"]) usage[key] = (usage[key] ?? 0) + (event.message.usage?.[key] ?? 0);
-			}
-			resolve(text);
-		});
+		child.on("close", () => { clearTimeout(timer); resolve(out); });
 		child.stdin.end(prompt);
 	});
 }
@@ -83,6 +75,9 @@ async function main() {
 	if (!argv[0] || !fs.existsSync(path.join(runDir, "manifest.json"))) {
 		console.error("usage: node score.mjs <run-directory> [--sweqa dir] [--votes 5] [--concurrency 3] [--pi cli.js]"); process.exit(2);
 	}
+	const apiKey = process.env.COMMANDCODE_API_KEY?.trim();
+	if (!apiKey) throw new Error("COMMANDCODE_API_KEY is not set");
+	if (process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy) setGlobalDispatcher(new EnvHttpProxyAgent());
 	const manifest = JSON.parse(fs.readFileSync(path.join(runDir, "manifest.json"), "utf8"));
 	if (sha256(manifest.samplePath) !== manifest.sampleSha256) throw new Error("sample changed since the run");
 	const sweqa = path.resolve(opt("--sweqa", path.join(repo, "experiments/data/swe-qa")));
@@ -90,6 +85,14 @@ async function main() {
 	const piCli = path.resolve(opt("--pi", manifest.piCli));
 	const template = judgeTemplate(sweqa);
 	const items = new Map(loadSample(manifest.samplePath, manifest.instances).map((x) => [x.id, x]));
+	// The judge is the measured model behind its own recorder; Pi gets a dummy key and a fresh agent directory.
+	const proxy = await startLlmProxy({ upstreamBaseUrl: MODEL.baseUrl, apiKey, roles: ["judge"], logFile: path.join(runDir, "judge-calls.jsonl") });
+	const agentDir = path.join(runDir, "judge-agent");
+	fs.mkdirSync(agentDir, { recursive: true });
+	const armCatalog = JSON.parse(fs.readFileSync(path.join(manifest.arms.share.dir, "models.json"), "utf8"));
+	const provider = armCatalog.providers[MODEL.provider];
+	fs.writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { [MODEL.provider]: {
+		...provider, baseUrl: proxy.baseUrlFor("judge"), apiKey: "judge-proxy-key" } } }, null, 2));
 	const outFile = path.join(runDir, "scores.jsonl");
 	const done = new Set(fs.existsSync(outFile) ? fs.readFileSync(outFile, "utf8").split("\n").filter(Boolean).map((l) => { const r = JSON.parse(l); return `${r.id}|${r.arm}`; }) : []);
 	const jobs = [];
@@ -100,24 +103,30 @@ async function main() {
 		jobs.push({ id, arm, evidence, valid: JSON.parse(fs.readFileSync(metricsFile, "utf8")).valid });
 	}
 	const order = shuffledIndices(jobs.length, SEED).map((i) => jobs[i]);
-	fs.writeFileSync(path.join(runDir, "judge.json"), JSON.stringify({ judge: `${MODEL.provider}/${MODEL.id}`, sameModelAsMeasured: true, votes,
-		promptSha256: createHash("sha256").update(template).digest("hex"), piCli }, null, 2));
 	const worker = async () => {
 		while (order.length) {
 			const job = order.shift();
 			const row = { id: job.id, arm: job.arm };
 			if (!job.valid) row.unavailable = "invalid attempt";
 			else {
-				const item = items.get(job.id), usage = {};
+				const item = items.get(job.id);
 				const answer = fs.readFileSync(path.join(job.evidence, "answer.md"), "utf8");
 				const prompt = judgePrompt(template, item.question, item.referenceAnswer, answer);
-				Object.assign(row, await vote(() => askPi(piCli, prompt, usage), votes), { judgeUsage: usage });
+				Object.assign(row, await vote(() => askPi(piCli, agentDir, prompt), votes));
 			}
 			fs.appendFileSync(outFile, `${JSON.stringify(row)}\n`);
 			console.log(`[score] ${job.id} ${job.arm}: ${row.total ?? row.unavailable ?? "unavailable"}`);
 		}
 	};
-	await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
+	try {
+		await Promise.all(Array.from({ length: Math.max(1, concurrency) }, worker));
+	} finally {
+		const calls = proxy.calls().filter((c) => c.path === "/chat/completions");
+		const usage = Object.fromEntries(["input", "output", "cacheRead", "cacheWrite"].map((k) => [k, calls.reduce((n, c) => n + (c.usage?.[k] ?? 0), 0)]));
+		fs.writeFileSync(path.join(runDir, "judge.json"), JSON.stringify({ judge: `${MODEL.provider}/${MODEL.id}`, sameModelAsMeasured: true, votes,
+			promptSha256: createHash("sha256").update(template).digest("hex"), piCli, calls: calls.length, usage }, null, 2));
+		await proxy.close();
+	}
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main().catch((error) => { console.error(error); process.exitCode = 1; });
