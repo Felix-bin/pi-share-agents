@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { analyzeAttempt, attributeSessions, calibrate, commonAffixes, finalizeRun } from "./analyze.mjs";
-import { ARMS, MODEL, loadSample, parseRepoCommits, sampleQuestions, shuffledIndices, taskPrompt } from "./matrix.mjs";
+import { ARMS, MODEL, PARENT_TOOLS, loadSample, parseRepoCommits, sampleQuestions, shuffledIndices, taskPrompt } from "./matrix.mjs";
 import { compare } from "./report.mjs";
 import { judgePrompt, judgeTemplate, parseScores, vote } from "./score.mjs";
 
@@ -306,7 +306,7 @@ test("pairs use only questions where both arms are valid; rules decide at the CI
 	assert.equal(tin.children.fewer, false);
 });
 
-test("runner isolates each arm: tmp worktree, pinned pi on a narrowed PATH, whole package, default tools", () => {
+test("runner isolates each arm: tmp worktree, pinned pi on a narrowed PATH, whole package, delegation tool only", () => {
 	const dir = temp(), out = path.join(dir, "data"), commit = "c".repeat(40);
 	const item = { id: "demo#3", repo: "acme/demo", name: "demo", repoUrl: "https://github.com/acme/demo", commit, shortCommit: "ccccccc",
 		sourceIndex: 3, question: "How does demo work?", referenceAnswer: "It demos." };
@@ -361,7 +361,8 @@ process.stdin.on("data", (chunk) => { input += chunk; let at; while ((at = input
 		assert.equal(attempt.problem, null);
 		assert.equal(attempt.childPiLaunches, 1);
 		const facts = JSON.parse(fs.readFileSync(path.join(evidence, "answer.md"), "utf8"));
-		for (const flag of ["-e", "--no-extensions", "--no-skills", "--no-prompt-templates", "--tools"]) assert.ok(!facts.args.includes(flag), flag);
+		for (const flag of ["-e", "--no-extensions", "--no-skills", "--no-prompt-templates"]) assert.ok(!facts.args.includes(flag), flag);
+		assert.equal(facts.args[facts.args.indexOf("--tools") + 1], PARENT_TOOLS[arm].join(","));
 		assert.ok(facts.args.includes("--no-context-files"));
 		assert.equal(facts.args[facts.args.indexOf("--model") + 1], MODEL.id);
 		assert.equal(facts.repo, true);

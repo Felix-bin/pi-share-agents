@@ -6,8 +6,10 @@ import path from "node:path";
 export const ARMS = ["share", "share-pipeline", "nico", "tintinweb"];
 export const SHARE_ARMS = ["share", "share-pipeline"];
 export const PACKAGES = { share: ".", "share-pipeline": ".", nico: "npm:pi-subagents@0.71.0", tintinweb: "npm:@tintinweb/pi-subagents@0.19.0" };
-// Every arm launches its installed package (extensions, skills, prompts) with Pi's default tools; the
-// package does the rest (spec §2.2). maxTokens is set because the catalog leaves it undeclared (E1 revision 16).
+// Every arm launches its installed package (extensions, skills, prompts); the parent holds only the package's
+// delegation tool, and the package does the rest (spec §2.2). tintinweb has no `subagent`: its tool is `Agent`.
+export const PARENT_TOOLS = { share: ["subagent"], "share-pipeline": ["subagent"], nico: ["subagent"], tintinweb: ["Agent"] };
+// maxTokens is set because the catalog leaves it undeclared (E1 revision 16).
 export const MODEL = { provider: "commandcode", id: "deepseek/deepseek-v4.1-flash", thinking: "high",
 	baseUrl: "https://api.commandcode.ai/provider/v1", maxTokens: 32768, contextWindow: 1048576 };
 export const PER_REPO = 4;

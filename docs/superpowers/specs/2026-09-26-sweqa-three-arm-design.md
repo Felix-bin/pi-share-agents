@@ -53,7 +53,9 @@ share-pipeline 和 share 用的是同一个包，差别只在于它按插件推�
 - **Pi**：父会话和所有子会话都用同一个 CLI，即 `../pi-web` 的 0.87.0，版本记入 manifest。
 - **模型**：commandcode 上的 `deepseek/deepseek-v4.1-flash`，`--thinking high`。目录里这个模型没有声明 `maxTokens` 和 `contextWindow`，分别设为 32768（同 E1 修订 16）和 1048576（与 DeepSeek 官方定义一致），都记入 manifest。
 - **启动参数**：`--no-themes --no-context-files --no-session --offline --mode rpc --provider commandcode --model deepseek/deepseek-v4.1-flash --thinking high`。不带 `-e`，也不带 `--no-extensions --no-skills --no-prompt-templates`：Pi 加载 agent 目录里已安装的整个插件包，包括扩展、skills 和 prompt 模板，剩下的由插件自己决定。
-- **父会话工具**：Pi 的默认内置工具（`read`、`bash`、`edit`、`write`），加上插件注册的全部工具。
+- **父会话工具**：只给插件的委派工具：share、share-pipeline、nico 用 `--tools subagent`，tintinweb 没有 `subagent`，用 `--tools Agent`。子会话的工具由各插件的 agent 定义决定，不受这个限制。
+- **运行环境**：不为被测仓库提供 Python 环境。share-pipeline 的 executor 角色本来就会去运行代码，这里它只能读代码；报告中注明"executor 无运行环境"。
+- **隔离**：不加文件系统沙箱，agent 能看到整个宿主机。防线是 §5.2 的泄露审计：碰到本仓库 `experiments/` 下的路径或 benchmark 相关文件名，就判无效；访问工作根以外的路径（比如 `find /`）只计数、并如实报告。这类扫描会拉长墙钟，也会增加 token，报告里要单列说明。
 - **PATH**：Pi 进程的 PATH 只包含：
   - 一个包装目录，里面有两样东西：`pi`，指向上面那个 0.87.0 CLI，每次被调用都把 argv 追加写入证据目录的 `pi-invocations.log`；`node`，一个指向当前 node 可执行文件的链接；
   - `/usr/local/bin:/usr/bin:/bin`。
@@ -279,4 +281,8 @@ pilot 的数据不与正式数据合并。pilot 暴露问题后，修改会在�
 - pilot4（仅 flask#37，四臂都跑完，数据不用于任何结论）的分析暴露了两处归因问题，已修正，只影响分析：
   1. nico 父会话的 system prompt 在第一轮之后被改写：`subagent` 工具延后注册，prompt 多了一行工具说明，原来的前缀链接因此断开。处置：会话链接只比较对话消息，不比较 system prompt；允许同一会话的 system prompt 被改写，但 `<active_agent>` 身份不能变，身份变了就是另一个会话。被改写的字节单独报告为 `systemRewrites`，不计入通信。
   2. tintinweb 的首次调用遇到网络失败，Pi 原样重试了一次。原来的规则把重试当成了"父会话重启"。处置：内容与上一次失败调用完全相同的调用算作重试，归入同一会话；只有成功的调用缺 usage 才判无效，失败的调用计入 `audit.failedCalls`。
+- pilot4 之后，用户裁定三项改动，均在正式数据产生之前：
+  1. **父会话只给委派工具**：share、share-pipeline、nico 用 `subagent`，tintinweb 用 `Agent`。撤销 pilot2 之后放开的"默认工具"。pilot4 里 share 和 nico 的父会话自己动手读代码，父会话 token 分别达到 26 万和 24 万。
+  2. **不加沙箱**：曾经实现过一个基于 `unshare -Urm --pid` 的 mount namespace 沙箱，并通过了测试。但它需要处理 PID 1 忽略 SIGTERM、`unshare --fork` 在等待子进程时不响应 SIGTERM 等问题，用户选择先不加，代码已全部移除。宿主机可见的风险见 §2.2"隔离"。
+  3. **不给 Python 环境**：share-pipeline 的 executor 只能读代码。pilot4 中它曾为了找依赖执行 `find / -maxdepth 8`，耗时 649 秒，并因此看到了本仓库 `experiments/data` 下的路径，这次尝试按泄露规则判为无效。
 

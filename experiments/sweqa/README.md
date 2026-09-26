@@ -9,7 +9,7 @@ The arms are:
 - `nico`: `pi-subagents@0.71.0`;
 - `tintinweb`: `@tintinweb/pi-subagents@0.19.0`.
 
-Each arm launches its installed package whole (extensions, skills, prompt templates) with Pi's default tools; the package does the rest. The prompt asks for delegation without naming a tool or a pattern. Everything else is fixed:
+Each arm launches its installed package whole (extensions, skills, prompt templates); the parent holds only the delegation tool (`subagent`, or `Agent` for tintinweb), and the package does the rest. The prompt asks for delegation without naming a tool or a pattern. No Python environment is provided for the questioned repositories, and there is no filesystem sandbox: the leak audit is the guard, and scans outside the attempt are counted and reported. Everything else is fixed:
 
 - `commandcode` `deepseek/deepseek-v4.1-flash` at `--thinking high`;
 - the sibling `pi-web` Pi CLI, for the parent and every child;
