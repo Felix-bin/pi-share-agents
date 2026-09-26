@@ -181,6 +181,25 @@ test("an unmatched child is attributed to the delegation call whose window it st
 	assert.equal(m.dispatch.spawningCalls, 1);
 });
 
+test("children of a background launch belong to it even after the caller has moved on", () => {
+	seq = 0;
+	const P = [sys("parent"), user(PROMPT)];
+	const status = tc("p0", "subagent", { action: "list" });
+	const launch = tc("p1", "subagent", { async: true, workflowScript: "runs.all([{agent:'scout', task: `...`}])" });
+	const wait = tc("p2", "bg_wait", { all: true });
+	const P2 = [...P, asst("", [status]), tool("p0", "agents")];
+	const P3 = [...P2, asst("", [launch]), tool("p1", "started run 42")];
+	const calls = [call(P, asst("", [status])), call(P2, asst("", [launch])), call(P3, asst("", [wait])),
+		call([sys('<active_agent name="scout"/>'), user("Task: generated inside the script")], asst("found it")),
+		call([...P3, asst("", [wait]), tool("p2", "scout: found it")], asst("answer"))];
+	const m = analyzeAttempt({ calls, arm: "nico", workRoot: WORK, repoRoot: "/repo" });
+	assert.equal(m.sessions[1].spawnedBy, 0);
+	assert.equal(m.sessions[1].attribution, "background");
+	assert.equal(m.dispatch.spawningCalls, 1);
+	assert.equal(m.comm.control, bytes("agents"));
+	assert.equal(m.comm.uplink.results, bytes("started run 42") + bytes("scout: found it"));
+});
+
 test("leak audit invalidates benchmark access and counts out-of-bounds paths", () => {
 	seq = 0;
 	const P = [sys("parent"), user(PROMPT)];
@@ -279,7 +298,8 @@ test("runner isolates each arm: tmp worktree, pinned pi on a narrowed PATH, whol
 	for (const arm of ARMS) {
 		write(path.join(out, "agent", arm, "installed.json"), JSON.stringify({ entry: path.join(dir, "fake-extension.js"), version: "test" }));
 		write(path.join(out, "agent", arm, "models.json"), JSON.stringify({ providers: { [MODEL.provider]: { api: "openai-completions", models: [{ id: MODEL.id }] } } }));
-		write(path.join(out, "agent", arm, "settings.json"), JSON.stringify({ packages: [`npm:${arm}`] }));
+		write(path.join(out, "agent", arm, "settings.json"), JSON.stringify({ packages: [arm.startsWith("share") ? "../../pkg" : `npm:${arm}`] }));
+		write(path.join(out, "agent", arm, "sessions", "old.jsonl"), "earlier attempt");
 		for (const bin of ["rg", "fd"]) { write(path.join(out, "agent", arm, "bin", bin), `#!/bin/sh\necho ${bin}-${arm}\n`); fs.chmodSync(path.join(out, "agent", arm, "bin", bin), 0o755); }
 	}
 	const fakePi = path.join(dir, "fake-pi");
@@ -298,7 +318,10 @@ process.stdin.on("data", (chunk) => { input += chunk; let at; while ((at = input
     try { execSync("command -v claude", { stdio: "pipe", shell: "/bin/sh" }); } catch { claude = false; }
     const facts = { args: process.argv.slice(2), repo: fs.existsSync("demo/README.md"), cwd: process.cwd(),
       claude, child: execSync("pi --version", { encoding: "utf8" }).trim(), proxy: process.env.HTTPS_PROXY ?? null,
-      rg: execSync("rg", { encoding: "utf8" }).trim(), tmp: process.env.TMPDIR };
+      rg: execSync("rg", { encoding: "utf8" }).trim(), tmp: process.env.TMPDIR, agent: process.env.PI_CODING_AGENT_DIR,
+      agentFiles: fs.readdirSync(process.env.PI_CODING_AGENT_DIR).sort(),
+      packages: JSON.parse(fs.readFileSync(process.env.PI_CODING_AGENT_DIR + "/settings.json", "utf8")).packages };
+    fs.writeFileSync(process.env.PI_CODING_AGENT_DIR + "/run-history.jsonl", "state");
     fs.writeFileSync(process.env.TMPDIR + "/artifact.md", "kept");
     console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(facts) }] } }));
     console.log(JSON.stringify({ type: "agent_settled" }));
@@ -329,6 +352,15 @@ process.stdin.on("data", (chunk) => { input += chunk; let at; while ((at = input
 		assert.ok(facts.tmp.startsWith(os.tmpdir()) && !facts.tmp.startsWith(facts.cwd));
 		assert.equal(fs.readFileSync(path.join(evidence, "tmp", "artifact.md"), "utf8"), "kept");
 		assert.equal(fs.existsSync(facts.tmp), false);
+		// The agent directory is a per-attempt copy outside the repository, without installed.json or earlier state.
+		assert.equal(facts.agent, attempt.agentDir);
+		assert.ok(facts.agent.startsWith(os.tmpdir()) && !facts.agent.startsWith(path.resolve(here, "../..")));
+		assert.deepEqual(facts.agentFiles, arm.startsWith("share") ? ["bin", "extensions", "models.json", "settings.json"] : ["bin", "models.json", "settings.json"]);
+		assert.deepEqual(facts.packages, [arm.startsWith("share") ? path.join(out, "pkg") : `npm:${arm}`]);
+		assert.equal(fs.readFileSync(path.join(evidence, "agent", "run-history.jsonl"), "utf8"), "state");
+		assert.equal(fs.existsSync(path.join(evidence, "agent", "bin")), false);
+		assert.equal(fs.existsSync(facts.agent), false);
+		assert.equal(fs.existsSync(path.join(out, "agent", arm, "run-history.jsonl")), false);
 		assert.ok(facts.cwd.startsWith(os.tmpdir()) && !facts.cwd.startsWith(path.resolve(here, "../..")));
 		assert.equal(fs.existsSync(facts.cwd), false);
 		assert.ok(!fs.readFileSync(path.join(evidence, "prompt.md"), "utf8").includes("It demos."));

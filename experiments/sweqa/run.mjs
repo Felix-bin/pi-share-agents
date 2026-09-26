@@ -117,6 +117,25 @@ function childEnv(agentDir, pathValue, tmpDir) {
 	return env;
 }
 
+// Each attempt runs on a copy of the arm's installed agent directory, outside this repository: an agent that
+// finds PI_CODING_AGENT_DIR sees no experiment data next to it, and nothing Pi or a package writes there
+// (sessions, run history) carries over to the next question. Only what loads the package is copied.
+const AGENT_FILES = ["settings.json", "models.json", "bin", "npm"];
+function attemptAgentDir(setup, dest) {
+	fs.rmSync(dest, { recursive: true, force: true });
+	fs.mkdirSync(dest, { recursive: true });
+	for (const entry of AGENT_FILES) {
+		const from = path.join(setup.dir, entry);
+		if (fs.existsSync(from)) fs.cpSync(from, path.join(dest, entry), { recursive: true, verbatimSymlinks: true });
+	}
+	// A local package is recorded relative to the installed directory; the copy must point at it absolutely.
+	const settingsFile = path.join(dest, "settings.json");
+	const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+	settings.packages = settings.packages.map((p) => (typeof p === "string" && !p.startsWith("npm:") ? path.resolve(setup.dir, p) : p));
+	fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+	return dest;
+}
+
 function exportRepo(item, dest) {
 	const tar = path.join(args.out, "snapshots", `${item.name}-${item.commit}.tar`);
 	if (!fs.existsSync(tar)) throw new Error(`snapshot missing (run prepare.mjs): ${tar}`);
@@ -198,7 +217,8 @@ async function runArm(item, arm, setup, apiKey) {
 	fs.rmSync(evidence, { recursive: true, force: true });
 	fs.mkdirSync(evidence, { recursive: true });
 	const cwd = path.join(workRoot, name, arm), storageRoot = path.join(workRoot, ".state", name, arm), tmpDir = path.join(workRoot, ".tmp", name, arm);
-	const base = { id: item.id, arm, workRoot: cwd, storageRoot, tmpDir, attemptKey };
+	const agentDir = path.join(workRoot, ".agent", name, arm);
+	const base = { id: item.id, arm, workRoot: cwd, storageRoot, tmpDir, agentDir, attemptKey };
 	console.log(`[sweqa] ${attemptKey}`);
 	let proxy;
 	try {
@@ -206,14 +226,15 @@ async function runArm(item, arm, setup, apiKey) {
 		fs.rmSync(storageRoot, { recursive: true, force: true });
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 		fs.mkdirSync(tmpDir, { recursive: true });
+		attemptAgentDir(setup, agentDir);
 		proxy = await startLlmProxy({ upstreamBaseUrl: MODEL.baseUrl, apiKey, roles: ["pi"], logFile: path.join(evidence, "llm-calls.jsonl") });
-		modelCatalog(setup.dir, proxy);
-		if (SHARE_ARMS.includes(arm)) configureShare(setup.dir, storageRoot);
+		modelCatalog(agentDir, proxy);
+		if (SHARE_ARMS.includes(arm)) configureShare(agentDir, storageRoot);
 		const prompt = taskPrompt(item, arm);
 		fs.writeFileSync(path.join(evidence, "prompt.md"), prompt);
 		const invocations = path.join(evidence, "pi-invocations.log");
 		fs.writeFileSync(invocations, "");
-		const env = childEnv(setup.dir, binDir(path.join(workRoot, ".bin", name, arm), invocations, setup.dir), tmpDir);
+		const env = childEnv(agentDir, binDir(path.join(workRoot, ".bin", name, arm), invocations, agentDir), tmpDir);
 		const attempt = await piAttempt({ arm, setup, cwd, prompt, evidence, env });
 		fs.writeFileSync(path.join(evidence, "answer.md"), attempt.answer);
 		const problem = attempt.problem ?? (attempt.answer.trim() ? null : "empty answer");
@@ -228,7 +249,10 @@ async function runArm(item, arm, setup, apiKey) {
 		for (const [dir, keep] of [[storageRoot, "state"], [tmpDir, "tmp"]]) {
 			if (fs.existsSync(dir)) fs.cpSync(dir, path.join(evidence, keep), { recursive: true, verbatimSymlinks: true });
 		}
-		for (const dir of [cwd, storageRoot, tmpDir]) fs.rmSync(dir, { recursive: true, force: true });
+		// What the attempt wrote into its agent directory is evidence; the copied package and binaries are not.
+		if (fs.existsSync(agentDir)) fs.cpSync(agentDir, path.join(evidence, "agent"), { recursive: true, verbatimSymlinks: true,
+			filter: (src) => !["npm", "bin"].includes(path.relative(agentDir, src).split(path.sep)[0]) });
+		for (const dir of [cwd, storageRoot, tmpDir, agentDir]) fs.rmSync(dir, { recursive: true, force: true });
 	}
 }
 

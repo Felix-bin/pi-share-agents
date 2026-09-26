@@ -273,3 +273,7 @@ pilot 的数据不与正式数据合并。pilot 暴露问题后，修改会在�
   随之调整：§3.1 父会话按第一次调用来识别；share 产品源码的冻结范围加入 `prompts/` 和 `skills/`。
   pilot3 开跑时核实：父会话有了默认工具之后，pi-subagents 系的父会话还会拿到 `bg_wait` 和 `subagent_supervisor`。两者返回的都是子会话的结果或请求，归为取回类，计入上行。
 - pilot3 分析时发现：Pi 发给 commandcode 的请求里，system prompt 的 role 是 `developer`。分析器原先只认 `system`，结果 agent 类型识别失败，system prompt 还被当成下行任务。现在两种 role 都视为 system prompt。这一处只影响分析，已有数据可以直接重算。
+- pilot3（flask#37 四臂完成，requests#7 只完成 tintinweb，其余中止；数据不用于任何结论）暴露的两个问题，均在 pilot4 之前处置：
+  1. **agent 目录暴露。** tintinweb 的父会话从 `PI_CODING_AGENT_DIR` 找到了自己的 agent 目录，并对其执行 `ls`、`cat`。这个目录位于 `experiments/data/sweqa/agent/` 下，往上两层就是 `sample.jsonl`，旁边的 `runs/` 里还有其他臂的答案。此外，agent 目录会跨尝试积累状态（tintinweb 的 `sessions/`，share 的 `missions/`、`run-history.jsonl`），违反 §2.2 的"跨题状态：没有"。处置：每次尝试只复制加载插件所需的文件（`settings.json`、`models.json`、`bin/`、`npm/`），放到工作根下的 `.agent/<题>/<臂>`，并把本地包路径改写为绝对路径；尝试结束后，把 agent 在该目录里写下的内容存入证据（不含 `npm/` 和 `bin/`），再删除副本。安装目录本身不再被任何尝试改写。分析时把这个副本视为该尝试自己的目录。
+  2. **后台派发的归因。** nico 以后台方式派发（调用立即返回句柄），子会话在父会话进行下一次调用之后才启动，执行窗口因此已经关闭；任务文本又藏在 workflowScript 里，按文本也匹配不上。处置：§3.1 第 4 条的归属规则变为三级：任务文本匹配 → 执行窗口 → 此前最近一次"发起类"委派调用（带任务、agent 或 workflowScript；`list`、`status`、`interrupt` 等不算）。每个子会话记录它按哪一级归属（`attribution`）。
+

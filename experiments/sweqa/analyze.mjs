@@ -49,6 +49,14 @@ function delegatedTasks(args) {
 
 // The parent is the session the attempt's first call opens: no child can start before the parent's first
 // response. (share-pipeline's prompt is a template Pi expands, so the prompt text cannot identify it.)
+// A spawn-tool call that can start children: it carries a task, an agent or a workflow script. Catalog,
+// status and control actions (list, status, interrupt, ...) cannot.
+function launches(args) {
+	if (typeof args.action === "string" && args.action !== "run") return false;
+	return typeof args.workflowScript === "string" || delegatedTasks(args).length > 0
+		|| [args.agent, args.subagent_type].some((x) => typeof x === "string");
+}
+
 export function attributeSessions(calls) {
 	const sessions = [], unattributed = [];
 	for (const c of [...calls].sort((a, b) => a.seq - b.seq)) {
@@ -110,20 +118,26 @@ export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, place
 		for (const tcall of bySeq.get(q).response?.tool_calls ?? []) {
 			const name = tcall.function?.name;
 			if (!SPAWN_TOOLS.includes(name)) continue;
+			const parsed = parseArgs(tcall.function?.arguments);
 			spawns.push({ id: tcall.id, name, session: s.index, from: q, to: s.calls[i + 1] ?? Infinity,
-				tasks: delegatedTasks(parseArgs(tcall.function?.arguments)), children: 0 });
+				tasks: delegatedTasks(parsed), launches: launches(parsed), children: 0 });
 		}
 	});
 	for (const s of sessions) {
 		s.agentType = s.parent ? "parent" : "unmatched";
 		s.agentTypeSource = s.parent ? "parent" : "none";
 		s.spawnedBy = null;
+		s.attribution = null;
 		if (s.parent) continue;
 		const start = s.calls[0];
 		const matched = spawns.filter((sp) => sp.from < start && sp.session !== s.index)
 			.flatMap((sp) => sp.tasks.filter((t) => s.firstUser.includes(t.task)).map((t) => ({ sp, t }))).at(-1);
-		const windowed = spawns.filter((sp) => sp.from < start && start < sp.to && sp.session !== s.index).at(-1);
-		const owner = matched?.sp ?? windowed;
+		const earlier = spawns.filter((sp) => sp.from < start && sp.session !== s.index && sp.launches);
+		const windowed = earlier.filter((sp) => start < sp.to).at(-1);
+		// A background launch returns before its children start: the latest earlier launch owns them.
+		const background = earlier.at(-1);
+		const owner = matched?.sp ?? windowed ?? background;
+		s.attribution = matched ? "task" : windowed ? "window" : background ? "background" : null;
 		// Pi marks every child prompt with the agent it runs; the delegation arguments are the fallback.
 		const declared = /<active_agent name="([^"]+)"\s*\/>/.exec(s.system)?.[1];
 		if (declared) [s.agentType, s.agentTypeSource] = [declared, "system"];
@@ -274,8 +288,8 @@ function main(runDir) {
 		const resultFile = path.join(evidence, "result.json");
 		if (!fs.existsSync(resultFile)) continue;
 		const result = JSON.parse(fs.readFileSync(resultFile, "utf8"));
-		const m = analyzeAttempt({ calls: readJsonl(path.join(evidence, "llm-calls.jsonl")), arm, workRoot: result.workRoot ?? "", repoRoot: manifest.repoRoot, ownDirs: [result.storageRoot, result.tmpDir].filter(Boolean),
-			placeholders: [[result.storageRoot, "<storage>"], [result.tmpDir, "<tmp>"], [result.attemptKey, "<attempt>"]] });
+		const m = analyzeAttempt({ calls: readJsonl(path.join(evidence, "llm-calls.jsonl")), arm, workRoot: result.workRoot ?? "", repoRoot: manifest.repoRoot, ownDirs: [result.storageRoot, result.tmpDir, result.agentDir].filter(Boolean),
+			placeholders: [[result.storageRoot, "<storage>"], [result.tmpDir, "<tmp>"], [result.agentDir, "<agent>"], [result.attemptKey, "<attempt>"]] });
 		const answer = fs.existsSync(path.join(evidence, "answer.md")) ? fs.readFileSync(path.join(evidence, "answer.md"), "utf8") : "";
 		m.problems = [...(result.problem ? [result.problem] : []), ...(answer.trim() ? [] : ["empty answer"]), ...m.problems];
 		attempts.push({ id, arm, evidence, wallMs: result.wallMs ?? null, metrics: m });
