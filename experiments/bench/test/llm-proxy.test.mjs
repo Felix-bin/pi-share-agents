@@ -199,3 +199,24 @@ test("mapUsage matches pi-ai parseChunkUsage", () => {
 	assert.deepEqual(mapUsage({ prompt_tokens: 10, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 3, cache_write_tokens: 2 }, completion_tokens_details: { reasoning_tokens: 1 } }), { input: 5, output: 4, cacheRead: 3, cacheWrite: 2, reasoning: 1 });
 	assert.deepEqual(mapUsage({ prompt_tokens: 10, completion_tokens: 4, cached_tokens: 6 }), { input: 4, output: 4, cacheRead: 6, cacheWrite: 0, reasoning: 0 });
 });
+
+test("a request whose upstream has not answered is listed in flight until it ends", async () => {
+	let release;
+	script.push((res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.write(": keep-alive\n\n");
+		release = () => res.end('data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1}}\n\ndata: [DONE]\n\n');
+	});
+	const proxy = await startLlmProxy({ upstreamBaseUrl: upstreamUrl(), apiKey: REAL_KEY, roles: ["pi"], logFile: path.join(dir, "calls.jsonl") });
+	const pending = post(`${proxy.baseUrlFor("pi")}/chat/completions`, { model: "m", stream: true, messages: [{ role: "user", content: "hi" }] });
+	while (!release) await new Promise((resolve) => setTimeout(resolve, 10));
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const waiting = proxy.inflight();
+	assert.equal(waiting.length, 1);
+	assert.equal(waiting[0].path, "/chat/completions");
+	assert.ok(waiting[0].bytes > 0 && waiting[0].ageMs >= 0);
+	release();
+	await pending;
+	assert.deepEqual(proxy.inflight(), []);
+	await proxy.close();
+});

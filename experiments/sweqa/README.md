@@ -26,7 +26,7 @@ node experiments/sweqa/score.mjs   experiments/data/sweqa/runs/pilot-20260926
 node experiments/sweqa/report.mjs  experiments/data/sweqa/runs/pilot-20260926
 ```
 
-`run.mjs` runs the three arms of a question concurrently. Each arm has its own localhost recorder, which holds the real key; Pi receives a dummy key. Pi's PATH is a per-attempt bin directory plus `/usr/local/bin:/usr/bin:/bin`. Its `pi` is the pinned CLI, and every launch is logged to `pi-invocations.log`. `claude`, `codex` and `cursor-agent` are therefore missing on every arm. A repeated command with the same ID skips finished attempts and rejects changes to the manifest, including the hashes of the share arm's product source.
+`run.mjs` runs the three arms of a question concurrently. Each arm has its own localhost recorder, which holds the real key; Pi receives a dummy key. The recorder also lists requests still in flight, and a failed attempt records them in `inflightAtEnd`. Pi's PATH is a per-attempt bin directory plus `/usr/local/bin:/usr/bin:/bin`. Its `pi` is the pinned CLI, with every launch logged to `pi-invocations.log`, and its `rg` and `fd` are the arm's own copies, which Pi's grep and find tools need under `--offline`. `claude`, `codex` and `cursor-agent` are therefore missing on every arm. `TMPDIR` is also per attempt, because the pi-subagents lineage keeps run state and artifacts there; it is copied into the evidence directory afterwards. A repeated command with the same ID skips finished attempts and rejects changes to the manifest, including the hashes of the share arm's product source.
 
 `analyze.mjs` measures every arm with the same code, from the recorder log alone:
 

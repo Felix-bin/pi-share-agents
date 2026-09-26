@@ -92,6 +92,8 @@ export async function startLlmProxy({ upstreamBaseUrl, apiKey, roles, logFile, p
 	const upstream = upstreamBaseUrl.replace(/\/+$/, "");
 	const known = new Set(roles);
 	const summary = [];
+	// Requests sent upstream whose response has not ended; a stalled run shows what it was waiting on.
+	const inflight = new Map();
 	// reasoning_content of past responses, by tool-call ids or by answer text.
 	const reasoningByKey = new Map();
 	let seq = 0;
@@ -124,6 +126,7 @@ export async function startLlmProxy({ upstreamBaseUrl, apiKey, roles, logFile, p
 		const isChat = req.method === "POST" && rest === "/chat/completions";
 		const startedAt = Date.now();
 		const entry = { seq: ++seq, ts: new Date(startedAt).toISOString(), role, method: req.method, path: rest, status: null, durationMs: null };
+		inflight.set(entry.seq, { seq: entry.seq, ts: entry.ts, role, path: rest, startedAt, bytes: 0 });
 
 		let body = rawBody;
 		let request = null;
@@ -144,6 +147,7 @@ export async function startLlmProxy({ upstreamBaseUrl, apiKey, roles, logFile, p
 		try {
 			upstreamResponse = await fetch(target, { method: req.method, headers, body: req.method === "GET" || req.method === "HEAD" ? undefined : body });
 		} catch (error) {
+			inflight.delete(entry.seq);
 			entry.status = 0;
 			entry.durationMs = Date.now() - startedAt;
 			entry.error = { status: 0, message: `network: ${error instanceof Error ? error.message : String(error)}` };
@@ -165,10 +169,12 @@ export async function startLlmProxy({ upstreamBaseUrl, apiKey, roles, logFile, p
 			for await (const chunk of upstreamResponse.body) {
 				res.write(chunk);
 				text += decoder.decode(chunk, { stream: true });
+				inflight.get(entry.seq).bytes += chunk.length;
 			}
 			text += decoder.decode();
 		}
 		res.end();
+		inflight.delete(entry.seq);
 		entry.durationMs = Date.now() - startedAt;
 
 		if (upstreamResponse.status >= 400) {
@@ -217,6 +223,7 @@ export async function startLlmProxy({ upstreamBaseUrl, apiKey, roles, logFile, p
 	return {
 		port,
 		baseUrlFor: (role) => `http://127.0.0.1:${port}/${role}/v1`,
+		inflight: () => [...inflight.values()].map(({ startedAt, ...rest }) => ({ ...rest, ageMs: Date.now() - startedAt })),
 		calls: () => summary.map(({ seq: n, role, path, status, usage, error, durationMs }) => ({ seq: n, role, path, status, usage, error, durationMs })),
 		close: () =>
 			new Promise((resolve) => {

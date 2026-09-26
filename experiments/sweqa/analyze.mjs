@@ -85,8 +85,11 @@ function sumUsage(list) {
 
 const promptTokens = (u) => u.input + u.cacheRead + u.cacheWrite;
 const absolutePaths = (text) => [...text.matchAll(/(?:^|[\s"'=:(`])(\/[^\s"'`<>|;&)]*)/g)].map((m) => m[1]);
+// Only where a tool is told where to look or act: a shell command, or a path argument. File contents are not paths.
+const pathFields = (name, args) => (name === "bash" ? [args.command] : [args.path, args.file_path, args.cwd]).filter((x) => typeof x === "string");
+const insideAny = (p, roots) => roots.some((root) => root && (p === root || p.startsWith(`${root}/`)));
 
-export function analyzeAttempt({ calls: allCalls, prompt, arm, workRoot, repoRoot, placeholders = [] }) {
+export function analyzeAttempt({ calls: allCalls, prompt, arm, workRoot, repoRoot, placeholders = [], ownDirs = [] }) {
 	const calls = allCalls.filter((c) => c.path === "/chat/completions" && c.request);
 	const bySeq = new Map(calls.map((c) => [c.seq, c]));
 	const { sessions, unattributed, parentFound, restarts } = attributeSessions(calls, prompt);
@@ -111,6 +114,7 @@ export function analyzeAttempt({ calls: allCalls, prompt, arm, workRoot, repoRoo
 	});
 	for (const s of sessions) {
 		s.agentType = s.parent ? "parent" : "unmatched";
+		s.agentTypeSource = s.parent ? "parent" : "none";
 		s.spawnedBy = null;
 		if (s.parent) continue;
 		const start = s.calls[0];
@@ -118,15 +122,19 @@ export function analyzeAttempt({ calls: allCalls, prompt, arm, workRoot, repoRoo
 			.flatMap((sp) => sp.tasks.filter((t) => s.firstUser.includes(t.task)).map((t) => ({ sp, t }))).at(-1);
 		const windowed = spawns.filter((sp) => sp.from < start && start < sp.to && sp.session !== s.index).at(-1);
 		const owner = matched?.sp ?? windowed;
-		if (matched?.t.agent) s.agentType = matched.t.agent;
-		else if (owner && new Set(owner.tasks.map((t) => t.agent)).size === 1 && owner.tasks[0]?.agent) s.agentType = owner.tasks[0].agent;
+		// Pi marks every child prompt with the agent it runs; the delegation arguments are the fallback.
+		const declared = /<active_agent name="([^"]+)"\s*\/>/.exec(s.system)?.[1];
+		if (declared) [s.agentType, s.agentTypeSource] = [declared, "system"];
+		else if (matched?.t.agent) [s.agentType, s.agentTypeSource] = [matched.t.agent, "task"];
+		else if (owner && new Set(owner.tasks.map((t) => t.agent)).size === 1 && owner.tasks[0]?.agent) [s.agentType, s.agentTypeSource] = [owner.tasks[0].agent, "task"];
 		if (owner) { s.spawnedBy = owner.session; owner.children++; }
 	}
 	const depthOf = (s) => (s.spawnedBy === null ? (s.parent ? 0 : 1) : 1 + depthOf(sessions[s.spawnedBy]));
 	const spawnedCall = new Map(spawns.map((sp) => [sp.id, sp.children > 0]));
 
 	const comm = { downlink: { task: 0, injected: 0, system: 0 }, uplink: { results: 0, injected: 0 }, pull: 0, control: 0, work: 0, unclassified: {}, partial: false };
-	const audit = { leaks: [], outOfBounds: 0, projectInstructions: 0 };
+	const audit = { leaks: [], outOfBounds: 0, outOfBoundsPaths: [], projectInstructions: 0 };
+	const inside = [workRoot, ...ownDirs];
 	const leakPattern = new RegExp(`${repoRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/experiments|swe-qa|sample\\.jsonl|llm-as-a-judge`, "i");
 	for (const s of sessions) {
 		const own = s.calls.map((q) => bySeq.get(q));
@@ -161,13 +169,19 @@ export function analyzeAttempt({ calls: allCalls, prompt, arm, workRoot, repoRoo
 		for (const c of own) for (const tcall of c.response?.tool_calls ?? []) {
 			if (!WORK_TOOLS.includes(tcall.function?.name)) continue;
 			const args = tcall.function?.arguments ?? "";
-			if (leakPattern.test(workRoot ? args.split(workRoot).join("<work>") : args)) audit.leaks.push({ seq: c.seq, tool: tcall.function.name, args: args.slice(0, 300) });
-			audit.outOfBounds += absolutePaths(args).filter((p) => !p.startsWith(workRoot) && !p.startsWith("/dev/")).length;
+			const masked = inside.reduce((text, root) => (root ? text.split(root).join("<own>") : text), args);
+			if (leakPattern.test(masked)) audit.leaks.push({ seq: c.seq, tool: tcall.function.name, args: args.slice(0, 300) });
+			for (const p of pathFields(tcall.function.name, parseArgs(args)).flatMap(absolutePaths)) {
+				if (insideAny(p, inside) || p.startsWith("/dev/")) continue;
+				audit.outOfBounds++;
+				if (audit.outOfBoundsPaths.length < 20 && !audit.outOfBoundsPaths.includes(p)) audit.outOfBoundsPaths.push(p);
+			}
 		}
 		// Per-attempt strings become placeholders so that the static part of a prompt is comparable across attempts.
 		let normalized = s.system;
 		for (const [value, mark] of [[workRoot, "<work>"], ...placeholders]) if (value) normalized = normalized.split(value).join(mark);
-		s.systemNormalized = normalized.replace(/\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+Z?)?/g, "<date>");
+		s.systemNormalized = normalized.replace(/\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+Z?)?/g, "<date>")
+			.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<uuid>").replace(/\bcall_\d+_[A-Za-z0-9]+/g, "<call>");
 		s.groupKey = `${arm}|${s.agentType !== "unmatched" ? s.agentType : `head:${createHash("sha256").update(s.systemNormalized.slice(0, 200)).digest("hex").slice(0, 12)}`}`;
 		delete s.system;
 	}
@@ -259,7 +273,8 @@ function main(runDir) {
 		if (!fs.existsSync(resultFile)) continue;
 		const result = JSON.parse(fs.readFileSync(resultFile, "utf8"));
 		const m = analyzeAttempt({ calls: readJsonl(path.join(evidence, "llm-calls.jsonl")), prompt: fs.readFileSync(path.join(evidence, "prompt.md"), "utf8"),
-			arm, workRoot: result.workRoot ?? "", repoRoot: manifest.repoRoot, placeholders: [[result.storageRoot, "<storage>"], [result.attemptKey, "<attempt>"]] });
+			arm, workRoot: result.workRoot ?? "", repoRoot: manifest.repoRoot, ownDirs: [result.storageRoot, result.tmpDir].filter(Boolean),
+			placeholders: [[result.storageRoot, "<storage>"], [result.tmpDir, "<tmp>"], [result.attemptKey, "<attempt>"]] });
 		const answer = fs.existsSync(path.join(evidence, "answer.md")) ? fs.readFileSync(path.join(evidence, "answer.md"), "utf8") : "";
 		m.problems = [...(result.problem ? [result.problem] : []), ...(answer.trim() ? [] : ["empty answer"]), ...m.problems];
 		attempts.push({ id, arm, evidence, wallMs: result.wallMs ?? null, metrics: m });

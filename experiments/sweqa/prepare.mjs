@@ -38,6 +38,16 @@ function installArms() {
 		fs.writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { [MODEL.provider]: {
 			api: provider.api, baseUrl: "https://api.deepseek.com", models: [structuredClone(model)] } } }, null, 2));
 		fs.chmodSync(path.join(agentDir, "models.json"), 0o600);
+		// Pi's grep and find tools look for rg and fd in <agentDir>/bin first; --offline forbids downloading them.
+		const tools = {};
+		for (const bin of ["rg", "fd"]) {
+			const from = path.join(os.homedir(), ".pi", "agent", "bin", bin), to = path.join(agentDir, "bin", bin);
+			if (!fs.existsSync(from)) throw new Error(`${from} missing: run Pi once online so it fetches ${bin}`);
+			fs.mkdirSync(path.dirname(to), { recursive: true });
+			fs.copyFileSync(from, to);
+			fs.chmodSync(to, 0o755);
+			tools[bin] = sha256(to);
+		}
 		const packageDir = arm === "share" ? repo : path.join(agentDir, "npm", "node_modules", arm === "nico" ? "pi-subagents" : "@tintinweb/pi-subagents");
 		const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8"));
 		const entry = manifest.pi?.extensions?.[0];
@@ -45,7 +55,7 @@ function installArms() {
 		const lockFile = path.join(agentDir, "npm", "package-lock.json");
 		const info = { arm, packageSource, packageDir, entry: path.resolve(packageDir, entry), version: manifest.version,
 			commit: arm === "share" ? run("git", ["rev-parse", "HEAD"], { cwd: repo }) : null,
-			packageLockSha256: fs.existsSync(lockFile) ? sha256(lockFile) : null };
+			packageLockSha256: fs.existsSync(lockFile) ? sha256(lockFile) : null, tools };
 		fs.writeFileSync(path.join(agentDir, "installed.json"), JSON.stringify(info, null, 2));
 		console.log(`${arm}: ${manifest.name}@${manifest.version} ${info.commit ?? "npm package"}`);
 	}

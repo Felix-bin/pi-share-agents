@@ -64,6 +64,7 @@ function installed(arm) {
 	const dir = path.join(args.out, "agent", arm);
 	const meta = JSON.parse(fs.readFileSync(path.join(dir, "installed.json"), "utf8"));
 	if (!fs.existsSync(meta.entry)) throw new Error(`${arm} extension missing: ${meta.entry}`);
+	for (const bin of ["rg", "fd"]) if (!fs.existsSync(path.join(dir, "bin", bin))) throw new Error(`${arm} lacks bin/${bin}; rerun prepare.mjs`);
 	return { dir, ...meta, commit: undefined };
 }
 
@@ -87,9 +88,9 @@ function configureShare(agentDir, storageRoot) {
 	}, null, 2));
 }
 
-// PATH is this directory plus the system bins: `pi` is the pinned CLI (every call logged), `node` is this node.
-// claude, codex and cursor-agent are therefore missing on every arm (spec §2.2).
-function binDir(dir, log) {
+// PATH is this directory plus the system bins: `pi` is the pinned CLI (every call logged), `node` is this node,
+// rg and fd are the arm's own copies. claude, codex and cursor-agent are therefore missing on every arm (spec §2.2).
+function binDir(dir, log, agentDir) {
 	fs.rmSync(dir, { recursive: true, force: true });
 	fs.mkdirSync(dir, { recursive: true });
 	const [bin, pre] = piLaunch([]);
@@ -97,12 +98,14 @@ function binDir(dir, log) {
 	fs.writeFileSync(path.join(dir, "pi"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quote(log)}\nexec ${[bin, ...pre].map(quote).join(" ")} "$@"\n`);
 	fs.chmodSync(path.join(dir, "pi"), 0o755);
 	fs.symlinkSync(process.execPath, path.join(dir, "node"));
+	for (const bin of ["rg", "fd"]) fs.symlinkSync(path.join(agentDir, "bin", bin), path.join(dir, bin));
 	return `${dir}:/usr/local/bin:/usr/bin:/bin`;
 }
 
-function childEnv(agentDir, pathValue) {
-	const env = { PATH: pathValue, PI_CODING_AGENT_DIR: agentDir, NODE_USE_ENV_PROXY: "0" };
-	for (const key of ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "TZ", "SHELL", "TMPDIR"]) if (process.env[key]) env[key] = process.env[key];
+// TMPDIR is the attempt's own: the pi-subagents lineage keeps run state and output artifacts under os.tmpdir().
+function childEnv(agentDir, pathValue, tmpDir) {
+	const env = { PATH: pathValue, PI_CODING_AGENT_DIR: agentDir, NODE_USE_ENV_PROXY: "0", TMPDIR: tmpDir };
+	for (const key of ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "TZ", "SHELL"]) if (process.env[key]) env[key] = process.env[key];
 	return env;
 }
 
@@ -188,13 +191,15 @@ async function runArm(item, arm, setup, apiKey) {
 	if (fs.existsSync(resultFile)) return;
 	fs.rmSync(evidence, { recursive: true, force: true });
 	fs.mkdirSync(evidence, { recursive: true });
-	const cwd = path.join(workRoot, name, arm), storageRoot = path.join(workRoot, ".state", name, arm);
-	const base = { id: item.id, arm, workRoot: cwd, storageRoot, attemptKey };
+	const cwd = path.join(workRoot, name, arm), storageRoot = path.join(workRoot, ".state", name, arm), tmpDir = path.join(workRoot, ".tmp", name, arm);
+	const base = { id: item.id, arm, workRoot: cwd, storageRoot, tmpDir, attemptKey };
 	console.log(`[sweqa] ${attemptKey}`);
 	let proxy;
 	try {
 		exportRepo(item, cwd);
 		fs.rmSync(storageRoot, { recursive: true, force: true });
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+		fs.mkdirSync(tmpDir, { recursive: true });
 		proxy = await startLlmProxy({ upstreamBaseUrl: "https://api.deepseek.com", apiKey, roles: ["pi"], logFile: path.join(evidence, "llm-calls.jsonl") });
 		modelCatalog(setup.dir, proxy);
 		if (arm === "share") configureShare(setup.dir, storageRoot);
@@ -202,20 +207,22 @@ async function runArm(item, arm, setup, apiKey) {
 		fs.writeFileSync(path.join(evidence, "prompt.md"), prompt);
 		const invocations = path.join(evidence, "pi-invocations.log");
 		fs.writeFileSync(invocations, "");
-		const env = childEnv(setup.dir, binDir(path.join(workRoot, ".bin", name, arm), invocations));
+		const env = childEnv(setup.dir, binDir(path.join(workRoot, ".bin", name, arm), invocations, setup.dir), tmpDir);
 		const attempt = await piAttempt({ arm, setup, cwd, prompt, evidence, env });
 		fs.writeFileSync(path.join(evidence, "answer.md"), attempt.answer);
 		const problem = attempt.problem ?? (attempt.answer.trim() ? null : "empty answer");
-		fs.writeFileSync(resultFile, JSON.stringify({ ...base, problem, wallMs: attempt.wallMs,
+		fs.writeFileSync(resultFile, JSON.stringify({ ...base, problem, wallMs: attempt.wallMs, inflightAtEnd: problem ? proxy.inflight() : [],
 			childPiLaunches: fs.readFileSync(invocations, "utf8").split("\n").filter(Boolean).length }, null, 2));
 		console.log(`[sweqa] ${attemptKey}: ${problem ?? "finished"}`);
 	} catch (error) {
-		fs.writeFileSync(resultFile, JSON.stringify({ ...base, problem: String(error) }, null, 2));
+		fs.writeFileSync(resultFile, JSON.stringify({ ...base, problem: String(error), inflightAtEnd: proxy ? proxy.inflight() : [] }, null, 2));
 		console.error(`[sweqa] ${attemptKey}: ${error}`);
 	} finally {
 		if (proxy) await proxy.close();
-		if (fs.existsSync(storageRoot)) fs.cpSync(storageRoot, path.join(evidence, "state"), { recursive: true });
-		for (const dir of [cwd, storageRoot]) fs.rmSync(dir, { recursive: true, force: true });
+		for (const [dir, keep] of [[storageRoot, "state"], [tmpDir, "tmp"]]) {
+			if (fs.existsSync(dir)) fs.cpSync(dir, path.join(evidence, keep), { recursive: true, verbatimSymlinks: true });
+		}
+		for (const dir of [cwd, storageRoot, tmpDir]) fs.rmSync(dir, { recursive: true, force: true });
 	}
 }
 

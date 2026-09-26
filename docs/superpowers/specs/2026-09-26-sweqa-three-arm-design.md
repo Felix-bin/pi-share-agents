@@ -248,4 +248,16 @@ pilot 的数据不与正式数据合并。pilot 暴露问题后，修改会在�
 
 ## 修订记录
 
-- 实现期（2026-09-26，任何 SWE-QA 数据之前）：§3.1 增加 2a 条（继承父上下文的会话）与执行窗口归属；§3.4 增加控制类；§1.1 增加第 4 条（AGENTS.md）；runner 冻结 share 产品源码的哈希，而不是 HEAD commit，因为实验代码自身的提交不改变被测扩展。
+- 实现期（2026-09-26，任何 SWE-QA 数据产生之前）：§3.1 增加 2a 条（继承父上下文的会话）与执行窗口归属；§3.4 增加控制类；§1.1 增加第 4 条（AGENTS.md）；runner 冻结 share 产品源码的哈希，而不是 HEAD commit，因为实验代码自身的提交不改变被测扩展。
+- pilot `pilot-20260926`（flask#37、requests#7 两题，5 次尝试后中止，数据不用于任何结论）暴露的问题及处置，均在下一轮 pilot 之前完成：
+  1. **`rg` / `fd` 缺失。** Pi 的 `grep`、`find` 工具先在 `<agentDir>/bin` 找这两个程序，然后才找 PATH；各臂的 agent 目录里没有，`--offline` 又不允许下载，内置工具因此不可用，子 agent 只能退回 bash。处置：prepare 把宿主机 `~/.pi/agent/bin/{rg,fd}` 复制进各臂的 `bin/`，并把哈希记入 `installed.json`；每次尝试的 bin 目录也放上它们的链接。
+  2. **`find /` 扫遍 `/mnt/c`。** tintinweb 在 flask#37 上执行 `find / -name markupsafe`，在 WSL 下遍历整个 Windows 盘，最终超时。处置：不拦截；超时判无效，并如实报告。第 1 条修复后，agent 退回 bash 的动机会变小。
+  3. **临时目录共享。** pi-subagents 系（share、nico）把运行状态和输出产物放在 `os.tmpdir()/pi-subagents-uid-<uid>/`，所有尝试共用这一个目录。处置：每次尝试设独立的 `TMPDIR`，结束后复制进证据目录；分析时把它视为该尝试自己的目录。
+  4. **agent 类型识别。** 三个臂的子会话 system prompt 都带有 `<active_agent name="…"/>`。处置：它成为 agent 类型的首要来源，任务文本匹配作为后备。这样 workflowScript 派出的子会话也能识别出类型。
+  5. **system prompt 中的运行期标识。** 产物路径里含有 uuid 和 call id。处置：在拆分固定部分和可变部分之前，把它们替换为占位符。
+  6. **越界审计的口径。** 原来会把写入文件的内容也当成路径。处置：只审计 bash 的 `command` 和各工具的 `path` 类参数，并记录前 20 个越界路径。
+  7. **share 在 requests#7 上卡住。** 4 分钟内完成 97 次调用、没有任何错误之后，再没有新的调用。代理只在调用完成后才写日志，所以卡在哪里无法判断。处置：记录代理跟踪进行中的请求（`inflight()`），尝试失败时把它们写入 `result.json` 的 `inflightAtEnd`。
+  8. **子进程使用的 CLI。** 核实结果：share 和 nico 用 `process.argv[1]` 启动父进程正在运行的 CLI，tintinweb 在进程内起会话，所以三个臂的子会话都用固定的 0.87.0，`pi-invocations.log` 为 0 属于预期。
+  9. **通信类工具清单。** 实际观察到的工具都在现有清单之内（工作类工具、`subagent`、`Agent`），没有未分类的工具。清单维持不变。
+
+  观察记录（不是修订）：share 在 requests#7 上用 workflowScript 并行派出 scout ×2、retriever、reviewer 四个子会话。reviewer 以 1–60 行的窗口大量读取，上下文涨到 15.9 万 token，51 次调用累计约 401 万 prompt token；同一题 nico 用了 51 万，tintinweb 用了 26 万。这是被测扩展自身的行为，由正式数据来衡量。
