@@ -217,7 +217,7 @@ export async function startLlmProxy({ upstreamBaseUrl, apiKey, roles, logFile, p
 	return {
 		port,
 		baseUrlFor: (role) => `http://127.0.0.1:${port}/${role}/v1`,
-		calls: () => summary.map(({ seq: n, role, status, usage, error, durationMs }) => ({ seq: n, role, status, usage, error, durationMs })),
+		calls: () => summary.map(({ seq: n, role, path, status, usage, error, durationMs }) => ({ seq: n, role, path, status, usage, error, durationMs })),
 		close: () =>
 			new Promise((resolve) => {
 				for (const socket of sockets) socket.destroy();
