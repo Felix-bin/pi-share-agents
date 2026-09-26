@@ -134,7 +134,7 @@ share-pipeline 和 share 用的是同一个包，差别只在于它按插件推�
   - 子会话 system prompt 的**可变部分**；
   - 子会话中途追加的非工具结果类 user 消息，比如 steer 或 supervisor 的回复。
 - **上行**（回给调用方的）：
-  - 派出过子会话的委派工具调用的结果，以及 `get_subagent_result` 的结果；
+  - 派出过子会话的委派工具调用的结果，以及取回类工具的结果：`get_subagent_result`、`bg_wait`、`subagent_supervisor`；
   - 扩展注入给父会话的其他消息，比如完成通知。
 - **按需拉取**：子会话里通信类工具的返回内容。
 
@@ -271,3 +271,4 @@ pilot 的数据不与正式数据合并。pilot 暴露问题后，修改会在�
   4. **provider 改为 commandcode**：模型为 `deepseek/deepseek-v4.1-flash`，key 只通过环境变量传入。judge 同步改用这个模型。
 
   随之调整：§3.1 父会话按第一次调用来识别；share 产品源码的冻结范围加入 `prompts/` 和 `skills/`。
+  pilot3 开跑时核实：父会话有了默认工具之后，pi-subagents 系的父会话还会拿到 `bg_wait` 和 `subagent_supervisor`。两者返回的都是子会话的结果或请求，归为取回类，计入上行。

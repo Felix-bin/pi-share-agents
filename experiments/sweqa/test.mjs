@@ -116,6 +116,17 @@ test("dispatch, tokens and communication are measured per session", () => {
 	assert.equal(m.answer, "The serializer tags values...");
 });
 
+test("results fetched from children count as uplink, whatever the fetch tool", () => {
+	const calls = scenario();
+	const last = calls.at(-1);
+	const wait = tc("p3", "bg_wait", {});
+	calls.push(call([...last.request.messages, asst("", [wait]), tool("p3", "late child result")], asst("done"), usage(260)));
+	last.response = asst("", [wait]);
+	const m = analyzeAttempt({ calls, arm: "nico", workRoot: WORK, repoRoot: "/repo" });
+	assert.equal(m.comm.uplink.results, bytes("FINDINGS: TagDict round-trips") + bytes("late child result"));
+	assert.deepEqual(m.comm.unclassified, {});
+});
+
 test("an attempt without a child, with a foreign model, or with an unattributable call is invalid", () => {
 	const calls = scenario();
 	const noChild = analyzeAttempt({ calls: calls.filter((c) => ![3, 4, 5].includes(c.seq)), arm: "share", workRoot: WORK, repoRoot: "/repo" });

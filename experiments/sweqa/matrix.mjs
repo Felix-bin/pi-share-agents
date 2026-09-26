@@ -13,11 +13,13 @@ export const MODEL = { provider: "commandcode", id: "deepseek/deepseek-v4.1-flas
 export const PER_REPO = 4;
 export const SEED = 20260926;
 
-// Tool results are classified by name (spec §3.4). Work tools touch the repository; delegation tools
-// return another agent's result to the caller (uplink); pull tools fetch shared memory, handles or
-// supervisor replies. A tool outside all three lists is reported as unclassified, never dropped.
+// Tool results are classified by name (spec §3.4). Work tools touch the repository. Spawn tools start
+// children; their results are uplink when they did, control (catalogs, guides, status) when they did not.
+// Fetch tools return children's results or requests to the caller (uplink). Pull tools fetch shared memory,
+// handles or supervisor replies. A tool outside every list is reported as unclassified, never dropped.
 export const WORK_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
-export const DELEGATION_TOOLS = ["subagent", "Agent", "SubagentWorkflow", "get_subagent_result"];
+export const SPAWN_TOOLS = ["subagent", "Agent", "SubagentWorkflow"];
+export const FETCH_TOOLS = ["get_subagent_result", "bg_wait", "subagent_supervisor"];
 export const PULL_TOOLS = ["synapse_read", "synapse_write", "contact_supervisor", "steer_subagent"];
 
 // "flask#16" → "flask-16": the question id as a directory name.

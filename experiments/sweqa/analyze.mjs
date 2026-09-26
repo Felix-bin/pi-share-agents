@@ -5,10 +5,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, DELEGATION_TOOLS, MODEL, PULL_TOOLS, WORK_TOOLS, evidenceName } from "./matrix.mjs";
+import { ARMS, FETCH_TOOLS, MODEL, PULL_TOOLS, SPAWN_TOOLS, WORK_TOOLS, evidenceName } from "./matrix.mjs";
 
-const SPAWN_TOOLS = DELEGATION_TOOLS.filter((name) => name !== "get_subagent_result");
-const FETCH_TOOLS = DELEGATION_TOOLS.filter((name) => !SPAWN_TOOLS.includes(name));
 const usageKeys = ["input", "cacheRead", "cacheWrite", "output", "reasoning"];
 const utf8 = (text) => Buffer.byteLength(text ?? "", "utf8");
 
