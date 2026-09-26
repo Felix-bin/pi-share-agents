@@ -1,0 +1,173 @@
+{
+ "group": "M",
+ "title": "SWE-QA Flask 重访链（记忆收益上限，E3 预登记）",
+ "description": "R 组前 5 题（SWE-QA Flask，tag.py / sessions.py 子系统）先问一遍，第 6–10 轮按同一顺序原样再问一遍。用来测跨轮记忆的收益上限：第二遍能复用的内容就是第一遍自己得出的结论。题面、参考答案与 R 组逐字相同；dependsOn 指向同题的第一遍。仓库、工作树与评分同 R 组。",
+ "pathConvention": "flask/<repo path>",
+ "scoring": "SWE-QA five-dimension LLM judge against referenceAnswer (experiments/analysis/score-public.mjs)",
+ "tasks": [
+  {
+   "index": 1,
+   "title": "SWE-QA flask #16",
+   "task": "How does the tagged JSON serializer class that handles bytes maintain data consistency and reversibility when encoding binary data through base64?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [],
+   "anchors": [
+    "flask/src/flask/json/tag.py",
+    "flask/docs/patterns/javascript.rst",
+    "flask/tests/test_json_tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 16,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The tagged JSON serializer class that handles bytes (TagBytes) maintains data consistency and reversibility through several mechanisms:\n\n1. **Coupled encoding/decoding in the same class**: Both the encoding (`to_json`) and decoding (`to_python`) methods are implemented in the same class (`src/flask/json/tag.py`, lines 159-170). This ensures they use the same base64 encoding scheme:\n   - `to_json()`: Encodes bytes using `b64encode(value).decode(\"ascii\")` to produce a JSON-compatible ASCII string\n   - `to_python()`: Decodes the base64 string back to bytes using `b64decode(value)`\n\n2. **Tag-based identification system**: The class uses the key `\" b\"` to wrap encoded data as `{\" b\": <base64_string>}` during serialization (via the `tag()` method inherited from JSONTag, line 90). During deserialization, the TaggedJSONSerializer's `untag()` method (lines 297-307) recognizes this key and routes the value to the correct `to_python()` method, ensuring the encoded data is properly identified and decoded.\n\n3. **Base64 reversibility**: Base64 encoding is mathematically reversible, ensuring that `b64decode(b64encode(data)) == data` for any binary input.\n\n4. **ASCII decoding for JSON compatibility**: The `.decode(\"ascii\")` step in `to_json()` ensures the encoded data is a valid JSON string type, since JSON cannot directly represent binary data (as noted in `docs/patterns/javascript.rst`, line 235).\n\n5. **Integrated serialization lifecycle**: The encoding and decoding are tightly integrated through TaggedJSONSerializer's `dumps()` and `loads()` methods:\n   - `dumps()` calls `tag()` which wraps the base64-encoded string with the tag key\n   - `loads()` calls `_untag_scan()` which recursively finds tagged dicts and calls `untag()` to decode them\n\nThis design ensures that bytes data can be round-tripped through JSON serialization without loss, as demonstrated by the test in `tests/test_json_tag.py` (line 29) where `s.loads(s.dumps(b\"\\xff\")) == b\"\\xff\"`."
+  },
+  {
+   "index": 2,
+   "title": "SWE-QA flask #43",
+   "task": "Where does the base64-decoding method for byte sequence tags get invoked during the recursive untagging process after JSON parsing?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [],
+   "anchors": [
+    "flask/src/flask/json/tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 43,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The base64-decoding method for byte sequence tags gets invoked in the `untag` method of the `TaggedJSONSerializer` class, which is called during the recursive `_untag_scan` process that occurs after JSON parsing.\n\nHere's the specific integration flow:\n\n1. **Entry Point**: The `TaggedJSONSerializer.loads()` method (line 325-327 in `src/flask/json/tag.py`) first parses the JSON string using `loads(value)` from `flask.json`, then passes the result to `_untag_scan()`.\n\n2. **Recursive Processing**: The `_untag_scan()` method (line 309-319) recursively traverses the parsed JSON structure:\n   - For dictionaries: it first recursively untags all values, then calls `untag()` on the dictionary itself\n   - For lists: it recursively untags each item\n\n3. **Integration Point**: The `untag()` method (line 297-307) is where the base64-decoding occurs:\n   ```python\n   def untag(self, value: dict[str, t.Any]) -> t.Any:\n       \"\"\"Convert a tagged representation back to the original type.\"\"\"\n       if len(value) != 1:\n           return value\n       \n       key = next(iter(value))\n       \n       if key not in self.tags:\n           return value\n       \n       return self.tags[key].to_python(value[key])  # <-- Integration point\n   ```\n\n4. **Specific Invocation**: When a dictionary with the key `\" b\"` (the tag key for `TagBytes`) is encountered, `untag()` looks up the corresponding tag in `self.tags[\" b\"]` and calls its `to_python()` method (line 169-170), which performs `b64decode(value)` to convert the base64-encoded string back to bytes.\n\nThis design ensures that base64-decoding happens at the correct stage: after JSON parsing but during the recursive reconstruction of nested tagged structures, allowing byte sequences to be properly decoded whether they appear at the top level or nested within dictionaries, lists, or other tagged objects."
+  },
+  {
+   "index": 3,
+   "title": "SWE-QA flask #9",
+   "task": "What is the dependency chain from recursive type tagging method calls within the tuple-to-JSON conversion method that could lead to infinite recursion when serializing nested tuples with circular references?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [],
+   "anchors": [
+    "flask/src/flask/json/tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 9,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The dependency chain that can lead to infinite recursion when serializing nested tuples with circular references follows this sequence:\n\n1. **Tuple-to-JSON conversion method** (`TagTuple.to_json()`, lines 140-141 in `src/flask/json/tag.py`): When processing a tuple, this method iterates through each item and calls `self.serializer.tag(item)` for each element.\n\n2. **Type tagging method** (`TaggedJSONSerializer.tag()`, lines 289-295): This method iterates through all registered tags in order. When it encounters a nested tuple, `TagTuple.check()` returns `True`, so it calls `tag.tag(value)`, which invokes `TagTuple.tag()`.\n\n3. **Tag application method** (`JSONTag.tag()`, lines 87-90): The base class method wraps the tagged value by calling `self.to_json(value)`, which for tuples is again `TagTuple.to_json()`.\n\nThis creates a recursive cycle: `TagTuple.to_json()` → `TaggedJSONSerializer.tag()` → `TagTuple.tag()` → `TagTuple.to_json()` → ...\n\nWhen a tuple contains itself (circular reference) or deeply nested tuples, this recursion continues indefinitely, eventually causing a stack overflow. The chain lacks cycle detection, so any circular reference in tuple structures will trigger infinite recursion during serialization.\n\nThe same pattern exists for other container types like `PassDict` (line 128) and `PassList` (line 154), which also call `self.serializer.tag()` recursively on their elements, but the question specifically asks about the tuple serialization path."
+  },
+  {
+   "index": 4,
+   "title": "SWE-QA flask #38",
+   "task": "Where does the list serialization tag's item conversion method interact with the serializer's type dispatcher to recursively process nested list structures containing mixed types?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [],
+   "anchors": [
+    "flask/src/flask/json/tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 38,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The interaction occurs at two points in the code:\n\n1. In `PassList.to_json()` (line 154 of `src/flask/json/tag.py`): When processing a list, it calls `self.serializer.tag(item)` for each item in the list comprehension: `return [self.serializer.tag(item) for item in value]`\n\n2. In `TaggedJSONSerializer.tag()` (line 293 of `src/flask/json/tag.py`): The dispatcher method calls `tag.tag(value)` when a tag's `check()` method returns True. Since `PassList.tag = to_json` (line 156), this means `PassList.tag()` directly calls `PassList.to_json()`.\n\nThe recursive delegation chain works as follows:\n- `PassList.to_json()` receives a list and calls `serializer.tag(item)` for each item\n- `TaggedJSONSerializer.tag()` iterates through registered tags in `self.order` (line 291) and checks each tag using `tag.check(value)` (line 292)\n- When a matching tag is found (e.g., `PassList` for nested lists, `PassDict` for dicts, `TagTuple` for tuples), it calls `tag.tag(value)` (line 293)\n- For `PassList`, `tag.tag()` equals `to_json()`, which calls `serializer.tag()` again for nested items, creating recursion\n- For mixed types in nested lists, each item is processed through the dispatcher, which routes it to the appropriate tag handler (PassList for nested lists, PassDict for dicts, TagBytes for bytes, etc.)\n\nThis design allows nested structures with mixed types to be recursively serialized, with each level delegating to the appropriate tag handler through the central dispatcher."
+  },
+  {
+   "index": 5,
+   "title": "SWE-QA flask #33",
+   "task": "Why does the pass-through dictionary tag class's JSON conversion method apply recursive tagging only to dictionary values while avoiding tagging keys?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [],
+   "anchors": [
+    "flask/src/flask/json/tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 33,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The pass-through dictionary tag class's JSON conversion method applies recursive tagging only to dictionary values while avoiding tagging keys because of a fundamental constraint in the JSON specification: JSON object keys must be strings.\n\nIn the implementation at `src/flask/json/tag.py` (lines 125-128), the `to_json` method of the `PassDict` class contains an explicit comment explaining this design decision:\n\n```python\ndef to_json(self, value: t.Any) -> t.Any:\n    # JSON objects may only have string keys, so don't bother tagging the\n    # key here.\n    return {k: self.serializer.tag(v) for k, v in value.items()}\n```\n\nThe architectural constraint stems from the JSON specification (RFC 7159), which mandates that object keys in JSON must be strings. This means:\n\n1. **Keys are already valid JSON**: When a Python dictionary is serialized to JSON, all keys are automatically converted to strings (if they aren't already). Since keys are guaranteed to be strings in the final JSON output, they don't require special tagging to preserve type information - they're already in a format that JSON can handle natively.\n\n2. **Values may need type preservation**: Dictionary values, however, can be of any Python type, including non-JSON types such as:\n   - `bytes` objects (handled by `TagBytes`)\n   - `datetime` objects (handled by `TagDateTime`)\n   - `UUID` objects (handled by `TagUUID`)\n   - `tuple` objects (handled by `TagTuple`)\n   - `Markup` objects (handled by `TagMarkup`)\n   - Nested dictionaries or lists containing these types\n\n3. **Asymmetric tagging strategy**: The method uses `self.serializer.tag(v)` to recursively tag each value, which allows the `TaggedJSONSerializer` to detect and properly serialize non-JSON types. Keys are left untagged because they will be converted to strings anyway during JSON serialization, making tagging unnecessary and potentially problematic (as it could interfere with the JSON structure).\n\nThis design ensures that the tagged JSON serializer can preserve type information for complex Python objects stored as dictionary values (which is essential for features like Flask's session serialization), while respecting JSON's requirement that object keys must be strings."
+  },
+  {
+   "index": 6,
+   "title": "SWE-QA flask #16 (revisit)",
+   "task": "How does the tagged JSON serializer class that handles bytes maintain data consistency and reversibility when encoding binary data through base64?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [
+    1
+   ],
+   "anchors": [
+    "flask/src/flask/json/tag.py",
+    "flask/docs/patterns/javascript.rst",
+    "flask/tests/test_json_tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 16,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The tagged JSON serializer class that handles bytes (TagBytes) maintains data consistency and reversibility through several mechanisms:\n\n1. **Coupled encoding/decoding in the same class**: Both the encoding (`to_json`) and decoding (`to_python`) methods are implemented in the same class (`src/flask/json/tag.py`, lines 159-170). This ensures they use the same base64 encoding scheme:\n   - `to_json()`: Encodes bytes using `b64encode(value).decode(\"ascii\")` to produce a JSON-compatible ASCII string\n   - `to_python()`: Decodes the base64 string back to bytes using `b64decode(value)`\n\n2. **Tag-based identification system**: The class uses the key `\" b\"` to wrap encoded data as `{\" b\": <base64_string>}` during serialization (via the `tag()` method inherited from JSONTag, line 90). During deserialization, the TaggedJSONSerializer's `untag()` method (lines 297-307) recognizes this key and routes the value to the correct `to_python()` method, ensuring the encoded data is properly identified and decoded.\n\n3. **Base64 reversibility**: Base64 encoding is mathematically reversible, ensuring that `b64decode(b64encode(data)) == data` for any binary input.\n\n4. **ASCII decoding for JSON compatibility**: The `.decode(\"ascii\")` step in `to_json()` ensures the encoded data is a valid JSON string type, since JSON cannot directly represent binary data (as noted in `docs/patterns/javascript.rst`, line 235).\n\n5. **Integrated serialization lifecycle**: The encoding and decoding are tightly integrated through TaggedJSONSerializer's `dumps()` and `loads()` methods:\n   - `dumps()` calls `tag()` which wraps the base64-encoded string with the tag key\n   - `loads()` calls `_untag_scan()` which recursively finds tagged dicts and calls `untag()` to decode them\n\nThis design ensures that bytes data can be round-tripped through JSON serialization without loss, as demonstrated by the test in `tests/test_json_tag.py` (line 29) where `s.loads(s.dumps(b\"\\xff\")) == b\"\\xff\"`."
+  },
+  {
+   "index": 7,
+   "title": "SWE-QA flask #43 (revisit)",
+   "task": "Where does the base64-decoding method for byte sequence tags get invoked during the recursive untagging process after JSON parsing?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [
+    2
+   ],
+   "anchors": [
+    "flask/src/flask/json/tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 43,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The base64-decoding method for byte sequence tags gets invoked in the `untag` method of the `TaggedJSONSerializer` class, which is called during the recursive `_untag_scan` process that occurs after JSON parsing.\n\nHere's the specific integration flow:\n\n1. **Entry Point**: The `TaggedJSONSerializer.loads()` method (line 325-327 in `src/flask/json/tag.py`) first parses the JSON string using `loads(value)` from `flask.json`, then passes the result to `_untag_scan()`.\n\n2. **Recursive Processing**: The `_untag_scan()` method (line 309-319) recursively traverses the parsed JSON structure:\n   - For dictionaries: it first recursively untags all values, then calls `untag()` on the dictionary itself\n   - For lists: it recursively untags each item\n\n3. **Integration Point**: The `untag()` method (line 297-307) is where the base64-decoding occurs:\n   ```python\n   def untag(self, value: dict[str, t.Any]) -> t.Any:\n       \"\"\"Convert a tagged representation back to the original type.\"\"\"\n       if len(value) != 1:\n           return value\n       \n       key = next(iter(value))\n       \n       if key not in self.tags:\n           return value\n       \n       return self.tags[key].to_python(value[key])  # <-- Integration point\n   ```\n\n4. **Specific Invocation**: When a dictionary with the key `\" b\"` (the tag key for `TagBytes`) is encountered, `untag()` looks up the corresponding tag in `self.tags[\" b\"]` and calls its `to_python()` method (line 169-170), which performs `b64decode(value)` to convert the base64-encoded string back to bytes.\n\nThis design ensures that base64-decoding happens at the correct stage: after JSON parsing but during the recursive reconstruction of nested tagged structures, allowing byte sequences to be properly decoded whether they appear at the top level or nested within dictionaries, lists, or other tagged objects."
+  },
+  {
+   "index": 8,
+   "title": "SWE-QA flask #9 (revisit)",
+   "task": "What is the dependency chain from recursive type tagging method calls within the tuple-to-JSON conversion method that could lead to infinite recursion when serializing nested tuples with circular references?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [
+    3
+   ],
+   "anchors": [
+    "flask/src/flask/json/tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 9,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The dependency chain that can lead to infinite recursion when serializing nested tuples with circular references follows this sequence:\n\n1. **Tuple-to-JSON conversion method** (`TagTuple.to_json()`, lines 140-141 in `src/flask/json/tag.py`): When processing a tuple, this method iterates through each item and calls `self.serializer.tag(item)` for each element.\n\n2. **Type tagging method** (`TaggedJSONSerializer.tag()`, lines 289-295): This method iterates through all registered tags in order. When it encounters a nested tuple, `TagTuple.check()` returns `True`, so it calls `tag.tag(value)`, which invokes `TagTuple.tag()`.\n\n3. **Tag application method** (`JSONTag.tag()`, lines 87-90): The base class method wraps the tagged value by calling `self.to_json(value)`, which for tuples is again `TagTuple.to_json()`.\n\nThis creates a recursive cycle: `TagTuple.to_json()` → `TaggedJSONSerializer.tag()` → `TagTuple.tag()` → `TagTuple.to_json()` → ...\n\nWhen a tuple contains itself (circular reference) or deeply nested tuples, this recursion continues indefinitely, eventually causing a stack overflow. The chain lacks cycle detection, so any circular reference in tuple structures will trigger infinite recursion during serialization.\n\nThe same pattern exists for other container types like `PassDict` (line 128) and `PassList` (line 154), which also call `self.serializer.tag()` recursively on their elements, but the question specifically asks about the tuple serialization path."
+  },
+  {
+   "index": 9,
+   "title": "SWE-QA flask #38 (revisit)",
+   "task": "Where does the list serialization tag's item conversion method interact with the serializer's type dispatcher to recursively process nested list structures containing mixed types?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [
+    4
+   ],
+   "anchors": [
+    "flask/src/flask/json/tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 38,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The interaction occurs at two points in the code:\n\n1. In `PassList.to_json()` (line 154 of `src/flask/json/tag.py`): When processing a list, it calls `self.serializer.tag(item)` for each item in the list comprehension: `return [self.serializer.tag(item) for item in value]`\n\n2. In `TaggedJSONSerializer.tag()` (line 293 of `src/flask/json/tag.py`): The dispatcher method calls `tag.tag(value)` when a tag's `check()` method returns True. Since `PassList.tag = to_json` (line 156), this means `PassList.tag()` directly calls `PassList.to_json()`.\n\nThe recursive delegation chain works as follows:\n- `PassList.to_json()` receives a list and calls `serializer.tag(item)` for each item\n- `TaggedJSONSerializer.tag()` iterates through registered tags in `self.order` (line 291) and checks each tag using `tag.check(value)` (line 292)\n- When a matching tag is found (e.g., `PassList` for nested lists, `PassDict` for dicts, `TagTuple` for tuples), it calls `tag.tag(value)` (line 293)\n- For `PassList`, `tag.tag()` equals `to_json()`, which calls `serializer.tag()` again for nested items, creating recursion\n- For mixed types in nested lists, each item is processed through the dispatcher, which routes it to the appropriate tag handler (PassList for nested lists, PassDict for dicts, TagBytes for bytes, etc.)\n\nThis design allows nested structures with mixed types to be recursively serialized, with each level delegating to the appropriate tag handler through the central dispatcher."
+  },
+  {
+   "index": 10,
+   "title": "SWE-QA flask #33 (revisit)",
+   "task": "Why does the pass-through dictionary tag class's JSON conversion method apply recursive tagging only to dictionary values while avoiding tagging keys?\n\nThe code is the pallets/flask repository at commit 85c5d93, in the flask/ directory of this worktree. Answer from the code, citing the files and functions involved.",
+   "dependsOn": [
+    5
+   ],
+   "anchors": [
+    "flask/src/flask/json/tag.py"
+   ],
+   "source": {
+    "benchmark": "SWE-QA (flask.jsonl)",
+    "index": 33,
+    "commit": "85c5d93cbd049c4bd0679c36fd1ddcae8c37b642"
+   },
+   "referenceAnswer": "The pass-through dictionary tag class's JSON conversion method applies recursive tagging only to dictionary values while avoiding tagging keys because of a fundamental constraint in the JSON specification: JSON object keys must be strings.\n\nIn the implementation at `src/flask/json/tag.py` (lines 125-128), the `to_json` method of the `PassDict` class contains an explicit comment explaining this design decision:\n\n```python\ndef to_json(self, value: t.Any) -> t.Any:\n    # JSON objects may only have string keys, so don't bother tagging the\n    # key here.\n    return {k: self.serializer.tag(v) for k, v in value.items()}\n```\n\nThe architectural constraint stems from the JSON specification (RFC 7159), which mandates that object keys in JSON must be strings. This means:\n\n1. **Keys are already valid JSON**: When a Python dictionary is serialized to JSON, all keys are automatically converted to strings (if they aren't already). Since keys are guaranteed to be strings in the final JSON output, they don't require special tagging to preserve type information - they're already in a format that JSON can handle natively.\n\n2. **Values may need type preservation**: Dictionary values, however, can be of any Python type, including non-JSON types such as:\n   - `bytes` objects (handled by `TagBytes`)\n   - `datetime` objects (handled by `TagDateTime`)\n   - `UUID` objects (handled by `TagUUID`)\n   - `tuple` objects (handled by `TagTuple`)\n   - `Markup` objects (handled by `TagMarkup`)\n   - Nested dictionaries or lists containing these types\n\n3. **Asymmetric tagging strategy**: The method uses `self.serializer.tag(v)` to recursively tag each value, which allows the `TaggedJSONSerializer` to detect and properly serialize non-JSON types. Keys are left untagged because they will be converted to strings anyway during JSON serialization, making tagging unnecessary and potentially problematic (as it could interfere with the JSON structure).\n\nThis design ensures that the tagged JSON serializer can preserve type information for complex Python objects stored as dictionary values (which is essential for features like Flask's session serialization), while respecting JSON's requirement that object keys must be strings."
+  }
+ ]
+}

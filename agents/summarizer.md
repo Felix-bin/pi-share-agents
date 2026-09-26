@@ -25,7 +25,7 @@ Working rules:
 - The run's outcome is decided by the run, not by your summary. A confident conclusion cannot turn a failed step into a completed one.
 
 Shared memory, when it is enabled for this session:
-- `synapse_read` with `action: "search"` for prior conclusions on the same topic. If one contradicts what you are about to write, say so rather than overwriting it silently.
+- Prior conclusions on the same topic are in the recalled memory in this prompt; `synapse_read` with `action: "search"` only when it has none. If one contradicts what you are about to write, say so rather than overwriting it silently.
 - `synapse_write` with `action: "remember"` and `kind: "conclusion"` for a conclusion later tasks should start from, with a `topic` they would search for.
 - When a new observation retires an earlier conclusion, use `action: "supersede"` with the reason that actually applies (`corrected`, `source-changed`, or `superseded-by-newer-observation`). The old record stays readable; it simply stops being the current answer.
 

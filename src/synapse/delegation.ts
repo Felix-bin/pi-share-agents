@@ -15,7 +15,8 @@ import { buildReceipt, MEMORY_SECTION_HEADER, prepareHandoffContext, type Handof
 import type { LaunchContract } from "./lifecycle.ts";
 import { createMemoryService, SYNAPSE_MAX_SEARCH_K, type MemoryService, type SearchResult } from "./memory-service.ts";
 import { createMeteringLog, recordProcessIdentity, recordTransportBytes, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
-import { capabilityForAgent, hostCapability, SYNAPSE_CONSUMER_VERSION } from "./roles.ts";
+import { capabilityForAgent, hostCapability, recallsMemory, redeemsStageResults, SYNAPSE_CONSUMER_VERSION } from "./roles.ts";
+import { condenseStageBlocks } from "./stage-result.ts";
 import type { PredictedBase } from "./predict-base.ts";
 import { chooseStatePayload, SYNAPSE_DELTA_MEDIA_TYPE } from "./state-payload.ts";
 import { cosineSimilarity } from "./state-retrieval.ts";
@@ -315,7 +316,7 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 
 	deps.log.record(meterIdentity, { kind: "task-span", phase: "start", taskId: identity.requestId });
 
-	const candidates = candidatesFor(deps.service, input.message);
+	const candidates = recallsMemory(identity.agent) ? candidatesFor(deps.service, input.message) : [];
 	deps.log.record(meterIdentity, {
 		authorisedValidHits: candidates.filter((candidate) => candidate.validity === "current").length,
 		kind: "memory-query",
@@ -378,7 +379,9 @@ export function openDelegation(input: OpenDelegationInput): OpenDelegation | nul
 	} catch (error) {
 		console.warn(`[pi-subagents] synapse: envelope delivery skipped for ${identity.agent}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	const prompt = promptWith(input.message, handoff, contract.mode);
+	// A role the child runtime hands the stages' whole text to is sent the blocks as headers only.
+	const message = contract.mode === "synapse" && redeemsStageResults(identity.agent) ? condenseStageBlocks(input.message) : input.message;
+	const prompt = promptWith(message, handoff, contract.mode);
 	deps.log.record(boundIdentity, {
 		envelopeBytes: envelope.envelopeBytes,
 		kind: "message-delivered",

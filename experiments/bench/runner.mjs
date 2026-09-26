@@ -89,10 +89,11 @@ const FAMILY_FILES = {
 	G2: path.join(HERE, "families", "g2-codebase.json"),
 	Q: path.join(HERE, "families", "q-musique.json"),
 	R: path.join(HERE, "families", "r-sweqa-flask.json"),
+	M: path.join(HERE, "families", "m-sweqa-revisit.json"),
 };
 // Public-benchmark groups (build-public-families.mjs): their agents work in the
 // built worktree (musique/ + flask/), not in this repository.
-const PUBLIC_GROUPS = new Set(["Q", "R"]);
+const PUBLIC_GROUPS = new Set(["Q", "R", "M"]);
 const TEMPLATE_FILE = path.join(REPO, "prompts", "role-pipeline.md");
 const PIPELINE_ROLES = ["planner", "retriever", "executor", "summarizer"];
 const ARMS = ["TXT", "SYN", "SYN0", "SYNCOLD", "CREWAI", "AUTOGEN"];
@@ -136,6 +137,12 @@ const CORPUS_OVERLAP = 8;
 const CORPUS_INCLUDE = ["src", "docs", "guides", "scripts", "prompts", "agents", "skills", "README.md", "VISION.md", "AGENTS.md"];
 const CORPUS_ALLOWLIST = [".ts", ".md", ".mjs", ".sh", ".bt", ".json", ".yaml", ".py", ".txt", ".rst"];
 const COPIED_AGENT_FILES = ["auth.json", "models.json", "settings.json"];
+// pi caps a model without `maxTokens` at 16384 output tokens, reasoning included;
+// DeepSeek's own endpoint (the external arms) sets no such cap. A high-thinking
+// planner or summarizer that runs past it ends on stopReason "length" with no
+// text (E1: 4 children; v3 smoke: one round lost twice), so the tested model gets
+// the same headroom on every arm.
+const MODEL_MAX_TOKENS = 32768;
 
 // pi runs in its own process group (detached) so a round's whole tree — the
 // parent and every stage child — can be stopped together, including when the
@@ -393,7 +400,19 @@ function copyTree(src, dst, exclude = new Set(), excludePaths = new Set(), rel =
 	}
 }
 
-function prepareArm({ arm, expDir, sourceAgentDir, embedding, corpus, worktree = null }) {
+/** Gives the tested model MODEL_MAX_TOKENS in the arm's copied models.json when it declares no cap of its own. */
+function pinModelMaxTokens(agentDir, provider, model) {
+	const file = path.join(agentDir, "models.json");
+	if (!provider || !model || !fs.existsSync(file)) return;
+	const models = readJson(file);
+	const entry = models.providers?.[provider]?.models?.find((candidate) => candidate.id === model);
+	if (entry === undefined || entry.maxTokens !== undefined) return;
+	entry.maxTokens = MODEL_MAX_TOKENS;
+	writeJson(file, models);
+	fs.chmodSync(file, 0o600);
+}
+
+function prepareArm({ arm, expDir, sourceAgentDir, embedding, corpus, worktree = null, provider = null, model = null }) {
 	const agentDir = path.join(expDir, `agent-${arm}`);
 	fs.mkdirSync(agentDir, { recursive: true });
 	const copied = [];
@@ -404,6 +423,7 @@ function prepareArm({ arm, expDir, sourceAgentDir, embedding, corpus, worktree =
 		fs.chmodSync(path.join(agentDir, name), 0o600);
 		copied.push(name);
 	}
+	pinModelMaxTokens(agentDir, provider, model);
 	// pi downloads fd/rg into <agentDir>/bin when missing; reuse the user's copies.
 	const bin = path.join(sourceAgentDir, "bin");
 	if (fs.existsSync(bin)) {
@@ -1025,6 +1045,7 @@ async function main() {
 		parallelArms: options.parallelArms,
 		prompt: { template: path.relative(REPO, TEMPLATE_FILE), templateSha256: sha256(template), expansion: "frontmatter stripped, $@/$ARGUMENTS replaced by the task text; the previous answer is never included" },
 		parentTools: PARENT_TOOLS,
+		modelMaxTokens: { value: MODEL_MAX_TOKENS, rule: "set on the tested model in each arm's copied models.json when it declares no maxTokens (pi otherwise caps at 16384)" },
 		launch: { flags: ["-e", "<repo>/index.ts", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc", "--tools", PARENT_TOOLS.join(",")], cwd: "<exp>/work-<arm>/pi-share-agents (repo snapshot without node_modules/.git/.pi)", copiedAgentFiles: COPIED_AGENT_FILES },
 		completion: "RPC agent_settled after the run prompt + async-run widget idle + all task-spans opened this round closed + 3 s quiet (+ a settle after background runs ended, or 90 s); else --round-timeout-ms",
 		validity: "pipeline settled (no timeout, answer present) and >= 1 metering run written during the round; SYN0 (no ledger by design) instead needs >= 1 child artifacts meta file; CREWAI/AUTOGEN: harness exit 0, answer present, all four roles made a model call, every successful call reported usage",
@@ -1043,7 +1064,7 @@ async function main() {
 	if (!provider || !model) throw new Error("no provider/model: pass --provider/--model or set defaultProvider/defaultModel in settings.json");
 	if (options.arms.some(isExternal) && resolveExternalKey() === null) throw new Error(`external arms need a key: set ${EXTERNAL_PROVIDER.keyEnv} or write it to ${EXTERNAL_PROVIDER.keyFile}`);
 
-	const arms = Object.fromEntries(options.arms.map((arm) => [arm, prepareArm({ arm, corpus, embedding, expDir, sourceAgentDir, worktree: options.worktree })]));
+	const arms = Object.fromEntries(options.arms.map((arm) => [arm, prepareArm({ arm, corpus, embedding, expDir, model, provider, sourceAgentDir, worktree: options.worktree })]));
 	for (const [arm, setup] of Object.entries(arms)) log(`arm ${arm}: agentDir ${setup.agentDir} (copied ${setup.copied.join(", ") || "nothing"}), store ${setup.storeDir ?? "none (not pi)"}`);
 	await executePlan({ arms, attempts: options.attempts, expDir, families, model, parallelArms: options.parallelArms, pi, plan, provider, roundTimeoutMs: options.roundTimeoutMs, template });
 }
@@ -1070,7 +1091,7 @@ async function resumeExperiment({ code, expDir, families, manifestPath, model, o
 	log(`resume ${manifest.experimentId}: model ${provider}/${model} (started on ${manifest.provider}/${manifest.model}); corpus ${corpus === null ? "none" : `${corpus.corpusSnapshotId.slice(0, 12)}…`}`);
 	// The manifest's arm configs are authoritative; prepareArm rewrites the same
 	// config and refreshes the copied agent files (a new provider lives in models.json).
-	const arms = Object.fromEntries(armNames.map((arm) => [arm, prepareArm({ arm, corpus, embedding, expDir, sourceAgentDir, worktree: manifest.worktree?.path ?? null })]));
+	const arms = Object.fromEntries(armNames.map((arm) => [arm, prepareArm({ arm, corpus, embedding, expDir, model, provider, sourceAgentDir, worktree: manifest.worktree?.path ?? null })]));
 	for (const arm of armNames) {
 		const written = readJson(arms[arm].configPath);
 		const recorded = manifest.arms.find((entry) => entry.arm === arm).config;

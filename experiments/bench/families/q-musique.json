@@ -8,7 +8,7 @@
   {
    "index": 1,
    "title": "MuSiQue 3hop1__857_846_7701",
-   "task": "When did the city where the Yongle emperor greeted the person to whom the edict was addressed become the Chinese national capital?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "When did the city where the Yongle emperor greeted the person to whom the edict was addressed become the Chinese national capital?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [],
    "anchors": [
     "musique/001-Nanjing.md",
@@ -26,7 +26,7 @@
   {
    "index": 2,
    "title": "MuSiQue 3hop1__857_846_7702",
-   "task": "What is the meaning of the name of the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "What is the meaning of the name of the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     1
    ],
@@ -50,7 +50,7 @@
   {
    "index": 3,
    "title": "MuSiQue 3hop1__857_846_7798",
-   "task": "What was the overwhelming ethnic majority in the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "What was the overwhelming ethnic majority in the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     2
    ],
@@ -70,7 +70,7 @@
   {
    "index": 4,
    "title": "MuSiQue 3hop1__857_846_7794",
-   "task": "In 2010, what was the population of the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "In 2010, what was the population of the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     3
    ],
@@ -90,7 +90,7 @@
   {
    "index": 5,
    "title": "MuSiQue 3hop1__857_846_7769",
-   "task": "How many square miles is the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "How many square miles is the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     4
    ],
@@ -110,7 +110,7 @@
   {
    "index": 6,
    "title": "MuSiQue 3hop1__857_846_7846",
-   "task": "Which opera company is based in the city where the Yongle Emperor greeted the leader that the edict was addressed to?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "Which opera company is based in the city where the Yongle Emperor greeted the leader that the edict was addressed to?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     5
    ],
@@ -130,7 +130,7 @@
   {
    "index": 7,
    "title": "MuSiQue 3hop1__857_846_7872",
-   "task": "What is the name of the football club from the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "What is the name of the football club from the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     6
    ],
@@ -150,7 +150,7 @@
   {
    "index": 8,
    "title": "MuSiQue 3hop1__857_846_7752",
-   "task": "Who moved the capitol from the city where the Yongle emperor greeted the person to whom the edict was addressed to Beijing?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "Who moved the capitol from the city where the Yongle emperor greeted the person to whom the edict was addressed to Beijing?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     7
    ],
@@ -170,7 +170,7 @@
   {
    "index": 9,
    "title": "MuSiQue 3hop1__857_846_7810",
-   "task": "What was where the Yongle emperor greeted who the edict addressed GDP per person in 2013?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "What was where the Yongle emperor greeted who the edict addressed GDP per person in 2013?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     8
    ],
@@ -190,7 +190,7 @@
   {
    "index": 10,
    "title": "MuSiQue 4hop3__857_846_326964_7713",
-   "task": "How long had the city where the Yongle emperor greeted the person to whom the edict was addressed been the capitol of Yaxing Coach's headquarters location?\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+   "task": "How long had the city where the Yongle emperor greeted the person to whom the edict was addressed been the capitol of Yaxing Coach's headquarters location?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
    "dependsOn": [
     9
    ],

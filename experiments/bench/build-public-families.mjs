@@ -97,7 +97,7 @@ const qTasks = chosen.map((q, index) => {
 	return {
 		index: index + 1,
 		title: `MuSiQue ${q.id}`,
-		task: `${q.question}\n\nAnswer using only the documents in the musique/ directory of this worktree (one paragraph per file). Put your final answer on the last line as \`ANSWER: <short answer only — the entity, number or phrase itself, no explanation>\`.`,
+		task: `${q.question}\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as \`ANSWER: <short answer only — the entity, number or phrase itself, no explanation>\`.`,
 		dependsOn: index === 0 ? [] : [index],
 		anchors,
 		source: { benchmark: "MuSiQue-Ans v1.0 dev", id: q.id, hops: Number(q.id[0]) },

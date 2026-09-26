@@ -283,7 +283,9 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		// nothing the parent bound. The contract degrades the gear rather than
 		// letting every delivery fail and every child wait out its deadline.
 		placedOnAnotherMachine: Boolean(input.machine),
-		extensionTools: synapseTools,
+		// The capability names what the child can actually call, so a tool the
+		// role excludes is not claimed for it.
+		extensionTools: synapseTools.filter((tool) => !(input.excludeTools ?? []).includes(tool)),
 		runId: input.runId ?? parentRunId,
 		sessionId: input.parentSessionId ?? "",
 	});

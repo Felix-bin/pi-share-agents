@@ -1458,6 +1458,7 @@ async function runSingleAttempt(
 				// the close reads the output from the messages, as the background path does.
 				stageOutcome = await closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
+					cwd: options.cwd ?? runtimeCwd,
 					finalOutput: result.finalOutput || getFinalOutput(result.messages ?? []),
 					runtime: childRuntime,
 					taskText: task,
@@ -1468,6 +1469,7 @@ async function runSingleAttempt(
 			} catch (error) {
 				void closeChildDelegation(delegation, {
 					cancelled: abortedBySignal || interruptedByControl,
+					cwd: options.cwd ?? runtimeCwd,
 					cause: error,
 					finalOutput: result.finalOutput || getFinalOutput(result.messages ?? []),
 					runtime: childRuntime,

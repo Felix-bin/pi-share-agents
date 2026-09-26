@@ -449,6 +449,8 @@ export type CloseChildDelegationInput = {
 	/** True when the run was stopped rather than failed; the two are not the same outcome. */
 	cancelled: boolean;
 	cause?: unknown;
+	/** The child's worktree, when the caller has it: distilled lines that cite a file in it carry its fingerprint. */
+	cwd?: string;
 	finalOutput: string;
 	/** The child's runtime config, when the caller holds it: its synapse contract carries the distill switch. */
 	runtime?: ChildRuntimeConfig;
@@ -578,6 +580,7 @@ async function distillWithinBudget(contract: SynapseChildContract, input: CloseC
 				embedder: embedder === undefined ? null : { embed: async (text) => (await embedder.embedQuery(text)).vector, representationId: embedder.representationId },
 				provenance: { agent: contract.agent, attempt: 1, runId: contract.runId, sessionId: contract.sessionId },
 				taskText: input.taskText ?? "",
+				...(input.cwd === undefined ? {} : { worktreeRoot: input.cwd }),
 			},
 			input.finalOutput,
 		);

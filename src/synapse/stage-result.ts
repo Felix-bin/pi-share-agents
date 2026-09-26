@@ -26,6 +26,13 @@ export const STAGE_OUTPUT_TAG = "stage-output";
 export const STAGE_RESULT_MAX_BYTES = 1536;
 export const STAGE_RESULT_MAX_LINES = 12;
 export const STAGE_RESULT_MAX_LINE_CHARS = 200;
+/**
+ * How the block offers the rest. A bare "Full text:" reads as the next step, and
+ * E1-follow-up smoke runs (2026-09-26) saw the next stage redeem almost every
+ * block it was handed, paying the block, the body and a model turn where the
+ * inline text alone would have cost the body.
+ */
+export const STAGE_RESULT_FOOTER_LEAD = "Full text, only if a step needs a detail the lines above do not carry";
 /** Of the line budget, the most that NOT ESTABLISHED may take, so open questions never crowd out findings. */
 const MAX_OPEN_LINES = 4;
 const HEAD_FALLBACK_BYTES = 1024;
@@ -88,9 +95,10 @@ function renderParts(input: { agent: string; memoryId: string; output: string })
 	const inline = `${header} (full text inline)\n${input.output}`;
 	if (byteLength(inline) <= STAGE_RESULT_MAX_BYTES) return { established: distillMemoryLines(input.output, { maxChars: STAGE_RESULT_MAX_LINE_CHARS, maxLines: STAGE_RESULT_MAX_LINES }), text: inline };
 
-	const footer = `Full text: synapse_read {"action":"get","memoryId":"${input.memoryId}"}`;
+	const footer = `${STAGE_RESULT_FOOTER_LEAD}: synapse_read {"action":"get","memoryId":"${input.memoryId}"}`;
 	const open = openLines(input.output).slice(0, MAX_OPEN_LINES);
-	const established = distillMemoryLines(input.output, { maxChars: STAGE_RESULT_MAX_LINE_CHARS, maxLines: STAGE_RESULT_MAX_LINES - open.length });
+	const vouched = input.output.split(/\r?\n/).some((line) => /^ESTABLISHED:/i.test(line.trim()));
+	const established = distillMemoryLines(input.output, { maxChars: STAGE_RESULT_MAX_LINE_CHARS, maxLines: STAGE_RESULT_MAX_LINES - open.length, numberedItems: true });
 	if (established.length === 0 && open.length === 0) {
 		const room = STAGE_RESULT_MAX_BYTES - byteLength(`${header}\n\n\n${footer}`) - 80;
 		const note = `(no ESTABLISHED lines; first ${HEAD_FALLBACK_BYTES} bytes follow, the rest is behind the handle)`;
@@ -101,7 +109,8 @@ function renderParts(input: { agent: string; memoryId: string; output: string })
 	const keptOpen = [...open];
 	const compose = (): string => {
 		const parts = [header];
-		if (keptEstablished.length > 0) parts.push("ESTABLISHED:", ...keptEstablished.map((line) => `- ${line}`));
+		// Only a stage that wrote a status block vouched for its lines; a plan's steps are not findings.
+		if (keptEstablished.length > 0) parts.push(vouched ? "ESTABLISHED:" : "KEY LINES:", ...keptEstablished.map((line) => `- ${line}`));
 		if (keptOpen.length > 0) parts.push("NOT ESTABLISHED:", ...keptOpen.map((line) => `- ${line}`));
 		parts.push(footer);
 		return parts.join("\n");
@@ -113,6 +122,72 @@ function renderParts(input: { agent: string; memoryId: string; output: string })
 		block = compose();
 	}
 	return { established: keptEstablished, text: block };
+}
+
+/** A block that stands in for its output: the header, not followed by "(full text inline)". */
+const STAGE_BLOCK_HANDLE = /\[SYNAPSE result\] agent=([a-z][a-z-]*) status=completed handle=([0-9a-f]{64}) bytes=\d+(?!\d)(?! \(full text inline\))/g;
+export const STAGE_REDEMPTION_BUDGET_BYTES = 49152;
+export const STAGE_REDEMPTION_HEADER = "## Stage results handed to you, in full\nThe host read each [SYNAPSE result] block in your task by its handle; the whole text is below, so do not call synapse_read for those handles.";
+
+/** A whole result block: its header up to the footer that names the same handle. */
+const STAGE_BLOCK_WHOLE = /(\[SYNAPSE result\] agent=[a-z][a-z-]* status=completed handle=([0-9a-f]{64}) bytes=\d+)(?!\d)(?! \(full text inline\))[^\n]*\n[\s\S]*?synapse_read \{"action":"get","memoryId":"\2"\}/g;
+export const STAGE_BLOCK_CONDENSED_NOTE = "(whole text handed to you at startup; read it by this handle if it is not there)";
+
+/**
+ * The task a redeeming role is sent: each result block cut to its header line.
+ * The role is handed the whole text at startup (`redeemStageResults`), so the
+ * block's lines would reach it twice; the header keeps the handle, which is
+ * all the redemption reads.
+ */
+export function condenseStageBlocks(task: string): string {
+	return task.replace(STAGE_BLOCK_WHOLE, (_whole, header: string) => `${header} ${STAGE_BLOCK_CONDENSED_NOTE}`);
+}
+
+export type StageRedemption = {
+	/** UTF-8 bytes of `section`, what the child is charged for reading. */
+	bytes: number;
+	/** Handles left in the task because their whole text did not fit the budget or could not be read. */
+	left: number;
+	records: number;
+	section: string;
+};
+
+/**
+ * The full text behind every result block in a task, for a role that would
+ * redeem them anyway (see `redeemsStageResults`). Deterministic and read at
+ * startup, like recalled memory: the child is not left to spend a turn per
+ * handle. Whole entries only — half a stage's output reads as though the stage
+ * said less — and a handle that does not fit stays in the task for the child
+ * to read itself.
+ */
+export function redeemStageResults(input: { budgetBytes?: number; prompt: string; readBody: (memoryId: string) => { text: string; totalBytes: number } }): StageRedemption {
+	const budget = input.budgetBytes ?? STAGE_REDEMPTION_BUDGET_BYTES;
+	const entries: string[] = [];
+	const seen = new Set<string>();
+	let used = 0;
+	let left = 0;
+	for (const match of input.prompt.matchAll(STAGE_BLOCK_HANDLE)) {
+		const [, agent, memoryId] = match;
+		if (seen.has(memoryId!)) continue;
+		seen.add(memoryId!);
+		let body: { text: string; totalBytes: number };
+		try {
+			body = input.readBody(memoryId!);
+		} catch {
+			left += 1;
+			continue;
+		}
+		const entry = `### ${agent} (handle ${memoryId!.slice(0, 12)})\n${body.text}`;
+		if (byteLength(body.text) < body.totalBytes || used + byteLength(entry) > budget) {
+			left += 1;
+			continue;
+		}
+		entries.push(entry);
+		used += byteLength(entry);
+	}
+	if (entries.length === 0) return { bytes: 0, left, records: 0, section: "" };
+	const section = [STAGE_REDEMPTION_HEADER, ...entries].join("\n\n");
+	return { bytes: byteLength(section), left, records: entries.length, section };
 }
 
 export type PublishStageOutputInput = {

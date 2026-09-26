@@ -74,6 +74,33 @@ const STAGE_OUTPUT_KINDS = {
 
 export type StageRole = keyof typeof STAGE_OUTPUT_KINDS;
 
+/**
+ * The roles the host hands every earlier stage's full text to at startup, in
+ * place of the result blocks their task carries. They act on (executor) or
+ * conclude from (summarizer) the whole of those stages, and redeemed nearly
+ * every block by tool call anyway — 90–93% and 62–68% of them in E1
+ * (2026-09-25) — so the block saved them no bytes and cost them a model turn
+ * per handle. The retriever, which needs the plan only as a guide (45%), keeps
+ * the block.
+ */
+const STAGE_RESULT_REDEEMING_ROLES: readonly SynapseRole[] = ["executor", "summarizer"];
+
+/**
+ * Whether the host recalls shared memory into this role's task. The planner is
+ * left out: it decides the shape of the work, and the stages after it are the
+ * ones that act on evidence. Handed recalled items, it spent its reasoning
+ * weighing them — +34k and +17k output tokens against the arm without memory
+ * over two ten- and five-round smoke sets (2026-09-26) — while every later
+ * stage did the same work either way.
+ */
+export function recallsMemory(agent: string): boolean {
+	return agent !== "planner";
+}
+
+export function redeemsStageResults(agent: string): boolean {
+	return STAGE_RESULT_REDEEMING_ROLES.some((role) => role === agent);
+}
+
 /** The memory kind of a pipeline stage whose output travels as a result block, or null for every other agent. */
 export function stageOutputKind(agent: string): MemoryKind | null {
 	return Object.hasOwn(STAGE_OUTPUT_KINDS, agent) ? STAGE_OUTPUT_KINDS[agent as StageRole] : null;

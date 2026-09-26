@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { after, describe, it } from "node:test";
-import { autoDistillOutput, distillMemoryLines } from "../../src/synapse/auto-distill.ts";
+import { autoDistillOutput, citedSource, distillMemoryLines } from "../../src/synapse/auto-distill.ts";
 import type { SynapseChildContract } from "../../src/synapse/child-contract.ts";
 import type { LaunchContract } from "../../src/synapse/lifecycle.ts";
 
@@ -111,8 +111,42 @@ describe("autoDistillOutput", () => {
 		assert.equal(stored.embedding, null);
 	});
 
+	it("files nothing from an output that vouched for nothing, whatever bullets it has", async () => {
+		const result = await autoDistillOutput(
+			{ contract: contractFor(true), embedder: null, provenance, taskText: "task" },
+			"The answer is Nanjing.\n\n- rests on the greeting passage in 003, quoted in full\n- open: the corpus never dates the capital move",
+		);
+		assert.deepEqual(result, { written: 0, withoutVector: 0 });
+	});
+
 	it("distills nothing from an output with no memory-worthy lines", async () => {
 		const result = await autoDistillOutput({ contract: contractFor(true), embedder: null, provenance, taskText: "task" }, "just prose, no bullets and no status block");
 		assert.deepEqual(result, { written: 0, withoutVector: 0 });
+	});
+});
+
+describe("a distilled line that cites a worktree file", () => {
+	const worktree = path.join(tempRoot, "worktree");
+	fs.mkdirSync(path.join(worktree, "musique"), { recursive: true });
+	fs.writeFileSync(path.join(worktree, "musique", "003-Ming.md"), "The Yongle Emperor came out of the palace in Nanjing.\n", "utf-8");
+
+	it("is filed under that file's fingerprint, so it retires when the file changes", async () => {
+		const storeRoot = path.join(tempRoot, "sourced");
+		fs.mkdirSync(storeRoot, { recursive: true });
+		const contract = { ...contractFor(true), contract: { storageRoot: storeRoot } as unknown as LaunchContract };
+		const result = await autoDistillOutput(
+			{ contract, embedder: null, provenance, taskText: "task", worktreeRoot: worktree },
+			"ESTABLISHED:\n- greeting city = Nanjing (`musique/003-Ming.md:1`)\n- no file named for this one",
+		);
+		assert.deepEqual(result, { written: 2, withoutVector: 0 });
+		const stored = fs.readdirSync(path.join(storeRoot, "memory")).filter((name) => name.endsWith(".json")).map((name) => JSON.parse(fs.readFileSync(path.join(storeRoot, "memory", name), "utf-8")));
+		const sourced = stored.filter((record) => record.source !== null);
+		assert.equal(sourced.length, 1, "only the line naming a real file gets a source");
+		assert.equal(sourced[0].source.path, "musique/003-Ming.md");
+	});
+
+	it("names no source for a path outside the worktree or one that does not exist", () => {
+		assert.equal(citedSource("see ../../etc/passwd.txt and musique/missing.md:3", worktree), null);
+		assert.equal(citedSource("as `musique/003-Ming.md:1` says", worktree)?.path, "musique/003-Ming.md");
 	});
 });

@@ -28,7 +28,10 @@ import { nodeIdFor, readDeliveredEnvelope, stateEnvelopePath, verifyEnvelopeAgai
 import type { EnvelopeWire } from "../../synapse/envelope.ts";
 import { createMeteringLog, type MeteringIdentity } from "../../synapse/metering.ts";
 import { SYNAPSE_MAX_SEARCH_K } from "../../synapse/memory-service.ts";
+import { AUTO_DISTILL_CHILD_NOTE } from "../../synapse/auto-distill.ts";
 import { redeemMemoryRefs, type RedemptionResult } from "../../synapse/redemption.ts";
+import { recallsMemory, redeemsStageResults } from "../../synapse/roles.ts";
+import { redeemStageResults, type StageRedemption } from "../../synapse/stage-result.ts";
 import type { StateRetrievalHit } from "../../synapse/state-retrieval.ts";
 import type { UdsServerTransport } from "../../synapse/envelope-uds.ts";
 import { registerWaitTool } from "../background/wait-tool.ts";
@@ -562,6 +565,34 @@ function redeemEnvelopeMemories(config: ChildRuntimeConfig, wire: EnvelopeWire, 
 }
 
 /**
+ * Hands a role that acts on or concludes from the earlier stages their full
+ * text at startup, read by the handles its task carries (see
+ * `redeemsStageResults`). Metered as a redemption, so the bytes stay in the
+ * account instead of looking free.
+ */
+function redeemTaskStageResults(config: ChildRuntimeConfig, prompt: string, registration: SynapseToolsRegistration | undefined): StageRedemption | undefined {
+	const synapse = config.synapse;
+	if (!synapse || synapse.contract.mode !== "synapse" || !redeemsStageResults(synapse.agent)) return undefined;
+	if (registration === undefined || !registration.registered) return undefined;
+	const result = redeemStageResults({
+		prompt,
+		readBody: (memoryId) => {
+			const read = registration.service().get({ limitBytes: synapse.contextBudgetBytes * 16, memoryId });
+			return { text: read.text, totalBytes: read.totalBytes };
+		},
+	});
+	if (result.records > 0) {
+		try {
+			const identity: MeteringIdentity = { agent: synapse.agent, attempt: 1, mode: synapse.contract.mode, nodeId: nodeIdFor(synapse.runId, config.childIndex), runId: synapse.runId, sessionId: synapse.sessionId, snapshotId: null };
+			createMeteringLog(meteringLogPath(synapse.contract, synapse.runId)).record(identity, { bytes: result.bytes, kind: "memory-redeem", records: result.records });
+		} catch {
+			// Metering the redemption must never be what costs the run.
+		}
+	}
+	return result;
+}
+
+/**
  * The retrieve parameters the sender wrote into the envelope.
  *
  * Params travel as canonical JSON text, which the wire schema validates only as
@@ -848,6 +879,7 @@ export default function registerSubagentPromptRuntime(
 	const envelopeReceipt = beginEnvelopeReceipt(config, deps);
 	let envelopeVerified = false;
 	let redemption: RedemptionResult | undefined;
+	let stageRedemption: StageRedemption | undefined;
 	// Redemption is what the child does with an accepted envelope, so it belongs
 	// to the same "once" as the check: a second turn must neither re-verify nor
 	// pay to read the bodies again.
@@ -986,11 +1018,17 @@ export default function registerSubagentPromptRuntime(
 				structuredOutput: Boolean(config.structuredOutput),
 			});
 		}
+		if (config.synapse?.autoDistill && recallsMemory(config.synapse.agent)) rewritten = `${rewritten}\n\n${AUTO_DISTILL_CHILD_NOTE}`;
 		// The redeemed section is appended last so it cannot be rearranged by the
 		// inheritance rewrite above, and so its absence leaves that rewrite's
 		// output byte-identical to what it produced before redemption existed.
 		if (redemption !== undefined && redemption.section.length > 0) {
 			rewritten = `${rewritten}\n\n${redemption.section}`;
+		}
+		const prompt = "prompt" in event && typeof event.prompt === "string" ? event.prompt : "";
+		stageRedemption ??= redeemTaskStageResults(config, prompt, synapseRegistration);
+		if (stageRedemption !== undefined && stageRedemption.section.length > 0) {
+			rewritten = `${rewritten}\n\n${stageRedemption.section}`;
 		}
 		if (rewritten === event.systemPrompt) return;
 		return { systemPrompt: rewritten };

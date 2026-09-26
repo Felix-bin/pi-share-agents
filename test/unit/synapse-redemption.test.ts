@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { meteringLogPath, openDelegation, type DelegationIdentity } from "../../src/synapse/delegation.ts";
+import { AUTO_DISTILL_CHILD_NOTE } from "../../src/synapse/auto-distill.ts";
 import { MEMORY_SECTION_HEADER } from "../../src/synapse/handoff.ts";
 import { resolveLaunchContract, type LaunchContract } from "../../src/synapse/lifecycle.ts";
 import { createMemoryService, type MemoryService } from "../../src/synapse/memory-service.ts";
@@ -98,14 +99,14 @@ type Handlers = Map<string, (payload?: unknown) => unknown>;
  * Registers the child runtime with its memory tools present, which redemption
  * needs: reading goes through the very service those tools dispatch to.
  */
-function registerChild(contract: LaunchContract, budgetBytes = 8192): Handlers {
+function registerChild(contract: LaunchContract, budgetBytes = 8192, autoDistill = false, agent = AGENT): Handlers {
 	const handlers: Handlers = new Map();
 	const config: ChildRuntimeConfig = {
 		childIndex: CHILD_INDEX,
 		depth: 1,
 		fanoutChild: false,
 		fast: false,
-		synapse: { agent: AGENT, contextBudgetBytes: budgetBytes, contract, runId: RUN_ID, sessionId: "sess-child" },
+		synapse: { agent, autoDistill, contextBudgetBytes: budgetBytes, contract, runId: RUN_ID, sessionId: "sess-child" },
 		waitTool: { enabled: false },
 	};
 	registerSubagentPromptRuntime(
@@ -135,8 +136,8 @@ function openFor(contract: LaunchContract, message = "Task: explain the auth flo
 }
 
 /** Runs the child's `before_agent_start`, which is where redemption reaches the prompt. */
-async function systemPromptAfterStart(handlers: Handlers, systemPrompt: string): Promise<string> {
-	const result = await handlers.get("before_agent_start")?.({ systemPrompt });
+async function systemPromptAfterStart(handlers: Handlers, systemPrompt: string, prompt?: string): Promise<string> {
+	const result = await handlers.get("before_agent_start")?.(prompt === undefined ? { systemPrompt } : { prompt, systemPrompt });
 	if (result === undefined || result === null) return systemPrompt;
 	const rewritten = (result as { systemPrompt?: string }).systemPrompt;
 	return rewritten ?? systemPrompt;
@@ -231,6 +232,66 @@ describe("the parent stops sending bodies, the child starts reading them", () =>
 		const handlers = registerChild(contract);
 		const prompt = await systemPromptAfterStart(handlers, "SYSTEM");
 		assert.equal(prompt, "SYSTEM");
+	});
+});
+
+describe("the planner plans from the task, not from recalled memory", () => {
+	it("recalls nothing into the planner's delegation while the retriever's still carries the handle", async () => {
+		const memoryId = await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+		const contract = contractFor("synapse");
+		const deps = { log: createLog(contract), service: serviceWithin([""]), udsClient: { send: async () => 0 } };
+		const open = (agent: string) => openDelegation({ budgetBytes: 8192, contract, deps, identity: { ...identity(), agent }, message: "Task: explain the auth flow", worktreeRoot: worktree });
+		assert.deepEqual(open("planner")?.envelope.memoryRefs, []);
+		assert.deepEqual(open("retriever")?.envelope.memoryRefs, [memoryId]);
+	});
+});
+
+describe("a redeeming role is sent the blocks as headers only", () => {
+	it("condenses the executor's blocks and leaves the retriever's whole", () => {
+		const contract = contractFor("synapse");
+		const deps = { log: createLog(contract), service: serviceWithin([""]), udsClient: { send: async () => 0 } };
+		const block = `[SYNAPSE result] agent=planner status=completed handle=${"f".repeat(64)} bytes=4000\nKEY LINES:\n- step one of the plan\nFull text, only if needed: synapse_read {"action":"get","memoryId":"${"f".repeat(64)}"}`;
+		const open = (agent: string) => openDelegation({ budgetBytes: 8192, contract, deps, identity: { ...identity(), agent }, message: `Plan:\n${block}`, worktreeRoot: worktree });
+		assert.doesNotMatch(open("executor")?.prompt ?? "", /step one of the plan/);
+		assert.match(open("executor")?.prompt ?? "", /handle=f{64}/);
+		assert.match(open("retriever")?.prompt ?? "", /step one of the plan/);
+	});
+});
+
+describe("a role that would redeem every block is handed the full text instead", () => {
+	const blockFor = (memoryId: string) => `[SYNAPSE result] agent=retriever status=completed handle=${memoryId} bytes=${Buffer.byteLength(BODY)}\nESTABLISHED:\n- the login path is in src/auth.ts\nFull text, only if needed: synapse_read {"action":"get","memoryId":"${memoryId}"}`;
+
+	it("reads the handles in the executor's task at startup, and meters what it read", async () => {
+		const memoryId = await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+		const contract = contractFor("synapse");
+		const handlers = registerChild(contract, 8192, false, "executor");
+		const prompt = await systemPromptAfterStart(handlers, "SYSTEM", `Plan:\n${blockFor(memoryId)}`);
+		assert.ok(prompt.startsWith("SYSTEM"));
+		assert.match(prompt, new RegExp(BODY), "the body arrives without the model spending a turn on it");
+		const redeems = fs.readFileSync(meteringLogPath(contract, RUN_ID), "utf-8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((event) => event.kind === "memory-redeem");
+		assert.equal(redeems.length, 1);
+		assert.ok(redeems[0].bytes > Buffer.byteLength(BODY), "the bytes stay in the account");
+	});
+
+	it("leaves the retriever's blocks as blocks: it needs the plan only as a guide", async () => {
+		const memoryId = await seedMemory("login is verified in src/auth.ts", BODY, "src/auth.ts");
+		const handlers = registerChild(contractFor("synapse"), 8192, false, "retriever");
+		assert.equal(await systemPromptAfterStart(handlers, "SYSTEM", `Plan:\n${blockFor(memoryId)}`), "SYSTEM");
+	});
+});
+
+describe("a child the host distills for is told so", () => {
+	it("stops asking the child to record by hand what the distiller records anyway", async () => {
+		const handlers = registerChild(contractFor("synapse"), 8192, true);
+		const first = await systemPromptAfterStart(handlers, "SYSTEM");
+		assert.ok(first.startsWith("SYSTEM\n\n"), "the note appends; it never rewrites what was already there");
+		assert.ok(first.includes(AUTO_DISTILL_CHILD_NOTE));
+		assert.equal(await systemPromptAfterStart(handlers, "SYSTEM"), first, "one note per prompt, however many turns");
+	});
+
+	it("says nothing when the host does not distill", async () => {
+		const handlers = registerChild(contractFor("synapse"));
+		assert.equal(await systemPromptAfterStart(handlers, "SYSTEM"), "SYSTEM");
 	});
 });
 

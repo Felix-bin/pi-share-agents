@@ -9,8 +9,12 @@ import type { LaunchContract } from "../../src/synapse/lifecycle.ts";
 import { createMemoryStore } from "../../src/synapse/memory-store.ts";
 import {
 	STAGE_OUTPUT_TAG,
+	STAGE_RESULT_FOOTER_LEAD,
+	STAGE_REDEMPTION_HEADER,
 	STAGE_RESULT_MAX_BYTES,
+	condenseStageBlocks,
 	publishStageOutput,
+	redeemStageResults,
 	renderStageResult,
 	stageOutcomeFor,
 	stageResultApplies,
@@ -72,7 +76,7 @@ describe("renderStageResult", () => {
 		assert.equal(first, `[SYNAPSE result] agent=retriever status=completed handle=${MEMORY_ID} bytes=${Buffer.byteLength(LONG_OUTPUT)}`);
 		assert.match(block, /^ESTABLISHED:\n- SYNAPSE_PROTOCOL_VERSION = 2 \(src\/synapse\/envelope\.ts:20\)\n- unknown fields are rejected: additionalProperties false$/m);
 		assert.match(block, /^NOT ESTABLISHED:\n- whether any caller relies on the receipt summary$/m);
-		assert.ok(block.endsWith(`Full text: synapse_read {"action":"get","memoryId":"${MEMORY_ID}"}`));
+		assert.ok(block.endsWith(`${STAGE_RESULT_FOOTER_LEAD}: synapse_read {"action":"get","memoryId":"${MEMORY_ID}"}`));
 		assert.ok(Buffer.byteLength(block) <= STAGE_RESULT_MAX_BYTES);
 		assert.ok(!block.includes("field number 3 of the wire form"), "the body stays in the store");
 	});
@@ -86,7 +90,7 @@ describe("renderStageResult", () => {
 	it("falls back to the substantial bullet lines when there is no status block", () => {
 		const output = ["# Plan", ...Array.from({ length: 30 }, (_, index) => `- step ${index}: read the file that defines part ${index} of the protocol and report it`)].join("\n");
 		const block = renderStageResult({ agent: "planner", memoryId: MEMORY_ID, output });
-		assert.match(block, /^ESTABLISHED:\n- step 0: read the file/m);
+		assert.match(block, /^KEY LINES:\n- step 0: read the file/m);
 		assert.ok(!block.includes("NOT ESTABLISHED:"));
 		assert.ok(Buffer.byteLength(block) <= STAGE_RESULT_MAX_BYTES);
 	});
@@ -97,6 +101,15 @@ describe("renderStageResult", () => {
 		const lines = block.split("\n").filter((line) => line.startsWith("- "));
 		assert.ok(lines.length <= 12);
 		assert.ok(lines.every((line) => line.length <= 202), "two hundred characters plus the bullet");
+		assert.ok(Buffer.byteLength(block) <= STAGE_RESULT_MAX_BYTES);
+	});
+
+	it("carries a plan's numbered steps, so the next stage need not redeem it to see them", () => {
+		const steps = Array.from({ length: 5 }, (_, index) => `${index + 1}. **retriever** — read musique/00${index}.md and quote the line that names the city ${"z".repeat(300)}`);
+		const block = renderStageResult({ agent: "planner", memoryId: MEMORY_ID, output: ["## Plan", "", ...steps].join("\n") });
+		assert.ok(block.includes("KEY LINES:"));
+		assert.ok(!block.includes("ESTABLISHED:"), "a plan's steps are not findings the stage vouched for");
+		assert.equal(block.split("\n").filter((line) => line.startsWith("- ") && line.includes("**retriever**")).length, 5);
 		assert.ok(Buffer.byteLength(block) <= STAGE_RESULT_MAX_BYTES);
 	});
 
@@ -158,5 +171,62 @@ describe("stageOutcomeFor", () => {
 		assert.equal(stageOutcomeFor({ agent: "worker", contract: contractIn(storeRoot, "worker"), output: LONG_OUTPUT, provenance, taskText: "t" }), null);
 		assert.equal(stageOutcomeFor({ agent: "retriever", contract: contractIn(storeRoot), output: "   ", provenance, taskText: "t" }), null);
 		assert.equal(fs.existsSync(path.join(storeRoot, "memory")), false, "nothing was published");
+	});
+});
+
+describe("redeemStageResults", () => {
+	const PLAN_ID = "b".repeat(64);
+	const EVIDENCE_ID = "c".repeat(64);
+	const bodies: Record<string, string> = { [PLAN_ID]: "1. retriever — read tag.py", [EVIDENCE_ID]: "ESTABLISHED:\n- TagBytes encodes with b64encode (tag.py:165)" };
+	const readBody = (memoryId: string) => {
+		const text = bodies[memoryId];
+		if (text === undefined) throw new Error(`object-unavailable: ${memoryId}`);
+		return { text, totalBytes: Buffer.byteLength(text) };
+	};
+	const block = (agent: string, id: string) => renderStageResult({ agent, memoryId: id, output: `${"x".repeat(2000)}\nESTABLISHED:\n- a finding long enough to keep` });
+
+	it("hands over the whole text behind every block, once per handle", () => {
+		const prompt = ["Plan:", block("planner", PLAN_ID), "", "Evidence:", block("retriever", EVIDENCE_ID), "", "Again:", block("planner", PLAN_ID)].join("\n");
+		const result = redeemStageResults({ prompt, readBody });
+		assert.equal(result.records, 2);
+		assert.equal(result.left, 0);
+		assert.ok(result.section.startsWith(STAGE_REDEMPTION_HEADER));
+		assert.ok(result.section.includes(bodies[PLAN_ID]!) && result.section.includes(bodies[EVIDENCE_ID]!));
+		assert.equal(result.bytes, Buffer.byteLength(result.section));
+	});
+
+	it("leaves an inline block alone: its text is already in the task", () => {
+		const inline = renderStageResult({ agent: "planner", memoryId: PLAN_ID, output: "short plan" });
+		assert.match(inline, /\(full text inline\)/);
+		assert.deepEqual(redeemStageResults({ prompt: inline, readBody }), { bytes: 0, left: 0, records: 0, section: "" });
+	});
+
+	it("leaves a handle it cannot read whole in the task, for the child to read itself", () => {
+		const missing = "d".repeat(64);
+		const prompt = [block("planner", PLAN_ID), block("retriever", missing)].join("\n");
+		const tight = redeemStageResults({ budgetBytes: 10, prompt, readBody });
+		assert.equal(tight.records, 0);
+		assert.equal(tight.left, 2, "over budget and unreadable are both left, never half-read");
+		const partial = redeemStageResults({ prompt, readBody: (id) => ({ text: "cut", totalBytes: id === PLAN_ID ? 999 : 3 }) });
+		assert.equal(partial.records, 1, "a truncated read is not the whole text");
+	});
+});
+
+describe("condenseStageBlocks", () => {
+	const ID = "e".repeat(64);
+	const block = renderStageResult({ agent: "retriever", memoryId: ID, output: `${"x".repeat(2000)}\nESTABLISHED:\n- a finding long enough to keep` });
+
+	it("cuts a block to its header, which still carries the handle the redemption reads", () => {
+		const task = `Plan:\n${block}\n\nNow run it.`;
+		const condensed = condenseStageBlocks(task);
+		assert.ok(!condensed.includes("a finding long enough to keep"));
+		assert.ok(condensed.endsWith("\n\nNow run it."), "text around the block is kept");
+		const found = redeemStageResults({ prompt: condensed, readBody: () => ({ text: "whole", totalBytes: 5 }) });
+		assert.equal(found.records, 1);
+	});
+
+	it("leaves an inline block whole: nothing else will hand its text over", () => {
+		const inline = renderStageResult({ agent: "planner", memoryId: ID, output: "short plan" });
+		assert.equal(condenseStageBlocks(inline), inline);
 	});
 });

@@ -732,6 +732,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				// Bounded by its own budget and never rejecting (see the callee).
 				stageOutcome = await closeChildDelegation(delegation, {
 					cancelled: interrupted || stopped,
+					cwd: createInput.cwd,
 					finalOutput: getFinalOutput(messages),
 					runtime: delegationRuntime,
 					taskText: input.prompt,
