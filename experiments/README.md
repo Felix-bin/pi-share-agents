@@ -1,6 +1,6 @@
 # experiments/
 
-新的同 harness 三臂 SWE-bench Lite 实验见 [`swebench/README.md`](swebench/README.md)。下述 `bench/` 是旧实验，CrewAI / AutoGen 对比不纳入新的同 Pi harness 结论。
+新的同 harness 三臂 SWE-QA 实验见 [`sweqa/README.md`](sweqa/README.md)。下述 `bench/` 是旧实验，CrewAI / AutoGen 对比不纳入新的同 Pi harness 结论。
 
 SYNAPSE 评测所需的一切（产品代码除外）：多臂评测装置、分析脚本、早期实验脚本和公开数据集。
 实验方案的完整说明见 [`docs/experiments/experiment-design.md`](../docs/experiments/experiment-design.md)，内容包括：实验设计、冻结的分析口径、指标定义、已有结果和口径修订记录。

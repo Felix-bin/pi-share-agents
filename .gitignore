@@ -29,7 +29,7 @@ tmp/
 /pr-*-gate*.json
 /pr-*-review*.md
 experiments/legacy/p50b/__pycache__/
-experiments/swebench/__pycache__/
+experiments/sweqa/__pycache__/
 experiments/legacy/p50b/.venv/
 # Downloaded datasets, built worktree and venv (see experiments/README.md)
 experiments/data/

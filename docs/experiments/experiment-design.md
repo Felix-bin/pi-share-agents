@@ -1,6 +1,6 @@
 # SYNAPSE 实验方案设计
 
-> **新实验入口（2026-09-26）**：同一 Pi harness 下比较本仓库、nicobailon 和 tintinweb 三种子代理扩展的 SWE-bench Lite 实验见 [`experiments/swebench/README.md`](../../experiments/swebench/README.md)。本文件中的 CrewAI / AutoGen 对比保留为历史记录，不能用作同 harness 的框架机制结论。
+> **新实验入口（2026-09-26）**：同一 Pi harness 下比较本仓库、nicobailon 和 tintinweb 三种子代理扩展的 SWE-QA 实验见 [`experiments/sweqa/README.md`](../../experiments/sweqa/README.md)，设计见 [`docs/superpowers/specs/2026-09-26-sweqa-three-arm-design.md`](../superpowers/specs/2026-09-26-sweqa-three-arm-design.md)。它取代了同日短暂存在的 SWE-bench Lite 版本。本文件中的 CrewAI / AutoGen 对比保留为历史记录，不能用作同 harness 的框架机制结论。
 
 > 赛题：一种面向多智能体协作的低开销通信、状态传递与共享记忆机制
 >
