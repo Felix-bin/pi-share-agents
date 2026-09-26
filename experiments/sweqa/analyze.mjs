@@ -57,35 +57,62 @@ function launches(args) {
 		|| [args.agent, args.subagent_type].some((x) => typeof x === "string");
 }
 
+const agentOf = (system) => /<active_agent name="([^"]+)"\s*\/>/.exec(system)?.[1] ?? null;
+// Bytes of `after` that differ from `before`, outside their common prefix and suffix.
+function changedBytes(before, after) {
+	let i = 0;
+	while (i < before.length && i < after.length && before[i] === after[i]) i++;
+	let j = 0;
+	while (j < Math.min(before.length, after.length) - i && before[before.length - 1 - j] === after[after.length - 1 - j]) j++;
+	return utf8(after.slice(i, after.length - j));
+}
+
+// A call continues the session whose previous conversation (system prompt aside) is a prefix of its own, or
+// repeats it after a failed call (a retry). The system prompt may be rewritten within a session, as when a
+// package registers a tool after the first turn, but never to another agent's: that is a new session.
 export function attributeSessions(calls) {
 	const sessions = [], unattributed = [];
 	for (const c of [...calls].sort((a, b) => a.seq - b.seq)) {
 		const messages = c.request?.messages ?? [];
-		const keys = messages.map(keyOf);
+		const keys = messages.filter((m) => !isSystem(m)).map(keyOf);
+		const system = systemText(messages);
 		let best = null;
 		for (const s of sessions) {
 			const last = s.lastKeys;
-			if (last.length < keys.length && last.every((k, i) => k === keys[i]) && (!best || last.length > best.lastKeys.length)) best = s;
+			const prefix = last.every((k, i) => k === keys[i]);
+			if (!prefix || !(last.length < keys.length || (s.lastFailed && last.length === keys.length))) continue;
+			if (agentOf(s.lastSystem) !== agentOf(system)) continue;
+			const rank = [s.lastSystem === system ? 1 : 0, last.length];
+			if (!best || rank[0] > best.rank[0] || (rank[0] === best.rank[0] && rank[1] > best.rank[1])) best = { s, rank };
 		}
-		if (best) { best.calls.push(c.seq); best.lastKeys = keys; continue; }
-		const system = systemText(messages);
+		if (best) {
+			const s = best.s;
+			if (s.lastSystem !== system) s.systemRewrites += changedBytes(s.lastSystem, system);
+			Object.assign(s, { lastKeys: keys, lastSystem: system, lastFailed: !c.response });
+			s.calls.push(c.seq);
+			continue;
+		}
 		const inherited = hasHistory(messages);
 		if (inherited && sessions.some((s) => s.system === system)) { unattributed.push(c.seq); continue; }
-		sessions.push({ index: sessions.length, calls: [c.seq], lastKeys: keys, system, inheritedHistory: inherited,
+		sessions.push({ index: sessions.length, calls: [c.seq], lastKeys: keys, lastSystem: system, lastFailed: !c.response, system,
+			systemRewrites: 0, inheritedHistory: inherited,
 			firstUser: flat(messages.filter((m) => m.role === "user").map((m) => textOf(m.content)).join("\n")),
 			parent: false });
 	}
 	const parent = sessions[0] && !sessions[0].inheritedHistory ? sessions[0] : null;
 	if (parent) parent.parent = true;
 	const restarts = parent ? sessions.filter((s) => s !== parent && !s.inheritedHistory && s.firstUser === parent.firstUser).length : 0;
-	for (const s of sessions) delete s.lastKeys;
+	for (const s of sessions) { delete s.lastKeys; delete s.lastSystem; delete s.lastFailed; }
 	return { sessions, unattributed, parentFound: Boolean(parent), restarts };
 }
 
+// A successful call without usage is missing; a failed call (network error, HTTP error) is counted apart.
 function sumUsage(list) {
 	const out = Object.fromEntries(usageKeys.map((k) => [k, 0]));
 	let missing = 0;
-	for (const u of list) {
+	for (const c of list) {
+		const u = c.usage;
+		if (!c.response) continue;
 		if (!u || u === "unavailable") { missing++; continue; }
 		for (const k of usageKeys) out[k] += u[k] ?? 0;
 	}
@@ -148,13 +175,14 @@ export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, place
 	const depthOf = (s) => (s.spawnedBy === null ? (s.parent ? 0 : 1) : 1 + depthOf(sessions[s.spawnedBy]));
 	const spawnedCall = new Map(spawns.map((sp) => [sp.id, sp.children > 0]));
 
-	const comm = { downlink: { task: 0, injected: 0, system: 0 }, uplink: { results: 0, injected: 0 }, pull: 0, control: 0, work: 0, unclassified: {}, partial: false };
-	const audit = { leaks: [], outOfBounds: 0, outOfBoundsPaths: [], projectInstructions: 0 };
+	const comm = { downlink: { task: 0, injected: 0, system: 0 }, uplink: { results: 0, injected: 0 }, pull: 0, control: 0, work: 0, unclassified: {}, partial: false,
+		systemRewrites: sessions.reduce((n, s) => n + s.systemRewrites, 0) };
+	const audit = { leaks: [], outOfBounds: 0, outOfBoundsPaths: [], projectInstructions: 0, failedCalls: calls.filter((c) => !c.response).length };
 	const inside = [workRoot, ...ownDirs];
 	const leakPattern = new RegExp(`${repoRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/experiments|swe-qa|sample\\.jsonl|llm-as-a-judge`, "i");
 	for (const s of sessions) {
 		const own = s.calls.map((q) => bySeq.get(q));
-		s.usage = sumUsage(own.map((c) => c.usage));
+		s.usage = sumUsage(own);
 		s.depth = depthOf(s);
 		if (s.system.includes("<project_instructions")) audit.projectInstructions++;
 		const first = own[0].request.messages;
@@ -209,7 +237,7 @@ export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, place
 	const byAgent = {}, tokensByAgent = {};
 	for (const s of children) {
 		byAgent[s.agentType] = (byAgent[s.agentType] ?? 0) + 1;
-		(tokensByAgent[s.agentType] ??= []).push(...s.calls.map((q) => bySeq.get(q).usage));
+		(tokensByAgent[s.agentType] ??= []).push(...s.calls.map((q) => bySeq.get(q)));
 	}
 	const parentSession = sessions.find((s) => s.parent);
 	const parentCalls = parentSession ? parentSession.calls.map((q) => bySeq.get(q)) : [];
@@ -218,9 +246,9 @@ export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, place
 		dispatch: { children: children.length, byAgent, maxDepth: Math.max(0, ...children.map((s) => s.depth)),
 			delegationCalls: spawns.filter((sp) => sp.session === parentSession?.index).length,
 			spawningCalls: spawns.filter((sp) => sp.session === parentSession?.index && sp.children > 0).length },
-		tokens: { parent: sumUsage(parentCalls.map((c) => c.usage)), children: sumUsage(children.flatMap((s) => s.calls.map((q) => bySeq.get(q).usage))),
+		tokens: { parent: sumUsage(parentCalls), children: sumUsage(children.flatMap((s) => s.calls.map((q) => bySeq.get(q)))),
 			byAgent: Object.fromEntries(Object.entries(tokensByAgent).map(([k, v]) => [k, sumUsage(v)])),
-			total: sumUsage(calls.map((c) => c.usage)).total },
+			total: sumUsage(calls).total },
 		comm, audit,
 		answer: textOf(parentCalls.at(-1)?.response?.content),
 	};

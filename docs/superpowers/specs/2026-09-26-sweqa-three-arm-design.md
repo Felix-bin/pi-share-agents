@@ -276,4 +276,7 @@ pilot 的数据不与正式数据合并。pilot 暴露问题后，修改会在�
 - pilot3（flask#37 四臂完成，requests#7 只完成 tintinweb，其余中止；数据不用于任何结论）暴露的两个问题，均在 pilot4 之前处置：
   1. **agent 目录暴露。** tintinweb 的父会话从 `PI_CODING_AGENT_DIR` 找到了自己的 agent 目录，并对其执行 `ls`、`cat`。这个目录位于 `experiments/data/sweqa/agent/` 下，往上两层就是 `sample.jsonl`，旁边的 `runs/` 里还有其他臂的答案。此外，agent 目录会跨尝试积累状态（tintinweb 的 `sessions/`，share 的 `missions/`、`run-history.jsonl`），违反 §2.2 的"跨题状态：没有"。处置：每次尝试只复制加载插件所需的文件（`settings.json`、`models.json`、`bin/`、`npm/`），放到工作根下的 `.agent/<题>/<臂>`，并把本地包路径改写为绝对路径；尝试结束后，把 agent 在该目录里写下的内容存入证据（不含 `npm/` 和 `bin/`），再删除副本。安装目录本身不再被任何尝试改写。分析时把这个副本视为该尝试自己的目录。
   2. **后台派发的归因。** nico 以后台方式派发（调用立即返回句柄），子会话在父会话进行下一次调用之后才启动，执行窗口因此已经关闭；任务文本又藏在 workflowScript 里，按文本也匹配不上。处置：§3.1 第 4 条的归属规则变为三级：任务文本匹配 → 执行窗口 → 此前最近一次"发起类"委派调用（带任务、agent 或 workflowScript；`list`、`status`、`interrupt` 等不算）。每个子会话记录它按哪一级归属（`attribution`）。
+- pilot4（仅 flask#37，四臂都跑完，数据不用于任何结论）的分析暴露了两处归因问题，已修正，只影响分析：
+  1. nico 父会话的 system prompt 在第一轮之后被改写：`subagent` 工具延后注册，prompt 多了一行工具说明，原来的前缀链接因此断开。处置：会话链接只比较对话消息，不比较 system prompt；允许同一会话的 system prompt 被改写，但 `<active_agent>` 身份不能变，身份变了就是另一个会话。被改写的字节单独报告为 `systemRewrites`，不计入通信。
+  2. tintinweb 的首次调用遇到网络失败，Pi 原样重试了一次。原来的规则把重试当成了"父会话重启"。处置：内容与上一次失败调用完全相同的调用算作重试，归入同一会话；只有成功的调用缺 usage 才判无效，失败的调用计入 `audit.failedCalls`。
 

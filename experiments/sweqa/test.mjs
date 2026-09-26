@@ -200,6 +200,27 @@ test("children of a background launch belong to it even after the caller has mov
 	assert.equal(m.comm.uplink.results, bytes("started run 42") + bytes("scout: found it"));
 });
 
+test("a retry of a failed call and a rewritten system prompt stay in their session", () => {
+	const calls = scenario();
+	// The parent's first call failed at the network and was sent again unchanged.
+	calls.unshift({ ...calls[0], seq: 0, status: 0, response: undefined, usage: "unavailable" });
+	// The parent's system prompt gains a tool line after its first turn.
+	calls[2].request = { ...calls[2].request, messages: [sys("parent system\n- subagent: delegate"), ...calls[2].request.messages.slice(1)] };
+	calls[6].request = { ...calls[6].request, messages: [sys("parent system\n- subagent: delegate"), ...calls[6].request.messages.slice(1)] };
+	const m = analyzeAttempt({ calls, arm: "nico", workRoot: WORK, repoRoot: "/repo" });
+	assert.deepEqual(m.problems, []);
+	assert.deepEqual(m.sessions[0].calls, [0, 1, 2, 6]);
+	assert.equal(m.dispatch.children, 1);
+	assert.equal(m.audit.failedCalls, 1);
+	assert.equal(m.comm.systemRewrites, bytes("\n- subagent: delegate"));
+	// A forked child declares another agent: even extending the parent's conversation, it is a session of its own.
+	const forked = scenario();
+	forked.push(call([sys('<active_agent name="worker"/>'), ...forked[5].request.messages.slice(1), user("continue")], asst("ok")));
+	const f = analyzeAttempt({ calls: forked, arm: "tintinweb", workRoot: WORK, repoRoot: "/repo" });
+	assert.equal(f.dispatch.children, 2);
+	assert.equal(f.sessions[2].agentType, "worker");
+});
+
 test("leak audit invalidates benchmark access and counts out-of-bounds paths", () => {
 	seq = 0;
 	const P = [sys("parent"), user(PROMPT)];
