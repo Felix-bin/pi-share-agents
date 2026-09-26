@@ -127,6 +127,17 @@ test("results fetched from children count as uplink, whatever the fetch tool", (
 	assert.deepEqual(m.comm.unclassified, {});
 });
 
+test("a developer-role system prompt is a system prompt", () => {
+	const calls = scenario().map((c) => ({ ...c, request: { ...c.request, messages: c.request.messages.map((m) => (m.role === "system" ? { ...m, role: "developer" } : m)) } }));
+	const sys0 = scenario();
+	for (const c of calls.slice(2, 5)) c.request.messages[0].content = `<active_agent name="retriever"/>\n${c.request.messages[0].content}`;
+	const m = analyzeAttempt({ calls, arm: "share", workRoot: WORK, repoRoot: "/repo" });
+	const plain = analyzeAttempt({ calls: sys0, arm: "share", workRoot: WORK, repoRoot: "/repo" });
+	assert.equal(m.comm.downlink.task, plain.comm.downlink.task);
+	assert.equal(m.sessions[1].agentType, "retriever");
+	assert.equal(m.sessions[1].agentTypeSource, "system");
+});
+
 test("an attempt without a child, with a foreign model, or with an unattributable call is invalid", () => {
 	const calls = scenario();
 	const noChild = analyzeAttempt({ calls: calls.filter((c) => ![3, 4, 5].includes(c.seq)), arm: "share", workRoot: WORK, repoRoot: "/repo" });

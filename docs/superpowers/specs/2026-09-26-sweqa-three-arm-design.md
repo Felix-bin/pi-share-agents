@@ -272,3 +272,4 @@ pilot 的数据不与正式数据合并。pilot 暴露问题后，修改会在�
 
   随之调整：§3.1 父会话按第一次调用来识别；share 产品源码的冻结范围加入 `prompts/` 和 `skills/`。
   pilot3 开跑时核实：父会话有了默认工具之后，pi-subagents 系的父会话还会拿到 `bg_wait` 和 `subagent_supervisor`。两者返回的都是子会话的结果或请求，归为取回类，计入上行。
+- pilot3 分析时发现：Pi 发给 commandcode 的请求里，system prompt 的 role 是 `developer`。分析器原先只认 `system`，结果 agent 类型识别失败，system prompt 还被当成下行任务。现在两种 role 都视为 system prompt。这一处只影响分析，已有数据可以直接重算。

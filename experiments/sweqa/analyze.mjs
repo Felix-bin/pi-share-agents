@@ -17,8 +17,10 @@ export function textOf(content) {
 }
 
 const flat = (text) => text.replace(/\s+/g, " ").trim();
+// OpenAI-style reasoning models receive the system prompt as a "developer" message (Pi does this for commandcode).
+const isSystem = (m) => m.role === "system" || m.role === "developer";
 const firstUserText = (messages) => textOf(messages.find((m) => m.role === "user")?.content);
-const systemText = (messages) => messages.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
+const systemText = (messages) => messages.filter(isSystem).map((m) => textOf(m.content)).join("\n");
 const hasHistory = (messages) => messages.some((m) => m.role === "assistant" || m.role === "tool");
 // Reasoning is left out of the key: it is echoed back optionally and never changes which turn a message is.
 const keyOf = (m) => JSON.stringify([m.role, textOf(m.content), (m.tool_calls ?? []).map((c) => [c.id, c.function?.name, c.function?.arguments]), m.tool_call_id ?? null]);
@@ -142,14 +144,14 @@ export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, place
 		s.depth = depthOf(s);
 		if (s.system.includes("<project_instructions")) audit.projectInstructions++;
 		const first = own[0].request.messages;
-		if (!s.parent) comm.downlink.task += first.filter((m) => m.role !== "system").reduce((n, m) => n + utf8(textOf(m.content)), 0);
+		if (!s.parent) comm.downlink.task += first.filter((m) => !isSystem(m)).reduce((n, m) => n + utf8(textOf(m.content)), 0);
 		s.pairs = [];
 		for (let i = 1; i < own.length; i++) {
 			const prev = own[i - 1].request.messages, cur = own[i].request.messages, added = cur.slice(prev.length);
 			const names = new Map(cur.flatMap((m) => (m.tool_calls ?? []).map((c) => [c.id, c.function?.name])));
 			for (const m of added) {
 				const size = utf8(textOf(m.content));
-				if (m.role === "user" || m.role === "system") {
+				if (m.role === "user" || isSystem(m)) {
 					if (s.parent) comm.uplink.injected += size; else comm.downlink.injected += size;
 				} else if (m.role === "tool") {
 					const name = names.get(m.tool_call_id);
