@@ -2,7 +2,7 @@
 
 - 日期：2026-09-26
 - 状态：设计已逐节确认（2026-09-26 会话）；pilot2 之后按用户裁定改为四臂（见修订记录）
-- 相关：`experiments/swebench/`（本设计取代它）；`experiments/bench/llm-proxy.mjs`；`experiments/analysis/score-public.mjs`（SWE-QA judge 与 bootstrap 的现有实现）；`docs/experiments/experiment-design.md` §5.3、§7.1
+- 相关：`experiments/openeuler/sweqa/`（实现，2026-09-27 起的位置）；`experiments/windows/sweqa/`（Windows 移植）；`experiments/swebench/`（本设计取代它）；`docs/experiments/experiment-design.md` §5.3、§7.1
 - 取代：`a5e961f` 引入的 SWE-bench Lite 三臂 harness（硬切换，不保留）
 
 ## 1. 背景
@@ -194,12 +194,14 @@ share-pipeline 和 share 用的是同一个包，差别只在于它按插件推�
 
 ## 6. 文件布局
 
+> 2026-09-27 起，下表的文件位于 `experiments/openeuler/sweqa/`，记录代理 `llm-proxy.mjs` 也一并迁入；Windows 移植只有平台层的 `run.mjs`、`prepare.mjs`，放在 `experiments/windows/sweqa/`（见修订记录）。
+
 `experiments/swebench/` 改名为 `experiments/sweqa/`，删掉只和 SWE-bench 有关的部分（`download.py`、`export.mjs`、patch 提取、Docker 评测说明）。
 
 | 文件 | 职责 |
 |---|---|
 | `matrix.mjs` | 臂、包、委派工具、父会话工具、通信类工具清单、题面、抽样函数 |
-| `prepare.mjs` | 安装三个扩展；建仓库镜像；解析完整 sha；冻结 `sample.jsonl` |
+| `prepare.mjs` | 安装四个臂；按固定 commit 拉取 SWE-QA-Bench；建仓库镜像；解析完整 sha；冻结 `sample.jsonl` |
 | `run.mjs` | 逐题并发跑四个臂；manifest 记录 share 产品源码（`src`、`index.ts`、`prompts`、`skills`、`package*.json`）的 git 对象哈希，续跑时比对；收窄 PATH、包装 `pi`；导出和清理工作树；取答案；写证据和 `result.json` |
 | `analyze.mjs` | 会话归因、分发、token、通信、泄露审计、比例标定；写每次尝试的 `metrics.json` |
 | `score.mjs` | SWE-QA judge；写 `scores.jsonl` |
@@ -213,7 +215,7 @@ share-pipeline 和 share 用的是同一个包，差别只在于它按插件推�
 
 ## 7. 测试与 pilot
 
-### 7.1 自动测试（`node --test experiments/sweqa/test.mjs`）
+### 7.1 自动测试（`npm run test:sweqa`；Windows 移植：`npm run test:sweqa:windows`）
 
 - **抽样**：同一种子下结果确定；每个仓库 4 题；源下标不重复；样本文件已存在时拒绝覆盖。
 - **会话归因**：前缀链接；多个候选时取最长前缀；父会话识别；子会话再派子会话；归因不了的调用判无效；模型不符判无效。
@@ -285,4 +287,19 @@ pilot 的数据不与正式数据合并。pilot 暴露问题后，修改会在�
   1. **父会话只给委派工具**：share、share-pipeline、nico 用 `subagent`，tintinweb 用 `Agent`。撤销 pilot2 之后放开的"默认工具"。pilot4 里 share 和 nico 的父会话自己动手读代码，父会话 token 分别达到 26 万和 24 万。
   2. **不加沙箱**：曾经实现过一个基于 `unshare -Urm --pid` 的 mount namespace 沙箱，并通过了测试。但它需要处理 PID 1 忽略 SIGTERM、`unshare --fork` 在等待子进程时不响应 SIGTERM 等问题，用户选择先不加，代码已全部移除。宿主机可见的风险见 §2.2"隔离"。
   3. **不给 Python 环境**：share-pipeline 的 executor 只能读代码。pilot4 中它曾为了找依赖执行 `find / -maxdepth 8`，耗时 649 秒，并因此看到了本仓库 `experiments/data` 下的路径，这次尝试按泄露规则判为无效。
+- 2026-09-27，正式跑 `sweqa-main-20260927` 在第 23/60 题（pytest#34）中止。share-pipeline 的 agent 在自己的 TMPDIR 里运行了 pytest 仓库自带的测试，留下一个没有读权限的目录。runner 在 `finally` 里把 TMPDIR 复制进证据时遇到 `EACCES`，异常穿过 `Promise.all`，整个 runner 退出。处置如下：
+  1. 复制和删除之前，先恢复属主对整棵目录树的读写权限；
+  2. 证据复制或清理仍然失败时，写入该尝试的 `evidence-errors.log`，不中断跑数。
+
+  用户裁定这次运行不续跑，改用新的运行 id 重跑。已完成的 92 次尝试只留在本地，不进入任何结论。另外，agent 能运行 pytest，说明宿主机上有 python3。§2.2 所说的"不提供 Python 环境"，指的是不为被测仓库安装依赖，报告里需要注明这一点。
+- 2026-09-27，目录调整（用户裁定），在上一条所说的重跑之前完成：
+  1. 实现从 `experiments/sweqa/` 移到 `experiments/openeuler/sweqa/`，记录代理 `llm-proxy.mjs` 及其测试一并迁入。
+  2. 旧实验 `experiments/bench/`、`experiments/analysis/` 和 `experiments/legacy/*.mjs` 删除；`legacy/records/` 保留，因为产品代码引用了它。
+  3. SWE-QA-Bench 改由 prepare 按固定 commit `c13deac7` 拉取。原先由 `bench/prepare-public-data.sh` 以 depth 1 拉取，WSL 上已有的副本正是这个 commit，样本不变。
+  4. `package.json` 里的 `test:bench` 改为 `test:sweqa`、`test:sweqa:windows`。`package.json` 在 share 产品源码的冻结范围内，所以新运行的 `shareSource` 哈希会变；这一处只改了测试脚本，不改变被测扩展的行为。
+- 2026-09-27，新增 Windows 移植（`experiments/windows/sweqa/`），在任何 Windows 数据产生之前完成：
+  1. 臂、模型、启动参数、题面、样本、计量、judge 和判定规则，都与 openEuler 共用同一份代码；样本必须与 openEuler 的逐字节相同。
+  2. 平台层的差异列在该目录的 README 里，包括 PATH 与 `pi` 包装器、`taskkill /T`、`rg.exe` / `fd.exe`、每次尝试独立的 TMP / TEMP / APPDATA、以 LF 导出的快照。
+  3. `analyze.mjs` 按 manifest 的 `platform` 选择路径折叠规则：Windows 下，`C:\x`、`C:/x` 和 Git Bash 的 `/c/x` 视为同一路径。openEuler 的行为不变。
+  4. Windows 的数据是独立的运行，不与 openEuler 的数据合并。
 

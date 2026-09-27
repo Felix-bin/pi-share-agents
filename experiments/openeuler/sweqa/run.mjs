@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-// Runs every sampled SWE-QA question on the three arms concurrently (spec §2). Metering is offline: analyze.mjs.
+// Runs every sampled SWE-QA question on the four arms concurrently (spec §2). Metering is offline: analyze.mjs.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
-import { startLlmProxy } from "../bench/llm-proxy.mjs";
+import { startLlmProxy } from "./llm-proxy.mjs";
 import { ARMS, MODEL, PARENT_TOOLS, SHARE_ARMS, evidenceName, loadSample, sha256, taskPrompt } from "./matrix.mjs";
 
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const defaultOut = path.join(repo, "experiments/data/sweqa");
 const defaultPi = path.resolve(repo, "../pi-web/node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
 if (process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy) {
@@ -247,14 +247,31 @@ async function runArm(item, arm, setup, apiKey) {
 		console.error(`[sweqa] ${attemptKey}: ${error}`);
 	} finally {
 		if (proxy) await proxy.close();
+		// Evidence handling never aborts the run: a failure is logged beside the evidence and the next attempt goes on.
+		const guarded = (step, fn) => {
+			try { fn(); } catch (error) { fs.appendFileSync(path.join(evidence, "evidence-errors.log"), `${step}: ${error}\n`); }
+		};
 		for (const [dir, keep] of [[storageRoot, "state"], [tmpDir, "tmp"]]) {
-			if (fs.existsSync(dir)) fs.cpSync(dir, path.join(evidence, keep), { recursive: true, verbatimSymlinks: true });
+			if (fs.existsSync(dir)) guarded(`copy ${keep}`, () => { unlock(dir); fs.cpSync(dir, path.join(evidence, keep), { recursive: true, verbatimSymlinks: true }); });
 		}
 		// What the attempt wrote into its agent directory is evidence; the copied package and binaries are not.
-		if (fs.existsSync(agentDir)) fs.cpSync(agentDir, path.join(evidence, "agent"), { recursive: true, verbatimSymlinks: true,
-			filter: (src) => !["npm", "bin"].includes(path.relative(agentDir, src).split(path.sep)[0]) });
-		for (const dir of [cwd, storageRoot, tmpDir, agentDir]) fs.rmSync(dir, { recursive: true, force: true });
+		if (fs.existsSync(agentDir)) guarded("copy agent", () => { unlock(agentDir); fs.cpSync(agentDir, path.join(evidence, "agent"), { recursive: true, verbatimSymlinks: true,
+			filter: (src) => !["npm", "bin"].includes(path.relative(agentDir, src).split(path.sep)[0]) }); });
+		for (const dir of [cwd, storageRoot, tmpDir, agentDir]) guarded(`remove ${dir}`, () => { unlock(dir); fs.rmSync(dir, { recursive: true, force: true }); });
 	}
+}
+
+// Agents can leave trees they cannot read back (a pytest fixture makes its tmp directory read-only): restore the
+// owner's access before the tree is copied or removed. Symbolic links are left alone.
+function unlock(target) {
+	let stat;
+	try { stat = fs.lstatSync(target); } catch { return; }
+	if (stat.isSymbolicLink()) return;
+	try { fs.chmodSync(target, stat.mode | (stat.isDirectory() ? 0o700 : 0o600)); } catch {}
+	if (!stat.isDirectory()) return;
+	let entries = [];
+	try { entries = fs.readdirSync(target); } catch {}
+	for (const entry of entries) unlock(path.join(target, entry));
 }
 
 // Only the recorder holds the key, and only from the environment: it is never written to disk or the manifest.
@@ -298,6 +315,7 @@ async function main() {
 		if (process.exitCode) return;
 		await Promise.all(ARMS.map((arm) => runArm(item, arm, setups[arm], apiKey)));
 	}
+	unlock(workRoot);
 	fs.rmSync(workRoot, { recursive: true, force: true });
 }
 

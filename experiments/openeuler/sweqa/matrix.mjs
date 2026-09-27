@@ -14,6 +14,18 @@ export const MODEL = { provider: "commandcode", id: "deepseek/deepseek-v4.1-flas
 	baseUrl: "https://api.commandcode.ai/provider/v1", maxTokens: 32768, contextWindow: 1048576 };
 export const PER_REPO = 4;
 export const SEED = 20260926;
+// SWE-QA-Bench (questions, pinned repository commits, judge prompt) at the commit every sample was drawn from.
+export const BENCHMARK = { url: "https://github.com/peng-weihan/SWE-QA-Bench.git", commit: "c13deac7a0d99b0ca2e593e004c4739475785b08" };
+
+// Clones the benchmark at its pinned commit when absent; refuses a checkout at any other commit.
+export function ensureBenchmark(dir, git) {
+	if (!fs.existsSync(path.join(dir, ".git"))) {
+		git(["clone", "--quiet", "--filter=blob:none", "--no-checkout", BENCHMARK.url, dir]);
+		git(["-C", dir, "checkout", "--quiet", BENCHMARK.commit]);
+	}
+	const head = git(["-C", dir, "rev-parse", "HEAD"]);
+	if (head !== BENCHMARK.commit) throw new Error(`${dir} is at ${head}, not the pinned SWE-QA-Bench ${BENCHMARK.commit}`);
+}
 
 // Tool results are classified by name (spec §3.4). Work tools touch the repository. Spawn tools start
 // children; their results are uplink when they did, control (catalogs, guides, status) when they did not.

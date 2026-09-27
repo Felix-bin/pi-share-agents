@@ -344,6 +344,8 @@ process.stdin.on("data", (chunk) => { input += chunk; let at; while ((at = input
       packages: JSON.parse(fs.readFileSync(process.env.PI_CODING_AGENT_DIR + "/settings.json", "utf8")).packages };
     fs.writeFileSync(process.env.PI_CODING_AGENT_DIR + "/run-history.jsonl", "state");
     fs.writeFileSync(process.env.TMPDIR + "/artifact.md", "kept");
+    // A tree the agent left unreadable (as a pytest fixture does) must not abort the run or lose evidence.
+    fs.mkdirSync(process.env.TMPDIR + "/locked"); fs.writeFileSync(process.env.TMPDIR + "/locked/f", "x"); fs.chmodSync(process.env.TMPDIR + "/locked", 0o000);
     console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(facts) }] } }));
     console.log(JSON.stringify({ type: "agent_settled" }));
   }
@@ -373,17 +375,19 @@ process.stdin.on("data", (chunk) => { input += chunk; let at; while ((at = input
 		assert.equal(facts.tmp, attempt.tmpDir);
 		assert.ok(facts.tmp.startsWith(os.tmpdir()) && !facts.tmp.startsWith(facts.cwd));
 		assert.equal(fs.readFileSync(path.join(evidence, "tmp", "artifact.md"), "utf8"), "kept");
+		assert.equal(fs.readFileSync(path.join(evidence, "tmp", "locked", "f"), "utf8"), "x");
+		assert.equal(fs.existsSync(path.join(evidence, "evidence-errors.log")), false);
 		assert.equal(fs.existsSync(facts.tmp), false);
 		// The agent directory is a per-attempt copy outside the repository, without installed.json or earlier state.
 		assert.equal(facts.agent, attempt.agentDir);
-		assert.ok(facts.agent.startsWith(os.tmpdir()) && !facts.agent.startsWith(path.resolve(here, "../..")));
+		assert.ok(facts.agent.startsWith(os.tmpdir()) && !facts.agent.startsWith(path.resolve(here, "../../..")));
 		assert.deepEqual(facts.agentFiles, arm.startsWith("share") ? ["bin", "extensions", "models.json", "settings.json"] : ["bin", "models.json", "settings.json"]);
 		assert.deepEqual(facts.packages, [arm.startsWith("share") ? path.join(out, "pkg") : `npm:${arm}`]);
 		assert.equal(fs.readFileSync(path.join(evidence, "agent", "run-history.jsonl"), "utf8"), "state");
 		assert.equal(fs.existsSync(path.join(evidence, "agent", "bin")), false);
 		assert.equal(fs.existsSync(facts.agent), false);
 		assert.equal(fs.existsSync(path.join(out, "agent", arm, "run-history.jsonl")), false);
-		assert.ok(facts.cwd.startsWith(os.tmpdir()) && !facts.cwd.startsWith(path.resolve(here, "../..")));
+		assert.ok(facts.cwd.startsWith(os.tmpdir()) && !facts.cwd.startsWith(path.resolve(here, "../../..")));
 		assert.equal(fs.existsSync(facts.cwd), false);
 		assert.ok(!fs.readFileSync(path.join(evidence, "prompt.md"), "utf8").includes("It demos."));
 	}

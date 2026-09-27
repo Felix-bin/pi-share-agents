@@ -122,11 +122,17 @@ function sumUsage(list) {
 
 const promptTokens = (u) => u.input + u.cacheRead + u.cacheWrite;
 const absolutePaths = (text) => [...text.matchAll(/(?:^|[\s"'=:(`])(\/[^\s"'`<>|;&)]*)/g)].map((m) => m[1]);
+// Windows names one place several ways (C:\x, C:/x, and /c/x under Git Bash): arguments and roots are folded into
+// one lowercase c:/x form before the audit, and a drive letter starts an absolute path.
+const winFold = (text) => text.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/(^|[\s"'=(`])\/([a-zA-Z])(?=\/)/g, "$1$2:").toLowerCase();
+const winAbsolutePaths = (text) => [...text.matchAll(/(?:^|[\s"'=(`])((?:[a-z]:)?\/[^\s"'`<>|;&)]*)/g)].map((m) => m[1]);
+const PATH_STYLES = { posix: { fold: (text) => text, absolute: absolutePaths }, win32: { fold: winFold, absolute: winAbsolutePaths } };
 // Only where a tool is told where to look or act: a shell command, or a path argument. File contents are not paths.
 const pathFields = (name, args) => (name === "bash" ? [args.command] : [args.path, args.file_path, args.cwd]).filter((x) => typeof x === "string");
 const insideAny = (p, roots) => roots.some((root) => root && (p === root || p.startsWith(`${root}/`)));
 
-export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, placeholders = [], ownDirs = [] }) {
+export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, placeholders = [], ownDirs = [], pathStyle = "posix" }) {
+	const { fold, absolute } = PATH_STYLES[pathStyle];
 	const calls = allCalls.filter((c) => c.path === "/chat/completions" && c.request);
 	const bySeq = new Map(calls.map((c) => [c.seq, c]));
 	const { sessions, unattributed, parentFound, restarts } = attributeSessions(calls);
@@ -178,8 +184,8 @@ export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, place
 	const comm = { downlink: { task: 0, injected: 0, system: 0 }, uplink: { results: 0, injected: 0 }, pull: 0, control: 0, work: 0, unclassified: {}, partial: false,
 		systemRewrites: sessions.reduce((n, s) => n + s.systemRewrites, 0) };
 	const audit = { leaks: [], outOfBounds: 0, outOfBoundsPaths: [], projectInstructions: 0, failedCalls: calls.filter((c) => !c.response).length };
-	const inside = [workRoot, ...ownDirs];
-	const leakPattern = new RegExp(`${repoRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/experiments|swe-qa|sample\\.jsonl|llm-as-a-judge`, "i");
+	const inside = [workRoot, ...ownDirs].map((root) => (root ? fold(root) : root));
+	const leakPattern = new RegExp(`${fold(repoRoot).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/experiments|swe-qa|sample\\.jsonl|llm-as-a-judge`, "i");
 	for (const s of sessions) {
 		const own = s.calls.map((q) => bySeq.get(q));
 		s.usage = sumUsage(own);
@@ -213,9 +219,9 @@ export function analyzeAttempt({ calls: allCalls, arm, workRoot, repoRoot, place
 		for (const c of own) for (const tcall of c.response?.tool_calls ?? []) {
 			if (!WORK_TOOLS.includes(tcall.function?.name)) continue;
 			const args = tcall.function?.arguments ?? "";
-			const masked = inside.reduce((text, root) => (root ? text.split(root).join("<own>") : text), args);
+			const masked = inside.reduce((text, root) => (root ? text.split(root).join("<own>") : text), fold(args));
 			if (leakPattern.test(masked)) audit.leaks.push({ seq: c.seq, tool: tcall.function.name, args: args.slice(0, 300) });
-			for (const p of pathFields(tcall.function.name, parseArgs(args)).flatMap(absolutePaths)) {
+			for (const p of pathFields(tcall.function.name, parseArgs(args)).map(fold).flatMap(absolute)) {
 				if (insideAny(p, inside) || p.startsWith("/dev/")) continue;
 				audit.outOfBounds++;
 				if (audit.outOfBoundsPaths.length < 20 && !audit.outOfBoundsPaths.includes(p)) audit.outOfBoundsPaths.push(p);
@@ -317,6 +323,7 @@ function main(runDir) {
 		if (!fs.existsSync(resultFile)) continue;
 		const result = JSON.parse(fs.readFileSync(resultFile, "utf8"));
 		const m = analyzeAttempt({ calls: readJsonl(path.join(evidence, "llm-calls.jsonl")), arm, workRoot: result.workRoot ?? "", repoRoot: manifest.repoRoot, ownDirs: [result.storageRoot, result.tmpDir, result.agentDir].filter(Boolean),
+			pathStyle: manifest.platform === "win32" ? "win32" : "posix",
 			placeholders: [[result.storageRoot, "<storage>"], [result.tmpDir, "<tmp>"], [result.agentDir, "<agent>"], [result.attemptKey, "<attempt>"]] });
 		const answer = fs.existsSync(path.join(evidence, "answer.md")) ? fs.readFileSync(path.join(evidence, "answer.md"), "utf8") : "";
 		m.problems = [...(result.problem ? [result.problem] : []), ...(answer.trim() ? [] : ["empty answer"]), ...m.problems];

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Installs the three extensions with the pinned Pi CLI, mirrors the SWE-QA repositories at their pinned
+// Installs the four arms with the pinned Pi CLI, mirrors the SWE-QA repositories at their pinned
 // commits as snapshot tarballs, and freezes the stratified sample (spec §2.1, §2.3). Idempotent; never
 // replaces an existing sample.
 import { spawnSync } from "node:child_process";
@@ -7,9 +7,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARMS, MODEL, PACKAGES, SHARE_ARMS, parseRepoCommits, sampleQuestions, sha256 } from "./matrix.mjs";
+import { ARMS, MODEL, PACKAGES, SHARE_ARMS, ensureBenchmark, parseRepoCommits, sampleQuestions, sha256 } from "./matrix.mjs";
 
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const argv = process.argv.slice(2);
 const opt = (flag, fallback) => (argv.includes(flag) ? path.resolve(argv[argv.indexOf(flag) + 1]) : fallback);
 const out = opt("--out", path.join(repo, "experiments/data/sweqa"));
@@ -89,6 +89,7 @@ function snapshot(entry) {
 }
 
 installArms();
+ensureBenchmark(sweqa, (args) => run("git", args));
 const repos = parseRepoCommits(fs.readFileSync(path.join(sweqa, "repo_commit.txt"), "utf8"));
 const snapshots = repos.map(snapshot);
 fs.writeFileSync(path.join(out, "snapshots.json"), JSON.stringify(snapshots, null, 2));

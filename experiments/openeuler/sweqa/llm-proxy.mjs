@@ -1,6 +1,6 @@
 /**
- * Recording OpenAI-compatible proxy for the external-framework arms (spec
- * 2026-09-25-synapse-external-framework-arms §5, §6.4, §7.1).
+ * Recording OpenAI-compatible proxy, first written for the external-framework arms (spec
+ * 2026-09-25-synapse-external-framework-arms §5, §6.4, §7.1) and now the SWE-QA recorder.
  *
  * One instance per attempt, on 127.0.0.1 and a free port. Each agent of the
  * framework gets its own base URL, `http://127.0.0.1:<port>/<role>/v1`, so every

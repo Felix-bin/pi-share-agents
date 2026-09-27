@@ -4,7 +4,7 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { mapUsage, piParamProfile, startLlmProxy } from "../llm-proxy.mjs";
+import { mapUsage, piParamProfile, startLlmProxy } from "./llm-proxy.mjs";
 
 const REAL_KEY = "sk-real-secret-0123456789";
 let upstream;

@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
-import { startLlmProxy } from "../bench/llm-proxy.mjs";
+import { startLlmProxy } from "./llm-proxy.mjs";
 import { ARMS, MODEL, evidenceName, loadSample, sha256, shuffledIndices, SEED } from "./matrix.mjs";
 
 export const DIMS = ["correctness", "completeness", "relevance", "clarity", "reasoning"];
@@ -58,6 +58,8 @@ function askPi(piCli, agentDir, prompt) {
 		const argv = [piCli, "-p", "--no-tools", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates",
 			"--no-themes", "--no-context-files", "--offline", "--provider", MODEL.provider, "--model", MODEL.id];
 		const env = { PATH: process.env.PATH, HOME: process.env.HOME, PI_CODING_AGENT_DIR: agentDir, NODE_USE_ENV_PROXY: "0" };
+		// Windows processes need their system variables; none of these exist on Linux.
+		for (const key of ["SystemRoot", "SystemDrive", "USERPROFILE", "TEMP", "TMP", "PATHEXT", "ComSpec"]) if (process.env[key]) env[key] = process.env[key];
 		const child = spawn(process.execPath, argv, { cwd: os.tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
 		let out = "";
 		child.stdout.on("data", (chunk) => { out += chunk; });
@@ -70,7 +72,7 @@ function askPi(piCli, agentDir, prompt) {
 async function main() {
 	const argv = process.argv.slice(2);
 	const opt = (flag, fallback) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : fallback);
-	const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+	const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 	const runDir = path.resolve(argv[0] ?? "");
 	if (!argv[0] || !fs.existsSync(path.join(runDir, "manifest.json"))) {
 		console.error("usage: node score.mjs <run-directory> [--sweqa dir] [--votes 5] [--concurrency 3] [--pi cli.js]"); process.exit(2);

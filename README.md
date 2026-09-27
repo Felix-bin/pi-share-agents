@@ -392,7 +392,7 @@ npm run typecheck
    ＋协商 `probe-unverified` 回落；承诺边界＝构造与语料可加载性，不含 endpoint 应答）。仍缺的是
    **评测与执行层**：CodeAct 与轻量沙箱（M11 加分项，
    **用户 2026-09-20 裁决：暂不引入**，按四档纪律记为规划中）、
-   A/B 运行器与 manifest 自动采集的**产品化形态**（P4-5 评测装置 `experiments/legacy/p45-*.mjs` 已在实验层交付）、
+   A/B 运行器与 manifest 自动采集的**产品化形态**（P4-5 评测装置 `experiments/legacy/p45-*.mjs` 曾在实验层交付，2026-09-27 已删除，可从 `a8c52ba` 取回）、
    数据集流水线与配对统计的 CLI 化、G1/G2 关联任务族，以及 `memory/consolidate.py`。
    **在补齐之前，本仓库不得声称"覆盖初赛全部机制"。**
 10. **子代理自身 recall 路径的向量缓存开关无专项测试**（变异体 V7 存活）。发送侧选基的开关有集成

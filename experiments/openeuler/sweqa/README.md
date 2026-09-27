@@ -1,6 +1,6 @@
-# SWE-QA: one Pi harness, four delegation arms
+# SWE-QA on openEuler (WSL2): one Pi harness, four delegation arms
 
-Design and frozen rules: [`docs/superpowers/specs/2026-09-26-sweqa-three-arm-design.md`](../../docs/superpowers/specs/2026-09-26-sweqa-three-arm-design.md).
+Design and frozen rules: [`docs/superpowers/specs/2026-09-26-sweqa-three-arm-design.md`](../../../docs/superpowers/specs/2026-09-26-sweqa-three-arm-design.md).
 
 The arms are:
 
@@ -26,14 +26,14 @@ Needs:
 
 - Node 24, git and tar;
 - the `pi-web` checkout beside this one;
-- `experiments/data/swe-qa`, from `experiments/bench/prepare-public-data.sh`;
+- network access to GitHub: prepare clones SWE-QA-Bench at its pinned commit into `experiments/data/swe-qa`, and each questioned repository;
 - a Pi `commandcode` provider listing `deepseek/deepseek-v4.1-flash`, with `rg` and `fd` in `~/.pi/agent/bin`;
 - a few GB of disk.
 
 `run.mjs` and `score.mjs` read the key from `COMMANDCODE_API_KEY`, and only the local recorder ever holds it.
 
 ```sh
-node experiments/sweqa/prepare.mjs
+node experiments/openeuler/sweqa/prepare.mjs
 ```
 
 It installs each arm with the pinned CLI into its own agent directory, copying only the model definition, never credentials. It mirrors each repository blobless, resolves the pinned short sha, and keeps the pinned tree as `snapshots/<repo>-<sha>.tar` without `.git`. Finally, it writes `sample.jsonl`. An existing sample is never replaced.
@@ -41,18 +41,18 @@ It installs each arm with the pinned CLI into its own agent directory, copying o
 ## Run, measure, score, report
 
 ```sh
-node experiments/sweqa/run.mjs --id pilot-20260926 --ids 'flask#…,requests#…,sphinx#…' --dry-run
-COMMANDCODE_API_KEY=… node experiments/sweqa/run.mjs --id pilot-20260926 --ids 'flask#…,requests#…,sphinx#…'
-node experiments/sweqa/analyze.mjs experiments/data/sweqa/runs/pilot-20260926
-COMMANDCODE_API_KEY=… node experiments/sweqa/score.mjs experiments/data/sweqa/runs/pilot-20260926
-node experiments/sweqa/report.mjs  experiments/data/sweqa/runs/pilot-20260926
+node experiments/openeuler/sweqa/run.mjs --id pilot-20260926 --ids 'flask#…,requests#…,sphinx#…' --dry-run
+COMMANDCODE_API_KEY=… node experiments/openeuler/sweqa/run.mjs --id pilot-20260926 --ids 'flask#…,requests#…,sphinx#…'
+node experiments/openeuler/sweqa/analyze.mjs experiments/data/sweqa/runs/pilot-20260926
+COMMANDCODE_API_KEY=… node experiments/openeuler/sweqa/score.mjs experiments/data/sweqa/runs/pilot-20260926
+node experiments/openeuler/sweqa/report.mjs  experiments/data/sweqa/runs/pilot-20260926
 ```
 
-`run.mjs` runs the four arms of a question concurrently. Each arm has its own localhost recorder, which holds the real key; Pi receives a dummy key. The recorder also lists requests still in flight, and a failed attempt records them in `inflightAtEnd`. Pi's PATH is a per-attempt bin directory plus `/usr/local/bin:/usr/bin:/bin`. Its `pi` is the pinned CLI, with every launch logged to `pi-invocations.log`, and its `rg` and `fd` are the arm's own copies, which Pi's grep and find tools need under `--offline`. `claude`, `codex` and `cursor-agent` are therefore missing on every arm. `TMPDIR` is also per attempt, because the pi-subagents lineage keeps run state and artifacts there. The agent directory is per attempt too: a copy of what loads the package (`settings.json`, `models.json`, `bin/`, `npm/`) under the work root, so `PI_CODING_AGENT_DIR` points away from this repository and nothing a package stores there carries over to the next question. Both are copied into the evidence directory afterwards. A repeated command with the same ID skips finished attempts and rejects changes to the manifest, including the hashes of the share arm's product source.
+`run.mjs` runs the four arms of a question concurrently. Each arm has its own localhost recorder, which holds the real key; Pi receives a dummy key. The recorder also lists requests still in flight, and a failed attempt records them in `inflightAtEnd`. Pi's PATH is a per-attempt bin directory plus `/usr/local/bin:/usr/bin:/bin`. Its `pi` is the pinned CLI, with every launch logged to `pi-invocations.log`, and its `rg` and `fd` are the arm's own copies, which Pi's grep and find tools need under `--offline`. `claude`, `codex` and `cursor-agent` are therefore missing on every arm. `TMPDIR` is also per attempt, because the pi-subagents lineage keeps run state and artifacts there. The agent directory is per attempt too: a copy of what loads the package (`settings.json`, `models.json`, `bin/`, `npm/`) under the work root, so `PI_CODING_AGENT_DIR` points away from this repository and nothing a package stores there carries over to the next question. Both are copied into the evidence directory afterwards. A tree the agent left unreadable (a pytest fixture does this) is made readable first; a copy or cleanup that still fails is written to `evidence-errors.log` and never stops the run. A repeated command with the same ID skips finished attempts and rejects changes to the manifest, including the hashes of the share arm's product source.
 
 `analyze.mjs` measures every arm with the same code, from the recorder log alone:
 
-- **Sessions.** A call extends the session whose previous request is a prefix of it. The parent is the session that holds the task prompt.
+- **Sessions.** A call extends the session whose previous request is a prefix of it. The parent is the session the first call opens.
 - **Dispatch.** Child sessions actually started, by agent type and depth.
 - **Tokens.** Prompt (input + cacheRead + cacheWrite) and output, split into parent, children and agent type.
 - **Communication.**
@@ -80,5 +80,5 @@ The comparison is between whole extensions. It does not isolate `share`'s memory
 ## Tests
 
 ```sh
-node --test experiments/sweqa/test.mjs
+node --test experiments/openeuler/sweqa/test.mjs experiments/openeuler/sweqa/llm-proxy.test.mjs
 ```

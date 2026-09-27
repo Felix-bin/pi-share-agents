@@ -1,12 +1,13 @@
 # SYNAPSE 实验方案设计
 
-> **新实验入口（2026-09-26）**：同一 Pi harness 下比较本仓库、nicobailon 和 tintinweb 三种子代理扩展的 SWE-QA 实验见 [`experiments/sweqa/README.md`](../../experiments/sweqa/README.md)，设计见 [`docs/superpowers/specs/2026-09-26-sweqa-three-arm-design.md`](../superpowers/specs/2026-09-26-sweqa-three-arm-design.md)。它取代了同日短暂存在的 SWE-bench Lite 版本。本文件中的 CrewAI / AutoGen 对比保留为历史记录，不能用作同 harness 的框架机制结论。
+> **新实验入口（2026-09-26）**：同一 Pi harness 下比较本仓库（自由编排与四角色流水线）、nicobailon 和 tintinweb 子代理扩展的 SWE-QA 实验见 [`experiments/openeuler/sweqa/README.md`](../../experiments/openeuler/sweqa/README.md)（Windows 移植见 [`experiments/windows/sweqa/`](../../experiments/windows/sweqa/README.md)），设计见 [`docs/superpowers/specs/2026-09-26-sweqa-three-arm-design.md`](../superpowers/specs/2026-09-26-sweqa-three-arm-design.md)。它取代了同日短暂存在的 SWE-bench Lite 版本。本文件中的 CrewAI / AutoGen 对比保留为历史记录，不能用作同 harness 的框架机制结论。
 
 > 赛题：一种面向多智能体协作的低开销通信、状态传递与共享记忆机制
 >
 > - 版本：2026-09-25。本文件取代原先 `docs/experiments/` 下的分散文档。
 > - 历史原件（各次预登记、结果报告、标定数据）原样保存在 [`experiments/legacy/records/`](../../experiments/legacy/records/)，口径的演变见 §11。
 > - 实验脚本、数据集与复现命令见 [`experiments/README.md`](../../experiments/README.md)。
+> - **2026-09-27**：本文引用的 `experiments/bench/`、`experiments/analysis/` 和 `experiments/legacy/*.mjs` 已从仓库删除，下文的路径和复现命令只作为历史记录，代码可从 `a8c52ba` 取回（`git show a8c52ba:<路径>`）。
 >
 > **纪律**：分析口径在对应数据产生之前冻结。改口径必须在 §11 登记日期、原因，并声明被取代的旧口径；出数之后只填数，不改判据。负结果与正结果一样全文披露。
 
