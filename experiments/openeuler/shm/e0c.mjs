@@ -30,7 +30,7 @@ const MODELS_SOURCE = path.join(os.homedir(), ".pi", "agent", "models.json");
 const BAILIAN_BASE = "https://llm-3m03faeswsufx2lq.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
 const MODEL_ID = "deepseek-v4.1-flash";
 const TASKS = Number(parseArgs(process.argv.slice(2))["tasks"] ?? 3);
-const TIMEOUT_MS = 15 * 60_000;
+const TIMEOUT_MS = 9 * 60_000;
 
 const args = parseArgs(process.argv.slice(2));
 const expDir = path.resolve(args["exp-dir"] ?? "");
@@ -47,15 +47,27 @@ const sourceCorpusDir = path.join(corpusCache, "corpus", CORPUS_SNAPSHOT);
 const questions = fs.readFileSync(FLASK_QUESTIONS, "utf-8").trim().split("\n").slice(0, TASKS).map((line) => JSON.parse(line));
 const template = fs.readFileSync(path.join(repoRoot, "prompts", "role-pipeline.md"), "utf-8").split("Task:")[0] + "Task:\n\n";
 
-const results = [];
-// Alternating arm order across questions, so no question always sees one arm first.
+// Batchable: --only q1-shm,q2-file runs exactly those attempts (the 10-minute
+// command window cannot hold a whole run); results accumulate in e0c-partial.jsonl
+// and the report merges whatever exists. An already-recorded key is skipped, so
+// re-invoking with the same --only after a crash resumes rather than duplicates.
+const only = (args.only ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+const partialPath = path.join(expDir, "e0c-partial.jsonl");
+const done = new Set(fs.existsSync(partialPath) ? fs.readFileSync(partialPath, "utf-8").trim().split("
+").filter(Boolean).map((line) => `q${JSON.parse(line).index + 1}-${JSON.parse(line).arm}`) : []);
 for (const [index, question] of questions.entries()) {
 	for (const arm of index % 2 === 0 ? ["shm", "file"] : ["file", "shm"]) {
-		results.push(await attempt({ arm, index, question }));
+		const key = `q${index + 1}-${arm}`;
+		if (only.length > 0 && !only.includes(key)) continue;
+		if (done.has(key)) { console.log(`[e0c] ${key}: already recorded, skipping`); continue; }
+		const row = await attempt({ arm, index, question });
+		fs.appendFileSync(partialPath, `${JSON.stringify(row)}
+`);
 	}
 }
-fs.writeFileSync(path.join(expDir, "e0c.jsonl"), results.map((row) => JSON.stringify(row)).join("\n") + "\n");
-writeReport(results);
+const all = fs.existsSync(partialPath) ? fs.readFileSync(partialPath, "utf-8").trim().split("
+").filter(Boolean).map((line) => JSON.parse(line)) : [];
+writeReport(all);
 
 // --- one (question, arm) attempt ---------------------------------------------
 
