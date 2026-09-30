@@ -16,7 +16,7 @@ const lines = ["# SHM E0a/E0b 报告", "", `- run：\`${path.basename(expDir)}\`
 
 // --- E0a -------------------------------------------------------------------
 
-lines.push("## E0a 微基准（同进程两加载路径配对，预登记判定：延迟差 CI 上界 < 0）", "", "| 负载 | 有效对 | file ms（均值） | shm ms（均值） | 差均值（file−shm） | 95% CI | 判定 |", "|---|---|---|---|---|---|---|");
+lines.push("## E0a 微基准（同进程两加载路径配对，判定：diff=file−shm 正=shm 快，CI 下界>0 = 显著更快）", "", "| 负载 | 有效对 | file ms（均值） | shm ms（均值） | 差均值（file−shm） | 95% CI | 判定 |", "|---|---|---|---|---|---|---|");
 let e0aDefect = false;
 for (const size of E0A_SUBSET_SIZES) {
 	const file = path.join(expDir, `e0a-${size}.jsonl`);
