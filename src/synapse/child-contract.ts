@@ -87,6 +87,16 @@ export type SynapseChildContract = {
 	 */
 	vectorCache: boolean;
 	/**
+	 * Whether corpus loads may be served from the shared-memory segment. Carried
+	 * beside `vectorCache` for the same reason: the child is where state vectors
+	 * are actually consumed (`synapse_read` with a stateId ranks the pinned
+	 * corpus), so a launch that turns the segment on must reach the child's own
+	 * loader or the plane would only ever publish and never serve. Off by
+	 * default; on, the child attaches the segment read-only and the pinned test
+	 * guarantees identical ranking either way.
+	 */
+	shm: boolean;
+	/**
 	 * The worktree the parent resolved the store for. The child's own memory
 	 * tools must use this, not their process's cwd: when pi runs inside another
 	 * host process (pi-web runs sessions in its server), the child's cwd can be
@@ -236,6 +246,7 @@ export function resolveSynapseChildContract(input: ResolveChildContractInput): S
 		...(effectiveGear.note === undefined ? {} : { deliveryGearNote: effectiveGear.note }),
 		runId,
 		sessionId,
+		shm: config.shm,
 		vectorCache: config.vectorCache,
 		worktreePath: resolved.worktreePath,
 	};
@@ -263,10 +274,10 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 			// select a base, so the parent's residual switch has nothing to act on
 			// here. False states that instead of repeating a value that does nothing.
 			delta: false,
-			// The child attaches the shared-memory segment read-only through its own
-			// plane (synapse-delegation.ts); this synthesized config only feeds the
-			// memory tools, which never load corpora, so false is structural here.
-			shm: false,
+			// From the contract, not hardcoded: the child's own tools are the state
+			// consumers, and a shm-on launch must let them attach the segment
+			// (read-only; the parent's publish made it resident).
+			shm: contract.shm,
 			embedding: null,
 			maxObjectBytes: 1024 * 1024,
 			memory: "project",
