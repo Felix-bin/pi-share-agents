@@ -53,20 +53,33 @@ const template = fs.readFileSync(path.join(repoRoot, "prompts", "role-pipeline.m
 // re-invoking with the same --only after a crash resumes rather than duplicates.
 const only = (args.only ?? "").split(",").map((x) => x.trim()).filter(Boolean);
 const partialPath = path.join(expDir, "e0c-partial.jsonl");
-const done = new Set(fs.existsSync(partialPath) ? fs.readFileSync(partialPath, "utf-8").trim().split("
-").filter(Boolean).map((line) => `q${JSON.parse(line).index + 1}-${JSON.parse(line).arm}`) : []);
+const done = new Set(
+	fs.existsSync(partialPath)
+		? fs
+				.readFileSync(partialPath, "utf-8")
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => `q${JSON.parse(line).index + 1}-${JSON.parse(line).arm}`)
+		: [],
+);
 for (const [index, question] of questions.entries()) {
 	for (const arm of index % 2 === 0 ? ["shm", "file"] : ["file", "shm"]) {
 		const key = `q${index + 1}-${arm}`;
 		if (only.length > 0 && !only.includes(key)) continue;
 		if (done.has(key)) { console.log(`[e0c] ${key}: already recorded, skipping`); continue; }
 		const row = await attempt({ arm, index, question });
-		fs.appendFileSync(partialPath, `${JSON.stringify(row)}
-`);
+		fs.appendFileSync(partialPath, `${JSON.stringify(row)}\n`);
 	}
 }
-const all = fs.existsSync(partialPath) ? fs.readFileSync(partialPath, "utf-8").trim().split("
-").filter(Boolean).map((line) => JSON.parse(line)) : [];
+const all = fs.existsSync(partialPath)
+	? fs
+			.readFileSync(partialPath, "utf-8")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line))
+	: [];
 writeReport(all);
 
 // --- one (question, arm) attempt ---------------------------------------------
