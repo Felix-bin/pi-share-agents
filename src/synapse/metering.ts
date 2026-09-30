@@ -27,7 +27,7 @@ import type { StateFallbackReason } from "./state-payload.ts";
  * `vector-cache` kind was added, to 4 when the `capability-probe` kind was
  * added, to 5 when `capability-probe` gained `wired`/`durationMs`, and to 6
  * when the `state-skipped` kind was added, and to 7 when the shm kinds
- * (`shm-attach`/`shm-hit`/`shm-miss`/`shm-invalid`) were added. Every change is
+ * (`shm-attach`/`shm-hit`/`shm-miss`/`shm-invalid`) and `corpus-load` were added. Every change is
  * additive: each field that existed before kept its meaning, so an older log
  * still aggregates (a component it never recorded is reported as 0) and the
  * frozen full-account definition is unaffected.
@@ -231,6 +231,14 @@ export type MeteringPayload =
 	| { corpusSnapshotId?: string; kind: "shm-hit"; logicalBytes: number; namespaceId: string; purpose: "corpus" }
 	| { corpusSnapshotId?: string; kind: "shm-miss"; namespaceId: string; purpose: "corpus" }
 	| { corpusSnapshotId?: string; kind: "shm-invalid"; namespaceId: string; reason: string }
+	/**
+	 * One corpus load through the file path (meta+vectors+chunks read, digests
+	 * verified, per-chunk decode). Recorded so "the shm plane removed file
+	 * bytes" is a ledger fact — the file arm of an E0b run writes these rows,
+	 * the shm arm's second-and-later rounds write `shm-hit` instead — and so
+	 * the file path's own latency distribution exists beside the plane's.
+	 */
+	| { bytesRead: number; corpusSnapshotId: string; durationMs: number; kind: "corpus-load" }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
 
 export type MeteringEvent = MeteringIdentity &

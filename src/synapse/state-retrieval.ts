@@ -133,8 +133,20 @@ function normOf(vector: Float32Array): number {
 	return Math.sqrt(normSquared);
 }
 
-/** Loads and fully verifies the published corpus; every mismatch is fatal. */
-export function loadCorpusVectors(storageRoot: string, corpusSnapshotId: string, expectedDim: number, representationId: string): CorpusVectors {
+/**
+ * Loads and fully verifies the published corpus; every mismatch is fatal.
+ * When `metering` is present the load is recorded as a `corpus-load` event —
+ * the ledger row the shm plane's removal of file bytes is judged against.
+ */
+export function loadCorpusVectors(storageRoot: string, corpusSnapshotId: string, expectedDim: number, representationId: string, metering?: { identity: MeteringIdentity; log: MeteringLog }): CorpusVectors {
+	const loadStartedAt = process.hrtime.bigint();
+	const finish = (result: CorpusVectors): CorpusVectors => {
+		if (metering !== undefined) {
+			const bytesRead = vectorsBytes.byteLength + chunksBytes.byteLength + metaRaw.length;
+			metering.log.record(metering.identity, { bytesRead, corpusSnapshotId, durationMs: +(Number(process.hrtime.bigint() - loadStartedAt) / 1e6).toFixed(3), kind: "corpus-load" });
+		}
+		return result;
+	};
 	// The id reaches path.join before anything is read: a non-hex value with
 	// separators must be refused here, at the boundary, rather than trusted to
 	// stay inside the storage root (config pins the shape today; the P3-5
@@ -222,7 +234,7 @@ export function loadCorpusVectors(storageRoot: string, corpusSnapshotId: string,
 		}
 		vectors.push(vector);
 	}
-	return {
+	return finish({
 		chunkIds: chunks.map((chunk) => chunk.chunkId),
 		chunkMeta: chunks.map(({ endLine, path: chunkPath, startLine }) => ({ endLine, path: chunkPath, startLine })),
 		// The text rides along only as its first line: a hit renders an anchor the
@@ -230,7 +242,7 @@ export function loadCorpusVectors(storageRoot: string, corpusSnapshotId: string,
 		// every chunk's body in memory.
 		previews: chunks.map((chunk) => previewOf(chunk.text ?? "")),
 		vectors,
-	};
+	});
 }
 
 /**
@@ -348,7 +360,7 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 
 	const corpus =
 		deps.loadCorpus?.(input.corpusSnapshotId, stateRef.dim, stateRef.representationId) ??
-		loadCorpusVectors(deps.storageRoot, input.corpusSnapshotId, stateRef.dim, stateRef.representationId);
+		loadCorpusVectors(deps.storageRoot, input.corpusSnapshotId, stateRef.dim, stateRef.representationId, deps.metering);
 	// The zero-norm refusal lives inside the ranking now; the payload keeps its
 	// own message because the id is what a reader can act on.
 	if (normOf(queryVector) === 0) {
