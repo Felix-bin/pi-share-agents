@@ -43,7 +43,7 @@ if (bindings === null) fail("POSIX shm bindings unavailable (need Linux + koffi)
 // Self-contained run: drop this namespace's leftover segments (ours by prefix),
 // so every number below is produced by this run's own publish, not a survivor.
 for (const name of bindings.listOwnSegments()) {
-	if (name === `/synapse-${SHM_NAMESPACE}-g0`) bindings.unlink(name);
+	if (name.startsWith(`/synapse-${SHM_NAMESPACE}-`)) bindings.unlink(name);
 }
 
 if (fs.existsSync(path.join(expDir, "manifest.json"))) fail("manifest already exists — an experiment is never restarted in place; use a new --exp-dir");
@@ -79,9 +79,11 @@ fs.mkdirSync(subsetsDir, { recursive: true });
 const { loadCorpusVectors } = await import("../../../src/synapse/state-retrieval.ts");
 const { createShmCorpusPlane } = await import("../../../src/synapse/shm-corpus-plane.ts");
 
-for (const size of E0A_SUBSET_SIZES) {
+for (const [subsetIndex, size] of E0A_SUBSET_SIZES.entries()) {
 	const subset = buildSubset(sourceCorpusDir, path.join(subsetsDir, String(size)), size);
-	const plane = createShmCorpusPlane({ bindings, namespaceId16: SHM_NAMESPACE });
+	// Each subset gets its own generation: a segment sized for 64 chunks must not
+	// be asked to hold 1006. Distinct names, no interference.
+	const plane = createShmCorpusPlane({ bindings, generation: subsetIndex + 1, namespaceId16: SHM_NAMESPACE });
 	const published = plane.publishCorpus(subset.storageRoot, subset.snapshotId);
 	if (!published.published) fail(`E0a subset ${size}: publish failed: ${published.reason}`);
 
@@ -149,7 +151,7 @@ for (let round = 1; round <= E0B_ROUNDS; round++) {
 	// exists for. The writer (this process) published nothing — round 0 below
 	// is the cold publish, exactly one per run.
 	if (round === 1) {
-		const writerPlane = createShmCorpusPlane({ bindings, namespaceId16: SHM_NAMESPACE });
+		const writerPlane = createShmCorpusPlane({ bindings, generation: 10, namespaceId16: SHM_NAMESPACE });
 		const published = writerPlane.publishCorpus(workStorage, CORPUS_SNAPSHOT);
 		if (!published.published) fail(`E0b publish failed: ${published.reason}`);
 		writerPlane.close();
@@ -160,7 +162,7 @@ for (let round = 1; round <= E0B_ROUNDS; round++) {
 		result = JSON.parse(
 			execFileSync(
 				process.execPath,
-				["--experimental-strip-types", path.join(here, "probe-consume.mjs"), "--arm", "shm", "--storage-root", workStorage, "--queries", queriesPath, "--ledger", ledger, "--namespace", SHM_NAMESPACE],
+				["--experimental-strip-types", path.join(here, "probe-consume.mjs"), "--arm", "shm", "--storage-root", workStorage, "--queries", queriesPath, "--ledger", ledger, "--namespace", SHM_NAMESPACE, "--generation", "10"],
 				{ encoding: "utf-8", stdio: ["ignore", "pipe", "inherit"] },
 			),
 		);

@@ -28,7 +28,7 @@ if (arm === "shm") {
 	const { createShmCorpusPlane } = await import("../../../src/synapse/shm-corpus-plane.ts");
 	const bindings = createPosixShmBindings();
 	if (bindings === null) fail("shm arm needs POSIX shm bindings");
-	const plane = createShmCorpusPlane({ bindings, metering: { identity, log }, namespaceId16: namespaceId });
+	const plane = createShmCorpusPlane({ bindings, generation: Number(args.generation ?? 0), metering: { identity, log }, namespaceId16: namespaceId });
 	// A reader only: no publish here — the run's single writer published in round 0.
 	loadCorpus = (snapshot, dim, rep) => plane.loadCorpusVectors(snapshot, dim, rep);
 }
