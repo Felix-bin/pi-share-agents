@@ -6,7 +6,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { BOOTSTRAP_B, BOOTSTRAP_SEED, E0A_SUBSET_SIZES, bootstrapInterval, crossesZero } from "./matrix.mjs";
+import { BOOTSTRAP_B, BOOTSTRAP_SEED, E0A_SUBSET_SIZES, bootstrapInterval } from "./matrix.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const expDir = path.resolve(args["exp-dir"] ?? "");
@@ -37,7 +37,9 @@ for (const size of E0A_SUBSET_SIZES) {
 	const shmMean = mean(valid.map((row) => row.shmMs));
 	const diffs = valid.map((row) => row.fileMs - row.shmMs);
 	const ci = bootstrapInterval(diffs);
-	const verdict = ci.hi < 0 ? "shm 显著更快" : crossesZero(ci) ? "跨 0，不可宣称显著" : "shm 显著更慢";
+	// diff = file − shm（正 = shm 更快，与 matrix/预登记一致）：整区间为正
+	// （下界 > 0）= 段路径显著更快；整区间为负 = 显著更慢；跨 0 不可宣称。
+	const verdict = ci.lo > 0 ? "shm 显著更快" : ci.hi < 0 ? "shm 显著更慢" : "跨 0，不可宣称显著";
 	lines.push(`| ${size} | ${valid.length}/${rows.length} | ${fileMean.toFixed(2)} | ${shmMean.toFixed(2)} | ${ci.mean.toFixed(2)} | [${ci.lo.toFixed(2)}, ${ci.hi.toFixed(2)}] | ${verdict}${invalid > 0 ? `（${invalid} 无效对）` : ""} |`);
 }
 lines.push("");
