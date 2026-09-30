@@ -19,7 +19,7 @@ import { selectPredictedBase, type PredictedBase } from "./predict-base.ts";
 import { searchMemories, type MemoryQuery, type SemanticComponent, type SemanticScoring } from "./retrieval.ts";
 import { captureSource, checkSource } from "./source-fingerprint.ts";
 import type { StateRef } from "./envelope.ts";
-import { retrieveWithState, type StateRetrievalResult } from "./state-retrieval.ts";
+import { retrieveWithState, type LoadedCorpus, type StateRetrievalResult } from "./state-retrieval.ts";
 
 /**
  * Host-side implementation of the model-visible `synapse_read` / `synapse_write`
@@ -48,6 +48,12 @@ export type MemoryServiceOptions = {
 	/** Paired log and identity for the service's own metering (vector object writes). */
 	metering?: { identity: MeteringIdentity; log: MeteringLog };
 	maxObjectBytes?: number;
+	/**
+	 * The shared-memory plane's corpus loader, when the host allows one. A null
+	 * return means "not resident" and stateSearch falls back to the file path;
+	 * a pinned test keeps the two loaders' outputs identical.
+	 */
+	loadCorpus?: (corpusSnapshotId: string, expectedDim: number, representationId: string) => LoadedCorpus | null;
 	now?: () => Date;
 	provenance: MemoryProvenance;
 	scope: AccessScope;
@@ -365,7 +371,7 @@ export function createMemoryService(options: MemoryServiceOptions): MemoryServic
 		return retrieveWithState(
 			// A residual is rebuilt from this receiver's own records, never from the
 			// envelope; the same scope and the same verified read the ranking uses.
-			{ baseVectorFor: baseVectorForState, contentStore, metering: options.metering, storageRoot: options.storeRoot },
+			{ baseVectorFor: baseVectorForState, contentStore, loadCorpus: options.loadCorpus, metering: options.metering, storageRoot: options.storeRoot },
 			{ corpusSnapshotId: pinned, k, stateRef },
 		);
 	}

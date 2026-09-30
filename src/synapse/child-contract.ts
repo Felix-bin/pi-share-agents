@@ -263,6 +263,10 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 			// select a base, so the parent's residual switch has nothing to act on
 			// here. False states that instead of repeating a value that does nothing.
 			delta: false,
+			// The child attaches the shared-memory segment read-only through its own
+			// plane (synapse-delegation.ts); this synthesized config only feeds the
+			// memory tools, which never load corpora, so false is structural here.
+			shm: false,
 			embedding: null,
 			maxObjectBytes: 1024 * 1024,
 			memory: "project",

@@ -8,6 +8,8 @@ import { resolveConfiguredEmbedder, type Embedder } from "./embedding.ts";
 import { createMemoryService, SYNAPSE_DEFAULT_SEARCH_K, SYNAPSE_MAX_SEARCH_K, type MemoryService } from "./memory-service.ts";
 import type { MemoryProvenance } from "./memory-store.ts";
 import { ensureNamespace, resolveStorageRoot } from "./namespace.ts";
+import { resolveShmBindings } from "./shm-bindings.ts";
+import { createShmCorpusPlane, type ShmCorpusPlane } from "./shm-corpus-plane.ts";
 import { memoryVectorCacheFor } from "./vector-cache.ts";
 
 /**
@@ -203,10 +205,26 @@ export function createSynapseService(config: SynapseConfig, agentDir: string, co
 	});
 	ensureNamespace(resolved);
 	const resolvedEmbedder = resolveEmbedder(config, resolved.root);
+	// The corpus-resident shared-memory plane. Assembled only when the config
+	// explicitly asks for it (an experiment condition, like `deliveryGear`) *and*
+	// the host actually has POSIX shm; a plane here publishes the pinned corpus
+	// once and then serves state retrieval's corpus loads from the segment.
+	// Anything off — config, koffi, Linux, pinned snapshot — leaves the file
+	// path exactly as it was.
+	let shmPlane: ShmCorpusPlane | null = null;
+	if (config.shm && config.corpusSnapshotId !== null) {
+		const bindings = resolveShmBindings();
+		if (bindings !== null) {
+			shmPlane = createShmCorpusPlane({ bindings, namespaceId16: resolved.namespaceId });
+			const published = shmPlane.publishCorpus(resolved.root, config.corpusSnapshotId);
+			if (!published.published) shmPlane = null;
+		}
+	}
 	return {
 		service: createMemoryService({
 			corpusSnapshotId: config.corpusSnapshotId,
 			embedder: resolvedEmbedder,
+			loadCorpus: shmPlane?.loadCorpusVectors.bind(shmPlane),
 			maxObjectBytes: config.maxObjectBytes,
 			provenance: context.provenance,
 			scope: { ...context.scope, namespaceId: resolved.namespaceId },

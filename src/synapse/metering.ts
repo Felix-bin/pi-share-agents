@@ -26,12 +26,13 @@ import type { StateFallbackReason } from "./state-payload.ts";
  * Bumped to 2 when `object-io` gained the `payload-read` purpose, to 3 when the
  * `vector-cache` kind was added, to 4 when the `capability-probe` kind was
  * added, to 5 when `capability-probe` gained `wired`/`durationMs`, and to 6
- * when the `state-skipped` kind was added. Every change is additive: each field
- * that existed before kept its meaning, so an older log still aggregates (a
- * component it never recorded is reported as 0) and the frozen full-account
- * definition is unaffected.
+ * when the `state-skipped` kind was added, and to 7 when the shm kinds
+ * (`shm-attach`/`shm-hit`/`shm-miss`/`shm-invalid`) were added. Every change is
+ * additive: each field that existed before kept its meaning, so an older log
+ * still aggregates (a component it never recorded is reported as 0) and the
+ * frozen full-account definition is unaffected.
  */
-export const SYNAPSE_METERING_SCHEMA_VERSION = 6;
+export const SYNAPSE_METERING_SCHEMA_VERSION = 7;
 
 /**
  * Why a launch's state plane published nothing. The first four are the host's
@@ -216,6 +217,20 @@ export type MeteringPayload =
 	 * an error; failures keep their own `error` rows.
 	 */
 	| { kind: "state-skipped"; reason: StateSkipReason }
+	/**
+	 * The shared-memory plane's own account, kept beside the file-byte columns the
+	 * frozen full-account defines rather than inside them: a segment hit is a read
+	 * that did not touch the store, and merging it into object-io would make a
+	 * shm-on run silently incomparable to a shm-off one (design §9). `shm-attach`
+	 * records one segment attach with its duration; `shm-hit`/`shm-miss` count
+	 * corpus loads answered from the segment vs. fallen back to files;
+	 * `shm-invalid` records why a resident segment was refused, so "the run used
+	 * files anyway" has a cause in the ledger instead of only in the stats.
+	 */
+	| { attachMicros: number; kind: "shm-attach"; namespaceId: string; segmentBytes?: number }
+	| { corpusSnapshotId?: string; kind: "shm-hit"; logicalBytes: number; namespaceId: string; purpose: "corpus" }
+	| { corpusSnapshotId?: string; kind: "shm-miss"; namespaceId: string; purpose: "corpus" }
+	| { corpusSnapshotId?: string; kind: "shm-invalid"; namespaceId: string; reason: string }
 	| { category: SynapseErrorClassification; detail: string; kind: "error" };
 
 export type MeteringEvent = MeteringIdentity &

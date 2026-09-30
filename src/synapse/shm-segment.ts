@@ -58,11 +58,12 @@ export const SHM_SLOT_BYTES = 20;
 export const SHM_OBJECT_HEADER_BYTES = 80;
 export const SHM_OBJECT_AREA_ALIGN = 8;
 
-export type ShmObjectKind = "corpus-matrix" | "corpus-chunks" | "record-vector" | "identity-projection";
+export type ShmObjectKind = "corpus-matrix" | "corpus-chunks" | "corpus-meta" | "record-vector" | "identity-projection";
 
 const KIND_CODE: Record<ShmObjectKind, number> = {
 	"corpus-matrix": 1,
 	"corpus-chunks": 2,
+	"corpus-meta": 5,
 	"record-vector": 3,
 	"identity-projection": 4,
 };

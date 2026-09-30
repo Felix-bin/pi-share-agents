@@ -73,6 +73,14 @@ export type StateRetrievalDeps = {
 	 */
 	baseVectorFor?: (memoryId: string, representationId: string) => Float32Array | null;
 	contentStore: ContentStore;
+	/**
+	 * Optional fast path for corpus loading: the shared-memory plane injects a
+	 * loader that answers from a resident segment. Returning null means "not in
+	 * the segment" — the caller falls back to the file path below, byte for
+	 * byte the loader it has always been. A pinned test proves the two loaders
+	 * produce identical corpora, so the ranking cannot tell them apart.
+	 */
+	loadCorpus?: (corpusSnapshotId: string, expectedDim: number, representationId: string) => CorpusVectors | null;
 	/** When present, a successful retrieval is recorded as a state-consume event. */
 	metering?: { identity: MeteringIdentity; log: MeteringLog };
 	/** Root holding corpus/<corpusSnapshotId>/ as build-corpus published it. */
@@ -87,7 +95,7 @@ type CorpusVectors = {
 };
 
 /** First non-empty line of a chunk's text, capped: a recognition anchor, never the body. */
-function previewOf(text: string): string {
+export function previewOf(text: string): string {
 	const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? "";
 	return firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
 }
@@ -338,7 +346,9 @@ export function retrieveWithState(deps: StateRetrievalDeps, input: StateRetrieva
 		}
 	}
 
-	const corpus = loadCorpusVectors(deps.storageRoot, input.corpusSnapshotId, stateRef.dim, stateRef.representationId);
+	const corpus =
+		deps.loadCorpus?.(input.corpusSnapshotId, stateRef.dim, stateRef.representationId) ??
+		loadCorpusVectors(deps.storageRoot, input.corpusSnapshotId, stateRef.dim, stateRef.representationId);
 	// The zero-norm refusal lives inside the ranking now; the payload keeps its
 	// own message because the id is what a reader can act on.
 	if (normOf(queryVector) === 0) {

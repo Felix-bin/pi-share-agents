@@ -148,6 +148,15 @@ export type SynapseConfig = {
 	/** Whether launches may send a residual; see {@link SYNAPSE_DEFAULT_DELTA}. */
 	delta: boolean;
 	embedding: SynapseEmbeddingConfig | null;
+	/**
+	 * Whether corpus vectors may be served from a cross-process shared-memory
+	 * segment (the SHM memory plane). Off by default and must never become the
+	 * default: it is an experiment condition exactly like `deliveryGear`, and a
+	 * run's manifest has to be able to reproduce it. When off, or when the host
+	 * has no POSIX shm (koffi missing, non-Linux), every load takes the file
+	 * path unchanged.
+	 */
+	shm: boolean;
 	maxObjectBytes: number;
 	memory: SynapseMemoryMode;
 	mode: SynapseMode;
@@ -183,6 +192,7 @@ const RawConfigSchema = Type.Object(
 		maxObjectBytes: Type.Optional(Type.Integer({ minimum: 1 })),
 		memory: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("project")])),
 		mode: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("text"), Type.Literal("synapse")])),
+		shm: Type.Optional(Type.Boolean({ description: "serve corpus loads from a POSIX shared-memory segment when the host allows; off keeps the file path" })),
 		stateRecovery: Type.Optional(Type.Union([Type.Literal("resend"), Type.Literal("resend-then-text")])),
 		storageRoot: Type.Optional(Type.String({ minLength: 1 })),
 		vectorCache: Type.Optional(Type.Boolean({ description: "keep record vectors in memory between rankings; off keeps the cold-base convention" })),
@@ -291,6 +301,9 @@ export function resolveSynapseConfig(value: UnvalidatedJson, homeDir: string = o
 		maxObjectBytes: raw.maxObjectBytes ?? SYNAPSE_DEFAULT_MAX_OBJECT_BYTES,
 		memory,
 		mode,
+		// Off unless an experiment states it explicitly — same rule as `deliveryGear`:
+		// the shm plane must never become the default path.
+		shm: raw.shm ?? false,
 		stateRecovery: raw.stateRecovery ?? "resend-then-text",
 		storageRoot: raw.storageRoot === undefined ? null : resolveSynapseStorageRoot(raw.storageRoot, homeDir),
 		vectorCache: raw.vectorCache ?? SYNAPSE_DEFAULT_VECTOR_CACHE,
