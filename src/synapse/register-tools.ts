@@ -8,7 +8,7 @@ import { resolveConfiguredEmbedder, type Embedder } from "./embedding.ts";
 import { createMemoryService, SYNAPSE_DEFAULT_SEARCH_K, SYNAPSE_MAX_SEARCH_K, type MemoryService } from "./memory-service.ts";
 import type { MemoryProvenance } from "./memory-store.ts";
 import { ensureNamespace, resolveStorageRoot } from "./namespace.ts";
-import { resolveShmBindings } from "./shm-bindings.ts";
+import { resolveShmBindings, type ShmBindings } from "./shm-bindings.ts";
 import { createShmCorpusPlane, type ShmCorpusPlane } from "./shm-corpus-plane.ts";
 import { memoryVectorCacheFor } from "./vector-cache.ts";
 
@@ -81,6 +81,12 @@ export type SynapseToolContext = {
 	provenance: MemoryProvenance;
 	scope: Omit<AccessScope, "namespaceId">;
 	worktreeRoot: string;
+	/**
+	 * SHM bindings override for tests (the in-memory fake). Absent in production:
+	 * the real plane only ever runs on kernel shm (resolveShmBindings), because a
+	 * "shared memory" claim must mean POSIX shm, not a same-process stand-in.
+	 */
+	shmBindings?: ShmBindings;
 };
 
 export type SynapseToolsOptions = {
@@ -213,11 +219,14 @@ export function createSynapseService(config: SynapseConfig, agentDir: string, co
 	// path exactly as it was.
 	let shmPlane: ShmCorpusPlane | null = null;
 	if (config.shm && config.corpusSnapshotId !== null) {
-		const bindings = resolveShmBindings();
+		const bindings = context.shmBindings ?? resolveShmBindings();
 		if (bindings !== null) {
 			shmPlane = createShmCorpusPlane({ bindings, namespaceId16: resolved.namespaceId });
-			const published = shmPlane.publishCorpus(resolved.root, config.corpusSnapshotId);
-			if (!published.published) shmPlane = null;
+			// A failed publish does not cancel the plane: another process may have
+			// published this corpus already (the files might even be gone — the
+			// segment is then the only copy), and a segment miss already falls back
+			// to the file path on its own. Publishing is an attempt, not a gate.
+			shmPlane.publishCorpus(resolved.root, config.corpusSnapshotId);
 		}
 	}
 	return {
