@@ -61,6 +61,8 @@ export type BuildCorpusOptions = {
 	allowlist?: readonly string[];
 	corpusRoot: string;
 	embedder: Embedder;
+	/** Actual request batch ceiling used for this build (meta records what ran). */
+	embeddingBatchLimit?: number;
 	overlapLines?: number;
 	sourceCommit: string;
 	storageRoot: string;
@@ -343,7 +345,7 @@ export async function buildCorpus(options: BuildCorpusOptions): Promise<CorpusBu
 	const storedVectors = fs.readFileSync(vectorsPath);
 	const meta: StoredCorpusMeta = {
 		allowlist,
-		batchLimit: SYNAPSE_EMBEDDING_BATCH_LIMIT,
+		batchLimit: options.embeddingBatchLimit ?? SYNAPSE_EMBEDDING_BATCH_LIMIT,
 		chunkCount: chunks.length,
 		chunksSha256,
 		corpusSnapshotId,

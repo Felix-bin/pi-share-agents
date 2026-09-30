@@ -115,7 +115,9 @@ export function clearStoredKey(agentDir: string): boolean {
 
 export function resolveEmbeddingKey(input: { agentDir: string; env: NodeJS.ProcessEnv }): ResolvedKey {
 	const stored = readStoredKey(input.agentDir);
-	const fromEnv = (input.env[SYNAPSE_KEY_ENV] ?? "").trim();
+	// Bailian workspace keys ride on DASHSCOPE_API_KEY (embedding provider "bailian");
+	// SILICONFLOW_API_KEY stays the primary name for the siliconflow provider.
+	const fromEnv = (input.env[SYNAPSE_KEY_ENV] ?? input.env["DASHSCOPE_API_KEY"] ?? "").trim();
 	if (fromEnv.length > 0) {
 		return { fingerprint: fingerprintKey(fromEnv), key: fromEnv, source: "env", storedAlsoPresent: stored !== null };
 	}

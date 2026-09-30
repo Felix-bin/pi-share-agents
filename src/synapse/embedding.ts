@@ -32,6 +32,11 @@ export const SYNAPSE_EMBEDDING_TIMEOUT_MS = 30_000;
 /** Corpus batching only; queries are always single-text (see module comment). */
 export const SYNAPSE_EMBEDDING_BATCH_LIMIT = 32;
 
+/** Per-provider request batch ceiling; Bailian rejects embedding batches above 10. */
+export function embeddingBatchLimitFor(provider: string): number {
+	return provider === "bailian" ? 10 : SYNAPSE_EMBEDDING_BATCH_LIMIT;
+}
+
 export const SYNAPSE_VECTOR_MEDIA_TYPE = "application/x-float32-vector";
 
 const EMBEDDING_CACHE_DIR = "embedding-cache";
@@ -157,6 +162,7 @@ export type EmbeddingProviderProfile = {
  */
 export function embeddingProviderProfileFor(provider: string): EmbeddingProviderProfile {
 	if (provider === "paratera") return { dimensionsParam: true, format: "json-number-array" };
+	if (provider === "bailian") return { dimensionsParam: true, format: "json-number-array" };
 	if (provider === "siliconflow") return { dimensionsParam: false, format: "base64-float32" };
 	// Unreachable through the config parser, which refuses providers outside its
 	// whitelist; a direct caller gets an error rather than a guessed default.
@@ -594,8 +600,9 @@ export function createEmbeddingClient(cfg: SynapseEmbeddingConfig, deps: Embedde
 			else existing.indexes.push(position);
 		}
 		const misses = [...pending.entries()];
-		for (let start = 0; start < misses.length; start += SYNAPSE_EMBEDDING_BATCH_LIMIT) {
-			const chunk = misses.slice(start, start + SYNAPSE_EMBEDDING_BATCH_LIMIT);
+		const batchLimit = embeddingBatchLimitFor(cfg.provider);
+		for (let start = 0; start < misses.length; start += batchLimit) {
+			const chunk = misses.slice(start, start + batchLimit);
 			const { durationMs, promptTokens, vectors } = await requestEmbeddings(chunk.map(([, miss]) => miss.text));
 			// promptTokens is the provider's usage for the whole chunk, not a per-text value.
 			for (const [[key, miss], vector] of zip(chunk, vectors)) {
