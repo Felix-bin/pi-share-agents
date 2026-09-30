@@ -101,6 +101,9 @@
     "undici": "8.10.0",
     "yaml": "2.8.3"
   },
+  "optionalDependencies": {
+    "koffi": "3.3.2"
+  },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "0.81.0",
     "@earendil-works/pi-ai": "0.81.0",
