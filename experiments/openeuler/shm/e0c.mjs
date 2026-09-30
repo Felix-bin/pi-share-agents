@@ -34,6 +34,7 @@ const TIMEOUT_MS = 9 * 60_000;
 
 const args = parseArgs(process.argv.slice(2));
 const expDir = path.resolve(args["exp-dir"] ?? "");
+const rowUnit = () => args.unit ?? "e0c";
 const corpusCache = path.resolve(args["corpus-root"] ?? "/root/.pi/agent/synapse/experiments/_corpus-cache");
 
 const apiKey = process.env.DASHSCOPE_API_KEY ?? "";
@@ -186,11 +187,17 @@ async function attempt({ arm, index, question }) {
 
 	// Ledger counts: every metering jsonl this attempt wrote (parent + each child).
 	const ledger = { "corpus-load": 0, "memory-reuse": 0, "model-usage": 0, "shm-attach": 0, "shm-hit": 0, "shm-invalid": 0, "shm-miss": 0, "state-consume": 0 };
+	let childIn = 0, childOut = 0, childEmbedMs = 0;
 	const meteringDir = path.join(storageRoot, "metering");
 	if (fs.existsSync(meteringDir)) {
 		for (const file of fs.readdirSync(meteringDir)) {
 			for (const line of fs.readFileSync(path.join(meteringDir, file), "utf-8").trim().split("\n").filter(Boolean)) {
-				try { const kind = JSON.parse(line).kind; if (kind in ledger) ledger[kind] += 1; } catch { /* torn tail line */ }
+				try {
+					const event = JSON.parse(line);
+					if (event.kind in ledger) ledger[event.kind] += 1;
+					if (event.kind === "model-usage" && event.usage) { childIn += event.usage.input ?? 0; childOut += event.usage.output ?? 0; }
+					if (event.kind === "embedding-call") childEmbedMs += event.durationMs ?? 0;
+				} catch { /* torn tail line */ }
 			}
 		}
 		guarded(() => fs.cpSync(meteringDir, path.join(evidence, "metering"), { recursive: true }));
@@ -206,9 +213,9 @@ async function attempt({ arm, index, question }) {
 	}
 	guarded(() => fs.rmSync(workRoot, { recursive: true, force: true }));
 	const row = {
-		answerChars: answer.trim().length, arm, index, ledger, parentIn, parentOut, problem, unit: "e0c", valid: problem === null, wallMs: Date.now() - started,
+		answerChars: answer.trim().length, arm, childEmbedMs: +childEmbedMs.toFixed(0), childIn, childOut, index, ledger, parentIn, parentOut, problem, unit: rowUnit(), valid: problem === null, wallMs: Date.now() - started,
 	};
-	console.log(`[e0c] ${key}: ${problem ?? "finished"} (shm-hit=${ledger["shm-hit"]} corpus-load=${ledger["corpus-load"]} wall=${Math.round(row.wallMs / 1000)}s)`);
+	console.log(`[${rowUnit()}] ${key}: ${problem ?? "finished"} (shm-hit=${ledger["shm-hit"]} corpus-load=${ledger["corpus-load"]} wall=${Math.round(row.wallMs / 1000)}s)`);
 	return row;
 }
 
