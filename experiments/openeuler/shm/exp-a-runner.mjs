@@ -32,6 +32,8 @@ const repoRoot = path.resolve(here, "..", "..", "..");
 const PI_CLI = path.join(repoRoot, "experiments", "data", "shm-e0c", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
 const FLASK_SRC = path.join(repoRoot, "experiments", "data", "flask-src");
 const FLASK_QUESTIONS = path.join(repoRoot, "experiments", "data", "swe-qa", "Benchmark", "flask.jsonl");
+const MUSIQUE_FAMILY = path.join(repoRoot, "experiments", "bench", "families", "q-musique.json");
+const MUSIQUE_WORKTREE = path.join(repoRoot, "experiments", "data", "worktree", "musique");
 const MODELS_SOURCE = path.join(os.homedir(), ".pi", "agent", "models.json");
 const BAILIAN_BASE = "https://llm-3m03faeswsufx2lq.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
 const MODEL_ID = "deepseek-v4.1-flash";
@@ -39,19 +41,29 @@ const MODEL_ID = "deepseek-v4.1-flash";
 const args = parseArgs(process.argv.slice(2));
 const expDir = path.resolve(args["exp-dir"] ?? "");
 const ARMS = (args.arms ?? "TXT,SYN,CREWAI,AUTOGEN").split(",").map((x) => x.trim()).filter(Boolean);
+const FAMILY = args.family ?? "r"; // r=SWE-QA Flask（仓库级问答）；q=MuSiQue（多跳知识）
 const TASKS = Number(args.tasks ?? 1);
 const TIMEOUT_MS = Number(args["timeout-ms"] ?? 20 * 60_000);
 const corpusCache = path.resolve(args["corpus-root"] ?? "/root/.pi/agent/synapse/experiments/_corpus-cache");
 
 const apiKey = process.env.DASHSCOPE_API_KEY ?? "";
-for (const [what, ok] of [["pi cli", fs.existsSync(PI_CLI)], ["flask src", fs.existsSync(FLASK_SRC)], ["flask questions", fs.existsSync(FLASK_QUESTIONS)], ["models.json", fs.existsSync(MODELS_SOURCE)], ["DASHSCOPE_API_KEY", apiKey.length > 0]]) {
+for (const [what, ok] of [["pi cli", fs.existsSync(PI_CLI)], ["models.json", fs.existsSync(MODELS_SOURCE)], ["DASHSCOPE_API_KEY", apiKey.length > 0], ...(FAMILY === "r" ? [["flask src", fs.existsSync(FLASK_SRC)], ["flask questions", fs.existsSync(FLASK_QUESTIONS)]] : [["musique family", fs.existsSync(MUSIQUE_FAMILY)], ["musique worktree", fs.existsSync(MUSIQUE_WORKTREE)]])]) {
 	if (!ok) fail(`missing ${what}`);
 }
 if (fs.existsSync(path.join(expDir, "manifest.json"))) fail("manifest already exists — new --exp-dir for a new run");
 fs.mkdirSync(path.join(expDir, "evidence"), { recursive: true });
 
 const sourceCorpusDir = path.join(corpusCache, "corpus", CORPUS_SNAPSHOT);
-const questions = fs.readFileSync(FLASK_QUESTIONS, "utf-8").trim().split("\n").slice(0, TASKS).map((line) => JSON.parse(line));
+// 题面与工作目录按任务族选择：R=Flask 仓库；Q=MuSiQue 段落池工作树（bench 题族已含 ANSWER 尾注）。
+let questions, workCwd;
+if (FAMILY === "r") {
+	questions = fs.readFileSync(FLASK_QUESTIONS, "utf-8").trim().split("\n").slice(0, TASKS).map((line) => JSON.parse(line).question);
+	workCwd = FLASK_SRC;
+} else {
+	const family = JSON.parse(fs.readFileSync(MUSIQUE_FAMILY, "utf-8"));
+	questions = (family.tasks ?? family).slice(0, TASKS).map((t) => t.task ?? t.question);
+	workCwd = MUSIQUE_WORKTREE;
+}
 const template = fs.readFileSync(path.join(repoRoot, "prompts", "role-pipeline.md"), "utf-8").split("Task:")[0] + "Task:\n\n";
 
 // --- manifest（冻结于数据产生之前） -------------------------------------------
@@ -66,6 +78,7 @@ const manifest = {
 		framework: "框架臂仅作参照系，不设击败判据",
 		source: "spec 2026-10-01-synapse-final-experiment-design.md §1（冻结）",
 	},
+	family: FAMILY,
 	kind: "exp-a",
 	model: { judge: "qwen3.8-max", measured: MODEL_ID, endpoint: BAILIAN_BASE },
 	stats: { bootstrapB: BOOTSTRAP_B, bootstrapSeed: BOOTSTRAP_SEED },
@@ -102,12 +115,12 @@ async function attempt({ arm, index, question }) {
 	for (const file of ["meta.json", "vectors.f32", "chunks.json"]) fs.copyFileSync(path.join(sourceCorpusDir, file), path.join(storageRoot, "corpus", CORPUS_SNAPSHOT, file));
 	fs.mkdirSync(agentDir, { recursive: true });
 
-	const prompt = template + question.question + "\n";
+	const prompt = template + question + "\n";
 	fs.writeFileSync(path.join(evidence, "prompt.md"), prompt);
 	const started = Date.now();
 
 	if (arm === "TXT" || arm === "SYN") return await piAttempt({ arm, index, evidence, storageRoot, agentDir, prompt, started });
-	return await frameworkAttempt({ arm, index, evidence, storageRoot, agentDir, prompt, started });
+	return await frameworkAttempt({ arm, index, evidence, storageRoot, agentDir, prompt, started, workCwd });
 }
 
 // pi 臂（TXT/SYN）：e0c 骨架，SYN 臂 SHM 常开。
@@ -218,7 +231,7 @@ async function piAttempt({ arm, index, evidence, storageRoot, agentDir, prompt, 
 }
 
 // 框架臂（CrewAI/AutoGen）：复用 runExternalAttempt，endpoint 覆盖为百炼。
-async function frameworkAttempt({ arm, index, evidence, storageRoot, agentDir, prompt, started }) {
+async function frameworkAttempt({ arm, index, evidence, storageRoot, agentDir, prompt, started, workCwd }) {
 	const liveChildren = new Set();
 	const piPackageDir = piPackageDirOf(PI_CLI);
 	const result = await runExternalAttempt({
@@ -233,7 +246,7 @@ async function frameworkAttempt({ arm, index, evidence, storageRoot, agentDir, p
 		sessionId: `exp-a-q${index + 1}`,
 		task: prompt,
 		timeoutMs: TIMEOUT_MS,
-		workDir: storageRoot,
+		workDir,
 	});
 	const problem = result.problems.length > 0 ? result.problems.join("; ") : (result.answer === null ? "empty answer" : null);
 	const usage = result.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
