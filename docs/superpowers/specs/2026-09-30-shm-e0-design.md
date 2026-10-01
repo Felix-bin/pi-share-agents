@@ -80,3 +80,9 @@ SYNAPSE 共享记忆的语料向量矩阵从"每次状态消费全量读文件 +
 
 - 2026-09-30：初版冻结（在 E0a/E0b/E0c/E1s 任何数据产生之前）。
 - 2026-10-01，E0c/E1s 首批（shm-e0c-20260930 / shm-e1s-20260930）暴露装置缺陷后：**消费侧（delegation.ts 信封接收链）的段开关经 SYNAPSE_SHM=1 环境变量接入**。原因：状态消费实际走的 service 在 delegation.ts 构造（带 metering 的那条），P6-3 首版只装配了 register-tools 的宿主工具 service（无 metering，消费不经它），导致首批 shm 臂 shm 事件全 0、corpus-load 走文件路径——两臂账本同形，该批 shm 臂对"段验证"目标全部无效（留档不进结论）。不进 canonical LaunchContract 的原因：契约 id 由字段哈希派生，加字段破坏序列化兼容；env 是装置控制面，两臂唯一差异，manifest 记录。产品侧 `synapse.shm` config 语义不变。该修订影响数据，重跑用新 run id（shm-e0c-20261001 / shm-e1s-20261001），首批不与重跑合并。超时同时放宽 9→20 分钟（首批 q3/q8 因 9 分钟预算超时）。
+- 2026-10-01，产品代码平面生命周期收口（提交 `9948fbd`，完备性审计发现四项，全部产品侧修复、不改判定规则与臂定义）：
+  1. **publish/建段异常降级**（审计 C1）：`publishCorpus`/`loadCorpusVectors` 全程不再抛出——ENOSPC、段对象区耗尽、索引满原本会沿工具调用与信封消费链上抛（与平面"降级是返回值，不是异常"的自述矛盾）；现降级为 `{published:false}` + 本进程停用发布，读路径自然回落文件路径。
+  2. **建段前 capacityBytes 预检**：`/dev/shm` 空闲 < 需求即不建段（兑现设计 v1 §8.2/R4；Docker `--shm-size=64m` 场景不再打进 shm_open 才失败）。
+  3. **publishCorpus 记忆化**：已发布快照不再每次 service 构造全量重读三件文件+双 SHA-256——该开销走裸 readFileSync，此前不进任何账本口径（账本"零文件字节"是计量事实，修复后逼近物理事实）。
+  4. **register-tools 平面并入进程注册表**：消掉每 tool call 新建 plane/writer mmap 的句柄泄漏与重读；metering 可移交（adoptMetering），消费侧 shm 事件记账不再依赖首个构造者。
+  对已冻结论与在跑数据的影响：E0a/E0b 修复后以新 run id `shm-e0-20261001` 全量复跑复现（E0a 三档显著更快、E0b 10/10 PASS，判定不变）；`shm-e0c-20261001`/`shm-e1s-20261001` 跑于修复前代码（manifest 如实记录其 sha），其账本口径（corpus-load / shm 事件）不受修复影响——修复只消除账本不可见的宿主物理 I/O，方向上令 shm 臂更优，故修复前数字属保守口径、继续有效；修复后另补 1 对端到端冒烟确认段激活不回归（新 run id，见 e0c-partial）。
