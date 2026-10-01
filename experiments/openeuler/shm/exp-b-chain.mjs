@@ -47,7 +47,7 @@ if (fs.existsSync(manifestPath)) {
 	// carry a newer runner (the resume support itself). The audit trail keeps
 	// every head this run has run under.
 	const existing = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-	existing.resumes = [...(existing.resumes ?? []), { head: gitHead(), resumedAt: new Date().toISOString() }];
+	existing.resumes = [...(existing.resumes ?? []), { head: gitHead, resumedAt: new Date().toISOString() }];
 	fs.writeFileSync(manifestPath, `${JSON.stringify(existing, null, "	")}
 `);
 }
