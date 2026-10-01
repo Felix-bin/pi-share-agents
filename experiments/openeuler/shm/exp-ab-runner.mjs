@@ -45,8 +45,13 @@ if (fs.existsSync(manifestPath)) {
 	// frozen manifest matches this code (the WSL→server handoff relies on it;
 	// anything else is still a refused in-place restart).
 	if (args.resume !== "1") fail("manifest already exists — new --exp-dir for a new run (or --resume 1 to continue an interrupted run)");
+	// Resume across a code bump is recorded, not refused: the handoff machine may
+	// carry a newer runner (the resume support itself). The audit trail keeps
+	// every head this run has run under.
 	const existing = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-	if (existing.code?.head !== gitHead()) fail(`manifest code head ${existing.code?.head} != runner tree ${gitHead()} — resuming a different device is refused`);
+	existing.resumes = [...(existing.resumes ?? []), { head: gitHead(), resumedAt: new Date().toISOString() }];
+	fs.writeFileSync(manifestPath, `${JSON.stringify(existing, null, "	")}
+`);
 }
 fs.mkdirSync(path.join(expDir, "evidence"), { recursive: true });
 
