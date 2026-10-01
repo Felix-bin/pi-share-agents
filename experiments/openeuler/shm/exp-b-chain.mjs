@@ -36,7 +36,16 @@ const apiKey = process.env.DASHSCOPE_API_KEY ?? "";
 for (const [what, ok] of [["pi cli", fs.existsSync(PI_CLI)], ["models.json", fs.existsSync(MODELS_SOURCE)], ["DASHSCOPE_API_KEY", apiKey.length > 0]]) {
 	if (!ok) fail(`missing ${what}`);
 }
-if (fs.existsSync(path.join(expDir, "manifest.json"))) fail("manifest already exists — new --exp-dir for a new run");
+const gitHead = (() => { try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot }).toString().trim(); } catch { return "unknown"; } })();
+const manifestPath = path.join(expDir, "manifest.json");
+if (fs.existsSync(manifestPath)) {
+	// --resume: an interrupted run continues on the same exp-dir only when the
+	// frozen manifest matches this code (the WSL→server handoff relies on it;
+	// anything else is still a refused in-place restart).
+	if (args.resume !== "1") fail("manifest already exists — new --exp-dir for a new run (or --resume 1 to continue an interrupted run)");
+	const existing = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+	if (existing.code?.head !== gitHead()) fail(`manifest code head ${existing.code?.head} != runner tree ${gitHead()} — resuming a different device is refused`);
+}
 fs.mkdirSync(path.join(expDir, "evidence"), { recursive: true });
 
 const sourceCorpusDir = path.join(corpusCache, "corpus", CORPUS_SNAPSHOT);
@@ -53,8 +62,7 @@ if (CHAIN === "r") {
 	template = fs.readFileSync(path.join(repoRoot, "prompts", "role-pipeline.md"), "utf-8").split("Task:")[0] + "Task:\n\n";
 }
 
-const gitHead = (() => { try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot }).toString().trim(); } catch { return "unknown"; } })();
-fs.writeFileSync(path.join(expDir, "manifest.json"), `${JSON.stringify({
+fs.writeFileSync(manifestPath, `${JSON.stringify({
 	chain: CHAIN,
 	code: { head: gitHead, runnerSha256: sha256(fs.readFileSync(new URL(import.meta.url))) },
 	judgment: { primary: "链上 vs 冷启动 token 配对差 CI；命中率并列报", source: "spec §2（冻结）" },
@@ -91,6 +99,7 @@ console.log(`[exp-b] done; ${results.length} attempts`);
 async function attempt({ condition, index, question, storageRoot }) {
 	const key = `${CHAIN}-${condition}-t${index + 1}`;
 	const evidence = path.join(expDir, "evidence", key);
+	fs.rmSync(evidence, { recursive: true, force: true }); // a resumed attempt starts its evidence clean; leftovers from a killed run would double-append
 	fs.mkdirSync(evidence, { recursive: true });
 	const agentDir = path.join(os.tmpdir(), "pi-exp-b", `${key}-agent`);
 	fs.rmSync(agentDir, { recursive: true, force: true });
