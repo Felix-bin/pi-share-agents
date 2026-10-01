@@ -30,7 +30,7 @@ const MODELS_SOURCE = path.join(os.homedir(), ".pi", "agent", "models.json");
 const BAILIAN_BASE = "https://llm-3m03faeswsufx2lq.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
 const MODEL_ID = "deepseek-v4.1-flash";
 const TASKS = Number(parseArgs(process.argv.slice(2))["tasks"] ?? 3);
-const TIMEOUT_MS = 9 * 60_000;
+const TIMEOUT_MS = 20 * 60_000;
 
 const args = parseArgs(process.argv.slice(2));
 const expDir = path.resolve(args["exp-dir"] ?? "");
@@ -130,6 +130,9 @@ async function attempt({ arm, index, question }) {
 		PI_CODING_AGENT_DIR: agentDir,
 		PI_CODING_AGENT_HOME: agentDir,
 		NODE_USE_ENV_PROXY: "0",
+		// Consumer-side plane switch (delegation.ts seam): the only env difference
+		// between the arms; the canonical launch contract stays untouched.
+		SYNAPSE_SHM: arm === "shm" ? "1" : "0",
 	};
 	const child = spawn(process.execPath, [PI_CLI, "--no-themes", "--no-context-files", "--no-session", "--offline", "--mode", "rpc",
 		"--provider", "bailian", "--model", MODEL_ID, "--thinking", "high", "--tools", "subagent"], { cwd: FLASK_SRC, env, stdio: ["pipe", "pipe", "pipe"] });

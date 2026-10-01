@@ -79,3 +79,4 @@ SYNAPSE 共享记忆的语料向量矩阵从"每次状态消费全量读文件 +
 ## 6. 修订记录
 
 - 2026-09-30：初版冻结（在 E0a/E0b/E0c/E1s 任何数据产生之前）。
+- 2026-10-01，E0c/E1s 首批（shm-e0c-20260930 / shm-e1s-20260930）暴露装置缺陷后：**消费侧（delegation.ts 信封接收链）的段开关经 SYNAPSE_SHM=1 环境变量接入**。原因：状态消费实际走的 service 在 delegation.ts 构造（带 metering 的那条），P6-3 首版只装配了 register-tools 的宿主工具 service（无 metering，消费不经它），导致首批 shm 臂 shm 事件全 0、corpus-load 走文件路径——两臂账本同形，该批 shm 臂对"段验证"目标全部无效（留档不进结论）。不进 canonical LaunchContract 的原因：契约 id 由字段哈希派生，加字段破坏序列化兼容；env 是装置控制面，两臂唯一差异，manifest 记录。产品侧 `synapse.shm` config 语义不变。该修订影响数据，重跑用新 run id（shm-e0c-20261001 / shm-e1s-20261001），首批不与重跑合并。超时同时放宽 9→20 分钟（首批 q3/q8 因 9 分钟预算超时）。

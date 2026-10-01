@@ -14,6 +14,7 @@ import { classifySynapseError, type SynapseErrorClassification } from "./errors.
 import { buildReceipt, MEMORY_SECTION_HEADER, prepareHandoffContext, type HandoffCandidate, type HandoffContext, type Receipt, type ReceiptOutcome } from "./handoff.ts";
 import type { LaunchContract } from "./lifecycle.ts";
 import { createMemoryService, SYNAPSE_MAX_SEARCH_K, type MemoryService, type SearchResult } from "./memory-service.ts";
+import { shmCorpusPlaneFor } from "./shm-corpus-plane.ts";
 import { createMeteringLog, recordProcessIdentity, recordTransportBytes, type MeteringIdentity, type MeteringLog, type ModelUsage } from "./metering.ts";
 import { capabilityForAgent, hostCapability, recallsMemory, redeemsStageResults, SYNAPSE_CONSUMER_VERSION } from "./roles.ts";
 import { condenseStageBlocks } from "./stage-result.ts";
@@ -150,6 +151,10 @@ export function createDelegationDeps(input: OpenDelegationInput): DelegationDeps
 			// service can consume a state the envelope carries ("unset" keeps the
 			// state plane off, matching what the child was launched with).
 			corpusSnapshotId: input.contract.corpusSnapshotId === "unset" ? null : input.contract.corpusSnapshotId,
+			loadCorpus: shmLoadCorpusFor(input.contract, {
+				identity: { agent: input.identity.agent, attempt: input.identity.attempt, mode: input.contract.mode, nodeId: nodeIdFor(input.identity.runId, input.identity.childIndex), runId: input.identity.runId, sessionId: input.identity.senderSessionId, snapshotId: null },
+				log,
+			}),
 			provenance: {
 				agent: input.identity.agent,
 				attempt: input.identity.attempt,
@@ -166,6 +171,19 @@ export function createDelegationDeps(input: OpenDelegationInput): DelegationDeps
 			worktreeRoot: input.worktreeRoot,
 		}),
 	};
+}
+
+/**
+ * Consumer-side corpus loader from the resident segment. Armed by the
+ * SYNAPSE_SHM=1 rig variable (the canonical launch contract stays untouched);
+ * every other environment answers undefined and the file path serves the
+ * ranking exactly as before. One plane per (storageRoot, namespace) process-wide.
+ */
+function shmLoadCorpusFor(contract: LaunchContract, metering?: { identity: MeteringIdentity; log: MeteringLog }) {
+	if (process.env.SYNAPSE_SHM !== "1") return undefined;
+	const snapshot = contract.corpusSnapshotId === "unset" ? null : contract.corpusSnapshotId;
+	const plane = shmCorpusPlaneFor(contract.namespaceId, contract.storageRoot, snapshot, metering);
+	return plane === null ? undefined : (snapshotId: string, dim: number, representationId: string) => plane.loadCorpusVectors(snapshotId, dim, representationId);
 }
 
 /**
@@ -948,6 +966,7 @@ export async function consumeRetrieveState(input: ConsumeInput): Promise<Consume
 		input.deps.service ??
 		createMemoryService({
 			corpusSnapshotId: input.contract.corpusSnapshotId === "unset" ? null : input.contract.corpusSnapshotId,
+			loadCorpus: shmLoadCorpusFor(input.contract, { identity: meterIdentity, log: input.deps.log }),
 			// The fallback embedder is the receiver's own provider (spec §8.2: the
 			// receiver re-embeds); the metering pair keeps state-consume and
 			// object-io on the same log as the receive and send events above, and the
