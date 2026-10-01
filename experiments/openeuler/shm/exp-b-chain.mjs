@@ -152,7 +152,7 @@ async function attempt({ condition, index, question, storageRoot }) {
 	fs.writeFileSync(path.join(evidence, "answer.md"), answer);
 	if (problem === null && !answer.trim()) problem = "empty answer";
 
-	const ledger = { "corpus-load": 0, "memory-query": 0, "memory-reuse": 0, "model-usage": 0, "shm-attach": 0, "shm-hit": 0, "state-consume": 0 };
+	const ledger = { "corpus-load": 0, "memory-query": 0, "memory-reuse": 0, "model-usage": 0, "shm-attach": 0, "shm-hit": 0, "state-consume": 0, "state-send": 0 };
 	let childIn = 0, childOut = 0;
 	const meteringDir = path.join(storageRoot, "metering");
 	if (fs.existsSync(meteringDir)) {
