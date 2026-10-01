@@ -7,7 +7,8 @@ import { buildCorpus } from "../../src/synapse/corpus.ts";
 import { createContentStore } from "../../src/synapse/content-store.ts";
 import { SYNAPSE_VECTOR_MEDIA_TYPE } from "../../src/synapse/embedding.ts";
 import { createSynapseService } from "../../src/synapse/register-tools.ts";
-import { createInMemoryShmBindings, resetInMemoryShmSegments } from "../../src/synapse/shm-bindings.ts";
+import { createInMemoryShmBindings, resetInMemoryShmSegments, type ShmBindings } from "../../src/synapse/shm-bindings.ts";
+import { resetShmCorpusPlanes } from "../../src/synapse/shm-corpus-plane.ts";
 import type { SynapseConfig } from "../../src/synapse/config.ts";
 import { createDeterministicEmbedder } from "../support/deterministic-embedder.ts";
 
@@ -36,6 +37,7 @@ let corpusSnapshotId = "";
 const embedder = createDeterministicEmbedder(DIM);
 
 beforeEach(async () => {
+	resetShmCorpusPlanes();
 	resetInMemoryShmSegments();
 	storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "synapse-shmasm-"));
 	agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "synapse-shmasm-agent-"));
@@ -54,6 +56,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	resetShmCorpusPlanes();
 	fs.rmSync(storageRoot, { force: true, recursive: true });
 	fs.rmSync(agentDir, { force: true, recursive: true });
 	fs.rmSync(worktree, { force: true, recursive: true });
@@ -124,5 +127,28 @@ describe("createSynapseService assembles the corpus plane behind config.shm", ()
 		const stateRef = stateRefOfChunk0();
 		const result = writer.service.search({ k: 2, stateId: stateRef.payloadId, stateRef });
 		assert.ok(result.hits.length > 0);
+	});
+
+	it("shares one process plane across service constructions (no per-tool-call writer mappings)", () => {
+		// Services are minted per tool call in production; before the registry
+		// each construction opened its own writer mapping and re-read the whole
+		// corpus. Exactly one segment creation across two constructions is the
+		// property that kills both costs.
+		const inner = createInMemoryShmBindings();
+		let createCalls = 0;
+		const counting: ShmBindings = {
+			...inner,
+			createSegment(name: string, bytes: number) {
+				createCalls += 1;
+				return inner.createSegment(name, bytes);
+			},
+		};
+		const ctx = { provenance: { agent: "assembler", attempt: 1, runId: "run-1", sessionId: "sess-1" }, scope: { agent: "assembler", pathPrefixes: [""], write: true }, shmBindings: counting, worktreeRoot: worktree };
+		const stateRef = stateRefOfChunk0();
+		const first = createSynapseService(config(true), agentDir, ctx);
+		assert.ok(first.service.search({ k: 2, stateId: stateRef.payloadId, stateRef }).hits.length > 0);
+		const second = createSynapseService(config(true), agentDir, ctx);
+		assert.ok(second.service.search({ k: 2, stateId: stateRef.payloadId, stateRef }).hits.length > 0);
+		assert.equal(createCalls, 1, "the process plane registry must mint exactly one segment mapping");
 	});
 });

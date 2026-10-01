@@ -182,7 +182,11 @@ export function createDelegationDeps(input: OpenDelegationInput): DelegationDeps
 function shmLoadCorpusFor(contract: LaunchContract, metering?: { identity: MeteringIdentity; log: MeteringLog }) {
 	if (process.env.SYNAPSE_SHM !== "1") return undefined;
 	const snapshot = contract.corpusSnapshotId === "unset" ? null : contract.corpusSnapshotId;
-	const plane = shmCorpusPlaneFor(contract.namespaceId, contract.storageRoot, snapshot, metering);
+	// Same registry the host-tool assembly uses: whoever constructs first
+	// publishes (idempotent), the rest attach read-only. Handing the metering
+	// over on every call keeps consumption attributed even when an unmetered
+	// host-tool construction created the plane first.
+	const plane = shmCorpusPlaneFor(contract.namespaceId, contract.storageRoot, snapshot, { metering });
 	return plane === null ? undefined : (snapshotId: string, dim: number, representationId: string) => plane.loadCorpusVectors(snapshotId, dim, representationId);
 }
 

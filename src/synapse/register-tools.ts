@@ -8,8 +8,8 @@ import { resolveConfiguredEmbedder, type Embedder } from "./embedding.ts";
 import { createMemoryService, SYNAPSE_DEFAULT_SEARCH_K, SYNAPSE_MAX_SEARCH_K, type MemoryService } from "./memory-service.ts";
 import type { MemoryProvenance } from "./memory-store.ts";
 import { ensureNamespace, resolveStorageRoot } from "./namespace.ts";
-import { resolveShmBindings, type ShmBindings } from "./shm-bindings.ts";
-import { createShmCorpusPlane, type ShmCorpusPlane } from "./shm-corpus-plane.ts";
+import type { ShmBindings } from "./shm-bindings.ts";
+import { shmCorpusPlaneFor, type ShmCorpusPlane } from "./shm-corpus-plane.ts";
 import { memoryVectorCacheFor } from "./vector-cache.ts";
 
 /**
@@ -219,15 +219,16 @@ export function createSynapseService(config: SynapseConfig, agentDir: string, co
 	// path exactly as it was.
 	let shmPlane: ShmCorpusPlane | null = null;
 	if (config.shm && config.corpusSnapshotId !== null) {
-		const bindings = context.shmBindings ?? resolveShmBindings();
-		if (bindings !== null) {
-			shmPlane = createShmCorpusPlane({ bindings, namespaceId16: resolved.namespaceId });
-			// A failed publish does not cancel the plane: another process may have
-			// published this corpus already (the files might even be gone — the
-			// segment is then the only copy), and a segment miss already falls back
-			// to the file path on its own. Publishing is an attempt, not a gate.
-			shmPlane.publishCorpus(resolved.root, config.corpusSnapshotId);
-		}
+		// One plane per (storageRoot, namespace) per process — the same registry
+		// the consumer path uses. Services are constructed per tool call, so
+		// minting a fresh plane each time would re-open a writer mapping and
+		// re-read the whole corpus on every call; the registry makes the first
+		// construction publish and every later one attach as a reader. The
+		// test seam (`context.shmBindings`) rides along as the bindings
+		// override; without it the process resolves real POSIX bindings or
+		// none, and "none" simply keeps the file path. Publishing is an
+		// attempt, not a gate — the plane's own contract.
+		shmPlane = shmCorpusPlaneFor(resolved.namespaceId, resolved.root, config.corpusSnapshotId, { bindings: context.shmBindings });
 	}
 	return {
 		service: createMemoryService({

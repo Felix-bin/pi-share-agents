@@ -275,8 +275,10 @@ export function registerSynapseChildTools(pi: SynapseToolHost, contract: Synapse
 			// here. False states that instead of repeating a value that does nothing.
 			delta: false,
 			// From the contract, not hardcoded: the child's own tools are the state
-			// consumers, and a shm-on launch must let them attach the segment
-			// (read-only; the parent's publish made it resident).
+			// consumers, and a shm-on launch must let them reach the segment. The
+			// process plane registry makes this safe without a writer lock: the
+			// first assembly publishes the corpus (idempotent — identical bytes),
+			// every later construction in the process attaches and only reads.
 			shm: contract.shm,
 			embedding: null,
 			maxObjectBytes: 1024 * 1024,

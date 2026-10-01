@@ -7,8 +7,8 @@ import { buildCorpus } from "../../src/synapse/corpus.ts";
 import { createContentStore, type ContentStore } from "../../src/synapse/content-store.ts";
 import { SYNAPSE_VECTOR_MEDIA_TYPE } from "../../src/synapse/embedding.ts";
 import { createMeteringLog, readMeteringLog, type MeteringIdentity, type MeteringLog } from "../../src/synapse/metering.ts";
-import { createInMemoryShmBindings, resetInMemoryShmSegments } from "../../src/synapse/shm-bindings.ts";
-import { corpusObjectId, createShmCorpusPlane } from "../../src/synapse/shm-corpus-plane.ts";
+import { createInMemoryShmBindings, resetInMemoryShmSegments, type ShmBindings } from "../../src/synapse/shm-bindings.ts";
+import { corpusObjectId, createShmCorpusPlane, resetShmCorpusPlanes, shmCorpusPlaneFor } from "../../src/synapse/shm-corpus-plane.ts";
 import { loadCorpusVectors, retrieveWithState, type StateRetrievalDeps } from "../../src/synapse/state-retrieval.ts";
 import { createDeterministicEmbedder } from "../support/deterministic-embedder.ts";
 
@@ -180,5 +180,97 @@ describe("residency behaviour", () => {
 		assert.equal(plane.loadCorpusVectors(corpusSnapshotId, DIM, "some-other-representation"), null);
 		assert.equal(eventsOf("shm-miss"), 1);
 		plane.close();
+	});
+});
+
+describe("publish-side degradation and lifecycle (audit 2026-10-01: an attempt, never a gate)", () => {
+	it("a throwing segment layer degrades to {published:false}, disables further attempts, and never escapes", () => {
+		const inner = createInMemoryShmBindings();
+		const bindings: ShmBindings = {
+			...inner,
+			createSegment(_name: string, _bytes: number): never {
+				// ENOSPC-shaped: what shm_open/ftruncate report on a full /dev/shm.
+				throw new Error("shm: shm_open(O_CREAT) failed (ret -1, errno 28)");
+			},
+		};
+		const plane = createShmCorpusPlane({ bindings, namespaceId16: NS });
+		const first = plane.publishCorpus(storageRoot, corpusSnapshotId);
+		assert.equal(first.published, false);
+		assert.match((first as { reason: string }).reason, /disabled for this process after failure/);
+		const second = plane.publishCorpus(storageRoot, corpusSnapshotId);
+		assert.equal(second.published, false, "a disabled plane must not retry on every service construction");
+		assert.match((second as { reason: string }).reason, /disabled for this process/);
+		assert.equal(plane.stats().publishFailures.length, 1);
+		assert.equal(plane.loadCorpusVectors(corpusSnapshotId, DIM, embedder.representationId), null, "no segment exists; the loader misses cleanly");
+		plane.close();
+	});
+
+	it("refuses to mint a segment the tmpfs cannot hold (capacity precheck, design §8.2)", () => {
+		const inner = createInMemoryShmBindings();
+		let createCalls = 0;
+		const bindings: ShmBindings = {
+			...inner,
+			capacityBytes: () => 4096,
+			createSegment(name: string, bytes: number) {
+				createCalls += 1;
+				return inner.createSegment(name, bytes);
+			},
+		};
+		const plane = createShmCorpusPlane({ bindings, namespaceId16: NS });
+		const result = plane.publishCorpus(storageRoot, corpusSnapshotId);
+		assert.equal(result.published, false);
+		assert.match((result as { reason: string }).reason, /insufficient shm capacity/);
+		assert.equal(createCalls, 0, "the precheck must refuse before shm_open, not after a stray name entry exists");
+		assert.equal(plane.stats().publishFailures.length, 1);
+		plane.close();
+		// The other two conclusions: `null` (host cannot tell) proceeds — every
+		// other test in this file runs on the fake, whose capacityBytes() is null.
+	});
+
+	it("a published snapshot is never re-read: later publishes succeed with the corpus files deleted", () => {
+		const plane = createShmCorpusPlane({ bindings: createInMemoryShmBindings(), namespaceId16: NS });
+		assert.deepEqual(plane.publishCorpus(storageRoot, corpusSnapshotId), { published: true });
+		const expected = loadCorpusVectors(storageRoot, corpusSnapshotId, DIM, embedder.representationId).chunkIds;
+		fs.rmSync(path.join(storageRoot, "corpus"), { recursive: true });
+		// Before the fix this re-read the files (and failed on them) on every
+		// service construction; the memoized skip must not need them at all.
+		assert.deepEqual(plane.publishCorpus(storageRoot, corpusSnapshotId), { published: true });
+		assert.equal(plane.stats().publishes, 1);
+		const corpus = plane.loadCorpusVectors(corpusSnapshotId, DIM, embedder.representationId);
+		assert.ok(corpus !== null, "the segment is the resident copy now that the files are gone");
+		assert.deepEqual(corpus.chunkIds, expected);
+		plane.close();
+	});
+
+	it("an exception inside the segment layer reports itself as a miss, never escapes the loader", () => {
+		const inner = createInMemoryShmBindings();
+		const bindings: ShmBindings = {
+			...inner,
+			openSegment(_name: string): never {
+				throw new Error("simulated attach explosion");
+			},
+		};
+		const plane = createShmCorpusPlane({ bindings, metering: { identity: identity(), log }, namespaceId16: NS });
+		assert.equal(plane.loadCorpusVectors(corpusSnapshotId, DIM, embedder.representationId), null);
+		assert.equal(eventsOf("shm-miss"), 1);
+		assert.ok(plane.stats().attachFailures.some((entry) => entry.startsWith("loader-exception:")));
+		plane.close();
+	});
+
+	it("the registry hands a later metered consumer attribution over a plane created unmetered", () => {
+		resetShmCorpusPlanes();
+		try {
+			const unmetered = shmCorpusPlaneFor(NS, storageRoot, corpusSnapshotId, { bindings: createInMemoryShmBindings() });
+			assert.ok(unmetered !== null);
+			assert.deepEqual(unmetered.publishCorpus(storageRoot, corpusSnapshotId), { published: true });
+			// The host-tool path created the plane with no metering; the delegation
+			// consumer then claims it — its shm events must land in the ledger.
+			const metered = shmCorpusPlaneFor(NS, storageRoot, corpusSnapshotId, { bindings: createInMemoryShmBindings(), metering: { identity: identity(), log } });
+			assert.ok(metered === unmetered, "one plane per (storageRoot, namespace) per process");
+			assert.ok(metered.loadCorpusVectors(corpusSnapshotId, DIM, embedder.representationId) !== null);
+			assert.ok(eventsOf("shm-hit") >= 1, "consumption after adoption is metered");
+		} finally {
+			resetShmCorpusPlanes();
+		}
 	});
 });
