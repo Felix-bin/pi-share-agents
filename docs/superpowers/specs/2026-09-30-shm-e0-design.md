@@ -85,4 +85,4 @@ SYNAPSE 共享记忆的语料向量矩阵从"每次状态消费全量读文件 +
   2. **建段前 capacityBytes 预检**：`/dev/shm` 空闲 < 需求即不建段（兑现设计 v1 §8.2/R4；Docker `--shm-size=64m` 场景不再打进 shm_open 才失败）。
   3. **publishCorpus 记忆化**：已发布快照不再每次 service 构造全量重读三件文件+双 SHA-256——该开销走裸 readFileSync，此前不进任何账本口径（账本"零文件字节"是计量事实，修复后逼近物理事实）。
   4. **register-tools 平面并入进程注册表**：消掉每 tool call 新建 plane/writer mmap 的句柄泄漏与重读；metering 可移交（adoptMetering），消费侧 shm 事件记账不再依赖首个构造者。
-  对已冻结论与在跑数据的影响：E0a/E0b 修复后以新 run id `shm-e0-20261001` 全量复跑复现（E0a 三档显著更快、E0b 10/10 PASS，判定不变）；`shm-e0c-20261001`/`shm-e1s-20261001` 跑于修复前代码（manifest 如实记录其 sha），其账本口径（corpus-load / shm 事件）不受修复影响——修复只消除账本不可见的宿主物理 I/O，方向上令 shm 臂更优，故修复前数字属保守口径、继续有效；修复后另补 1 对端到端冒烟确认段激活不回归（新 run id，见 e0c-partial）。
+  对已冻结论与在跑数据的影响：E0a/E0b 修复后以新 run id `shm-e0-20261001` 全量复跑复现（E0a 三档显著更快、E0b 10/10 PASS，判定不变）；`shm-e0c-20261001`/`shm-e1s-20261001` 跑于修复前代码（manifest 如实记录其 sha），其账本口径（corpus-load / shm 事件）不受修复影响——修复只消除账本不可见的宿主物理 I/O，方向上令 shm 臂更优，故修复前数字属保守口径、继续有效；修复后已补 1 对端到端冒烟确认段激活不回归：run `shm-e0c-fixsmoke-20261001`（q8 两臂，shm 臂 `shm-attach`/`shm-hit`=1、`corpus-load`=0，两臂 valid）。
