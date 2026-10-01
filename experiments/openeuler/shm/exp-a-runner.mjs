@@ -246,7 +246,7 @@ async function frameworkAttempt({ arm, index, evidence, storageRoot, agentDir, p
 		sessionId: `exp-a-q${index + 1}`,
 		task: prompt,
 		timeoutMs: TIMEOUT_MS,
-		workDir,
+		workDir: workCwd, // tool-server cwd = 题目工作树，与 pi 臂一致（公平性）
 	});
 	const problem = result.problems.length > 0 ? result.problems.join("; ") : (result.answer === null ? "empty answer" : null);
 	const usage = result.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
