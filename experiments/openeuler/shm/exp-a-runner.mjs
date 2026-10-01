@@ -237,7 +237,7 @@ async function frameworkAttempt({ arm, index, evidence, storageRoot, agentDir, p
 	const result = await runExternalAttempt({
 		arm,
 		agentDir,
-		endpoint: { provider: "bailian", baseUrl: BAILIAN_BASE, model: MODEL_ID, apiKey },
+		endpoint: { provider: "bailian", baseUrl: BAILIAN_BASE, model: MODEL_ID, apiKey, maxTokens: 32768 },
 		evidenceDir: evidence,
 		exhaustedPattern: /(429|quota|rate.?limit)/i,
 		liveChildren,

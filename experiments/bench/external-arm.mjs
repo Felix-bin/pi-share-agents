@@ -220,7 +220,12 @@ export async function runExternalAttempt({ arm, task, workDir, agentDir, evidenc
 		return { provider: EXTERNAL_PROVIDER.name, baseUrl: EXTERNAL_PROVIDER.baseUrl, model: EXTERNAL_PROVIDER.model, apiKey: resolved.key };
 	})();
 	const { provider, model } = target;
-	const profile = piParamProfile({ provider, baseUrl: target.baseUrl, efforts });
+	// max_tokens rides `extra` onto every role: without it the provider default
+	// (~4k) can be consumed entirely by reasoning tokens, leaving the content
+	// empty — which AutoGen's reflect-on-tool-use reads as "no valid text" and
+	// aborts. 32768 matches what the pi arms send (MODEL.maxTokens), so this is
+	// parity, not a boost.
+	const profile = piParamProfile({ provider, baseUrl: target.baseUrl, efforts, extra: target.maxTokens ? { max_tokens: target.maxTokens } : {} });
 	const callLog = path.join(evidenceDir, "llm-calls.jsonl");
 	const harnessLog = path.join(evidenceDir, "harness.log");
 	const result = { provider, model, wallMs: null, answer: null, exit: null, timedOut: false, problems: [], exhausted: [], perRole: {}, usage: null, unavailableCalls: 0, handoffs: [], harnessMeta: null, profile: { format: profile.format, reasoningContent: profile.reasoningContent } };
