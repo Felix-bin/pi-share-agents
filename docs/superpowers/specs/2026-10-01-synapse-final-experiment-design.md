@@ -110,3 +110,11 @@ SHM 并入后 ≥10 轮连续任务不失败：直接用 EXP-A/B 的连续执行
 
 - 2026-10-01：EXP-A 定 4 臂（用户）；消融独立为 EXP-AB 三因子（用户）；框架臂公平配置沿用学长装置（用户+核查）；**benchmark 定 SWE-QA + MuSiQue + LongMemEval，SWE-bench 排除（用户）**；SHM 常开为全局原则（用户）。
 - 仍待裁决：EXP-A 规模 R10+Q6（~28 元）与 EXP-AB 规模（6 题 × 3 配置）；E0c/E1s 收尾数字是否进报告附录（建议进）。
+
+## 9. 实施期修订记录（2026-10-02，数据产生前的装置级修正）
+
+1. **judge 模型改判**：§1 原文"judge 用 deepseek-v3.2"不可行——该模型已在百炼 2026 Q3 下线批次下线（现行模型列表无，含 3.2 的任何 ID）。改判为 **qwen3.8-max**（百炼第一方，异族于被测 deepseek-v4.1-flash，下线风险最低；probe 实测 200、官方 judge prompt 五维 JSON 解析正确）。备选：commandcode deepseek-v4.1-flash（同族偏差如实披露）。学长装置 judge=被测模型本身（score.mjs 直接 import MODEL），其分数只作臂间相对比较；我方装置按异族 judge 绝对口径，两套不混。
+2. **第五维命名核验（撤销"coherence"改判）**：实施期网络调研曾称官方第五维为 coherence（arXiv 2509.14635 表述），但本地 SWE-QA 官方判分脚本（`experiments/data/swe-qa/Benchmark construction/score/llm-as-a-judge.py`，clone 钉 c13deac）的输出 schema 与校验代码（L144-148/L202/L266）第五维均为 **reasoning**。一手来源（官方脚本）优先，五维维持 `correctness/completeness/relevance/clarity/reasoning`，与学长装置 DIMS 一致。
+3. **模型端点统一**：被测模型=百炼 deepseek-v4.1-flash（专属 MaaS 端点，与 E0c/E1s 同款；probe 实测 thinking 默认开、enable_thinking 可控）。学长 sweqa 装置的 commandcode 端点仅属其装置口径，两套数字不混池（§7 纪律）。
+4. **10-10 下线风险**：百炼第三方托管模型（DeepSeek 系列在列）2026-10-10 00:00 UTC+8 批次下线（决赛前 1 天）。deepseek-v4.1-flash 现可用（probe 200），正式跑与补跑全部在 10-06 冻结线前完成即不受影响；若期间失效，备选=qwen3.8-max 作被测（须重跑 SHM 激活验证）。
+5. **轨迹增强（用户新要求，2026-10-02）**：每 attempt 落盘 8 类文件（answer/prompt/pi-rpc.jsonl/pi-stderr.log/llm-calls.jsonl/metering/handoffs.jsonl/result.json）；m8-aggregate.mjs 额外产出工具使用频率表（调用次数/入出参字节），作为后期"工具禁用"优化的证据入口（pi 支持 --tools 白名单/--exclude-tools 黑名单，预留禁用变体实验）。
