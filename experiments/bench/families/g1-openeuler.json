@@ -1,0 +1,142 @@
+{
+  "group": "G1",
+  "title": "openEuler 系统能力调研链（多智能体基础设施）",
+  "description": "十轮逐级依赖的系统能力调研：平台基线 → iSulad 容器运行时 → IPC namespace 共享 → tmpfs 对象面 → AF_UNIX 控制面 → transportBytes 对账 → eBPF/bpftrace 采集 → 进程/cgroup 身份归因 → 分类与拒报纪律 → 本机验收清单。每轮只给任务文本，上一轮的结论只能经由共享记忆（SYN）或流水线内部的文本交接获得。所有要点均可由仓库文件（docs/superpowers/specs/*、docs/superpowers/runbooks/*、scripts/synapse/*、src/synapse/*）与只读命令（cat /etc/os-release、uname -r、isula version、findmnt、bpftrace --version、ls /sys/kernel/btf/vmlinux、cat /proc/self/cgroup）核实。",
+  "pathConvention": "anchors 相对于工作树根（pi-share-agents 仓库副本）",
+  "scoring": "score = 答对的要点数 / 要点数；答案陈述了该事实或其精确等价表述即算对；多出的正确细节不加分也不扣分；被探查的常量给错数字则该要点不得分；对只读命令的结果，答案须与本机实际输出一致（如实报告命令失败也算对，编造输出不算）",
+  "tasks": [
+    {
+      "index": 1,
+      "title": "平台基线",
+      "task": "调研本机作为多智能体基础设施宿主的平台基线：用只读命令确认 openEuler 发行版本（cat /etc/os-release）、内核版本（uname -r）、iSulad 客户端与守护进程状态（isula version），并与 docs/superpowers/specs/2026-09-20-synapse-isulad-runtime-design.md 声明的目标平台对比，指出是否一致；同时说明 scripts/synapse/s1-acceptance.sh 选择容器引擎的顺序。",
+      "dependsOn": [],
+      "anchors": ["docs/superpowers/specs/2026-09-20-synapse-isulad-runtime-design.md", "scripts/synapse/s1-acceptance.sh"],
+      "keypoints": [
+        "本机 /etc/os-release 为 openEuler 24.03 (LTS-SP1)，而 S1 设计声明的目标平台是 openEuler 24.03-LTS-SP3，二者不一致，须如实标注",
+        "内核版本按 uname -r 实际输出报告（本机为 6.6 系列 WSL2 内核）",
+        "isula version 的结果如实报告：客户端存在（2.1.x）；若守护进程未运行则报告连接失败，而非声称可用",
+        "s1-acceptance.sh 按 isula → docker → podman 顺序取第一个在 PATH 上的引擎，一个都没有时所有检查记为 unavailable"
+      ]
+    },
+    {
+      "index": 2,
+      "title": "iSulad 容器拓扑与 anchor 容器",
+      "task": "在上一轮得出的平台基线结论（本机实际版本、iSulad 可用性）基础上，说明 S1 设计如何用 iSulad 把每个子 Agent 放进容器并共享 IPC namespace：anchor 容器以什么参数启动、Agent 容器如何加入、anchor 生命周期有什么要求、以及 S1 本身为什么不带来性能收益。请引用 scripts/synapse/anchor.sh 与 S1 设计文档。",
+      "dependsOn": [1],
+      "anchors": ["scripts/synapse/anchor.sh", "docs/superpowers/specs/2026-09-20-synapse-isulad-runtime-design.md"],
+      "keypoints": [
+        "anchor.sh 以 `run -d --name <name> --ipc shareable <image> /bin/sh -c 'sleep infinity'` 启动 anchor，anchor 只持有 namespace 不做事",
+        "Agent 容器通过 `--ipc container:<anchor>` 加入 anchor 的 IPC namespace，从而共享 /dev/shm",
+        "anchor 的生命周期必须长于任何 Agent 容器；anchor 启动失败或加入 IPC namespace 失败时拒绝启动 Agent，而不是降级成各自隔离的容器",
+        "S1 本身不产生性能收益（不加速、不减字节），其价值是作为 S2 共享内存数据面的前置，并为 S3 提供 cgroup 归因键"
+      ]
+    },
+    {
+      "index": 3,
+      "title": "IPC 共享的验收方法",
+      "task": "基于上一轮关于 anchor 容器与 `--ipc container:` 共享 IPC namespace 的结论，说明 scripts/synapse/s1-acceptance.sh 的 ipc-sharing 检查如何证明共享真的生效（写什么、读什么、如何做负对照），为什么刻意不挂载 /dev/shm，以及判定脚本 judge-s1-report.ts 的退出码含义和 blocksS2 的触发条件。",
+      "dependsOn": [2],
+      "anchors": ["scripts/synapse/s1-acceptance.sh", "scripts/synapse/judge-s1-report.ts", "docs/superpowers/runbooks/s1-acceptance-runbook.md"],
+      "keypoints": [
+        "容器 A 用 dd 从 /dev/urandom 向 /dev/shm/<runId>.probe 写 4096 字节并算 sha256，容器 B 在同一 IPC namespace 中读取并比对摘要一致",
+        "负对照：一个 `--ipc private` 的容器必须看不到该对象，否则检查判 fail（无法区分共享与 bind mount）",
+        "刻意不加 `-v /dev/shm:/dev/shm`：bind mount 会覆盖共享 IPC namespace 提供的 tmpfs，使检查失去证伪能力",
+        "judge 退出码 0 pass / 1 fail / 2 incomplete / 3 报告不可读；ipc-sharing 未通过时 blocksS2 为 true"
+      ]
+    },
+    {
+      "index": 4,
+      "title": "tmpfs 作为对象存储",
+      "task": "在上一轮确认 /dev/shm 可经共享 IPC namespace 跨容器可见的基础上，说明 S2 共享内存数据面最终为何不把存储根换成 /dev/shm，而是把宿主 tmpfs bind mount 到 <storageRoot>/objects；preflight 如何证伪（给出魔数）；为什么 symlink 不行；以及 tmpfs 的易失性如何处理。请用 findmnt 查看本机 /dev/shm 的文件系统类型作为佐证。",
+      "dependsOn": [3],
+      "anchors": ["docs/superpowers/specs/2026-09-20-synapse-shared-memory-dataplane-design.md", "src/synapse/tmpfs-preflight.ts", "scripts/synapse/mount-objects-tmpfs.sh"],
+      "keypoints": [
+        "换根即换 S3 的账本：trace-classify 只认一个存储根，对象搬出 storageRoot 会全部落进 outside-root，所以改为 bind mount 宿主 tmpfs 到 <storageRoot>/objects，路径不变",
+        "preflight 用 statfs 判 f_type 是否等于 TMPFS_MAGIC 0x01021994（或解析 /proc/mounts），判不出 tmpfs 就拒绝启用共享内存档并在产物中标记",
+        "symlink 会被内核解析成 /dev/shm/...，落进 outside-root；必须用 mount，脚本在 objects 是 symlink 时拒绝执行",
+        "跨容器可见性来自 storageRoot 的逐路径挂载而不是 IPC namespace；tmpfs 是 per-boot 易失的，重启后 memoryId 解析为 object-unavailable，这是接受的行为",
+        "findmnt 结果如实报告（本机 /dev/shm 为 tmpfs）"
+      ]
+    },
+    {
+      "index": 5,
+      "title": "AF_UNIX 控制面与帧格式",
+      "task": "在上一轮得出的『大数据留在 tmpfs 对象面、只传引用』结论基础上，说明控制面信封如何经 AF_UNIX 传递：为什么用 SOCK_STREAM 而非 SOCK_SEQPACKET、帧格式与上限、socket 端点路径的长度预算，以及这一档位如何在配置中开启、默认是什么。请引用 src/synapse/envelope-framing.ts、src/synapse/envelope-uds.ts、src/synapse/config.ts。",
+      "dependsOn": [4],
+      "anchors": ["src/synapse/envelope-framing.ts", "src/synapse/envelope-uds.ts", "src/synapse/config.ts"],
+      "keypoints": [
+        "Node 24 的 node:net 对 AF_UNIX 只有 SOCK_STREAM，没有 SOCK_SEQPACKET（需 N-API 原生插件），所以用长度前缀 framing",
+        "帧头为 4 字节大端无符号长度，帧体为信封 UTF-8 JSON；SYNAPSE_MAX_FRAME_BYTES = 1 MiB（1024*1024），超长前缀在读到时即拒绝且解码器随后不可用",
+        "sockaddr_un.sun_path 为 108 字节（可用 107），端点为 <storageRoot>/uds/<runId>/<childIndex>.sock，超预算会给出具名拒绝",
+        "synapse.deliveryGear 取值 file / uds，默认 file；uds 不得成为默认路径"
+      ]
+    },
+    {
+      "index": 6,
+      "title": "transportBytes 的口径与对账",
+      "task": "在上一轮关于 AF_UNIX 帧格式与 deliveryGear 的结论基础上，说明 socket 档引入的 control.transportBytes 到底计的是什么量、为什么不能把它当作文本字节节省的证据、file 档下它报什么，以及 S2 的核心验收『对账』要比较哪两个数、为什么对账前必须先做一次 strace 观测。请引用 S2 设计文档与 src/synapse/metering.ts。",
+      "dependsOn": [5],
+      "anchors": ["docs/superpowers/specs/2026-09-20-synapse-shared-memory-dataplane-design.md", "src/synapse/metering.ts"],
+      "keypoints": [
+        "transportBytes 是信封（句柄+校验码）真正过 socket 的字节，量级几百字节，不是文本节省；真正的字节差在 handoff 的 textBytes（text 档内联正文，synapse 档只给引用行）",
+        "没有 transport-bytes 事件时（file 档）control.transportBytes 报 \"N/A\"，不报 0；它与 envelopeBytes 两列永不相加",
+        "对账比较应用层自报的 socket 发送字节与 S3 采集器在内核侧观测到的同一 socket 字节，不符即有一方错",
+        "libuv 在 POSIX 上写流数据用 writev 而非 sendmsg，且 socket fd 不经 openat，所以要扩展的 syscall 集必须先在真机 strace 测出，不能猜"
+      ]
+    },
+    {
+      "index": 7,
+      "title": "eBPF/bpftrace 采集器",
+      "task": "在上一轮得出的『对账需要内核侧观测』结论基础上，说明 S3 的 eBPF 采集器 synapse-trace 挂哪些 tracepoint、输出什么记录、只认哪几个 syscall 及其代价、字节口径，以及运行它的前置条件。请用 bpftrace --version 与 ls /sys/kernel/btf/vmlinux 查看本机条件，并引用 scripts/synapse/synapse-trace.bt 与 S3 设计文档。",
+      "dependsOn": [6],
+      "anchors": ["docs/superpowers/specs/2026-09-19-synapse-ebpf-io-metering-design.md", "scripts/synapse/synapse-trace.bt", "scripts/synapse/s3-acceptance.ts"],
+      "keypoints": [
+        "挂载 tracepoint:syscalls 的 sys_enter/sys_exit 的 read、write、openat 与 renameat2；采集器是独立进程，不属于 Pi 的进程树",
+        "输出逐行 JSON 到 <storageRoot>/trace/<runId>.ndjson，形如 {pid, tid, startTicks, nsecs, syscall, fd, path?, bytes, ret}；path 必须是已解析的绝对路径",
+        "只有 write/read/openat/renameat2 四个 syscall，没有 close/dup；dup/fork 继承的 fd 上的字节落进显式的 unknown-fd 桶",
+        "只记 ret > 0 的实际返回字节，ret < 0 计失败不计字节",
+        "需要 root 与 BTF（/sys/kernel/btf/vmlinux）；bpftrace 版本按本机实际输出报告（本机 0.19）；字符串缓冲 200 字节，所以存储根要短"
+      ]
+    },
+    {
+      "index": 8,
+      "title": "进程身份与 cgroup 归因",
+      "task": "在上一轮关于采集器输出记录（含 pid、startTicks、nsecs）的结论基础上，说明应用层如何把内核观测到的进程与某次 SYNAPSE 运行绑定：process-identity 计量事件记录哪些字段、各从哪里读、两侧时钟如何对齐、归因键是什么以及 S1 落地后要换成什么。请用 cat /proc/self/cgroup 查看本机 cgroup 形态，并引用 src/synapse/metering.ts 与 src/synapse/trace-attribute.ts。",
+      "dependsOn": [7],
+      "anchors": ["src/synapse/metering.ts", "src/synapse/trace-attribute.ts", "docs/superpowers/specs/2026-09-19-synapse-ebpf-io-metering-design.md"],
+      "keypoints": [
+        "process-identity 事件含 pid、startTicks、uptimeAtRecordSeconds、cgroupPath、topology（process | container），可带 degradedReason",
+        "startTicks 取 /proc/self/stat 第 22 字段（自 boot 起的时钟嘀嗒，USER_HZ = 100）；uptimeAtRecordSeconds 取 /proc/uptime 第一个字段；cgroupPath 取 /proc/self/cgroup（读不到为 null）",
+        "采集器 nsecs 是 boot-based 单调时钟而 monotonicMs 是每进程各自的 hrtime，二者不同源，靠 startTicks + uptime 共享『since boot』基准对齐",
+        "归因键由 attributionKeyOf 唯一构造，v1 为 (pid, startTicks)，S1 容器化后替换为 cgroup id，一个容器一个 cgroup 是确定性映射"
+      ]
+    },
+    {
+      "index": 9,
+      "title": "分类、阈值与拒报纪律",
+      "task": "在上一轮建立的 (pid, startTicks) 归因表基础上，说明归因成功的字节如何按存储根下的路径分类、哪些目录被显式排除、哪些情况整体记 unavailable 或 N/A、未归因字节的阈值是多少，以及一个 pid 绑定多个 nodeId 时怎么处理。请引用 src/synapse/trace-classify.ts、src/synapse/trace-attribute.ts 与 S3 设计文档 §4.4。",
+      "dependsOn": [8],
+      "anchors": ["src/synapse/trace-classify.ts", "src/synapse/trace-attribute.ts", "docs/superpowers/specs/2026-09-19-synapse-ebpf-io-metering-design.md"],
+      "keypoints": [
+        "三类：envelopes/ → envelope，objects/ → content，memory/、supersessions/、namespace.json → memory-index；存储根内无法归类的记 unclassified（receipts/ 预期落这里）",
+        "metering/ 与 trace/ 显式排除，避免观测自身进入观测",
+        "ring buffer 丢事件或未归因字节占比超过阈值（UNATTRIBUTED_SHARE_THRESHOLD = 1%）时该 run 内核侧整体记 unavailable；没有 trace 输入记 \"N/A\"；存储根不可用记 unusable-storage-root",
+        "一个 pid 绑定多个 nodeId 时报告身份集合并计 ambiguousProcesses，不做 first-wins；多委派父进程的内核字节只到进程粒度"
+      ]
+    },
+    {
+      "index": 10,
+      "title": "本机验收清单",
+      "task": "综合前九轮的结论（平台基线、iSulad/anchor、IPC 共享验收、tmpfs 对象面、AF_UNIX 控制面、transportBytes 对账、eBPF 采集器、身份归因、拒报纪律），为本机给出一份按顺序执行 S1、S2、S3 真机验收的前置条件与预期结论清单：每一步需要什么（守护进程、镜像、挂载、权限、内核特性），哪一步依赖哪一步，以及每项的最好可能判定结果。请引用 docs/superpowers/runbooks/ 与 scripts/synapse/ 下的脚本。",
+      "dependsOn": [9],
+      "anchors": ["docs/superpowers/runbooks/s1-acceptance-runbook.md", "docs/superpowers/runbooks/s2-acceptance-runbook.md", "scripts/synapse/s3-acceptance.ts"],
+      "keypoints": [
+        "S1 需要 iSulad 守护进程在运行（sudo 启动 isulad 或 systemctl），本机平台为 SP1 而非设计目标 SP3，须在报告中如实标注",
+        "S1 的最好结果是 incomplete 而非 pass：s3-fd-premise 恒为 unavailable；放行 S2 的信号是 blocksS2: false",
+        "S2 依赖 S1 构建的 pi-subagent-s1:acceptance 镜像，且须先用 mount-objects-tmpfs.sh 把 <storageRoot>/objects 挂成 tmpfs（mount 而非 symlink），--store 指向该根",
+        "S3 需要 root 与 BTF（/sys/kernel/btf/vmlinux）并运行 bpftrace；非 root 时 runs 为空、判定为 incomplete，而非伪造通过",
+        "三个判定脚本 judge-s{1,2,3}-report.ts 退出码一致：0 pass、1 fail、2 incomplete、3 报告不可读"
+      ]
+    }
+  ]
+}

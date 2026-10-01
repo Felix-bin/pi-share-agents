@@ -1,0 +1,4 @@
+# Top-level harness dependencies; the exact environment is requirements.lock.
+crewai==1.15.22
+autogen-agentchat==0.7.5
+autogen-ext[openai]==0.7.5
