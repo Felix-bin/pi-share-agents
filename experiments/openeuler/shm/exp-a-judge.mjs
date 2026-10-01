@@ -72,6 +72,10 @@ async function askOnce(prompt) {
 const outPath = path.join(expDir, "judge-results.jsonl");
 const judged = new Set(fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).key) : []);
 let totalJudgeTokens = 0;
+
+// 待判任务（题 × 臂/配置）先汇总，再并发判定——judge 调用是相互独立的请求。
+const CONCURRENCY = Number(args.concurrency ?? 6);
+const jobs = [];
 for (const row of rows) {
 	if (!row.valid) continue;
 	const key = `q${row.index + 1}-${row[armField]}`;
@@ -83,27 +87,37 @@ for (const row of rows) {
 	const question = FAMILY === "r" ? ref.question : (ref.task ?? ref.question);
 	const candidate = fs.readFileSync(answerPath, "utf-8");
 	const prompt = template.replace("{question}", question).replace("{reference}", reference).replace("{candidate}", candidate).replaceAll("{{", "{").replaceAll("}}", "}");
+	jobs.push({ key, prompt });
+}
+
+async function judgeOne(job) {
 	const got = [];
 	let failures = 0;
 	while (got.length < VOTES && failures < VOTES * 2) {
 		try {
-			const { text, usage } = await askOnce(prompt);
+			const { text, usage } = await askOnce(job.prompt);
 			totalJudgeTokens += usage?.total_tokens ?? 0;
 			const parsed = parseScores(text);
 			if (parsed) got.push(parsed); else failures += 1;
-		} catch (error) { failures += 1; console.log(`[judge] ${key} attempt failed: ${String(error).slice(0, 120)}`); }
+		} catch (error) { failures += 1; console.log(`[judge] ${job.key} attempt failed: ${String(error).slice(0, 120)}`); }
 	}
 	if (got.length === 0) {
-		fs.appendFileSync(outPath, `${JSON.stringify({ key, parseFailures: failures, total: null, votes: 0 })}\n`);
-		console.log(`[judge] ${key}: unavailable (${failures} parse failures) — 不按 0 计`);
-		continue;
+		fs.appendFileSync(outPath, `${JSON.stringify({ key: job.key, parseFailures: failures, total: null, votes: 0 })}\n`);
+		console.log(`[judge] ${job.key}: unavailable (${failures} parse failures) — 不按 0 计`);
+		return;
 	}
 	const dims = Object.fromEntries(DIMS.map((d) => [d, median(got.map((v) => v[d]))]));
-	const record = { ...dims, key, parseFailures: failures, total: DIMS.reduce((n, d) => n + dims[d], 0), votes: got.length };
+	const record = { ...dims, key: job.key, parseFailures: failures, total: DIMS.reduce((n, d) => n + dims[d], 0), votes: got.length };
 	fs.appendFileSync(outPath, `${JSON.stringify(record)}\n`);
-	console.log(`[judge] ${key}: total=${record.total}/100 (votes=${got.length}, dims=${DIMS.map((d) => dims[d]).join("/")})`);
+	console.log(`[judge] ${job.key}: total=${record.total}/100 (votes=${got.length}, dims=${DIMS.map((d) => dims[d]).join("/")})`);
 }
-console.log(`[judge] done; judge tokens (total_tokens 口径): ${totalJudgeTokens}; results: ${outPath}`);
+
+let cursor = 0;
+async function worker() {
+	while (cursor < jobs.length) await judgeOne(jobs[cursor++]);
+}
+await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length) }, () => worker()));
+console.log(`[judge] done (${jobs.length} answers); judge tokens (total_tokens 口径): ${totalJudgeTokens}; results: ${outPath}`);
 
 function parseArgs(argv) { const out = {}; for (let i = 0; i < argv.length; i += 2) out[String(argv[i]).replace(/^--/, "")] = argv[i + 1]; return out; }
 function fail(m) { console.error(String(m)); process.exit(1); }
