@@ -1,68 +1,79 @@
-# pi-share-agents
+# SYNAPSE — 面向多智能体协作的低开销通信、状态传递与共享记忆机制
 
-**让一个 Pi 会话委派多个子 Agent，并在任务之间复用可追溯、可校验的发现。**
+**一个 Pi 会话委派多个子 Agent 协作，任务之间通过可追溯、可校验的共享记忆复用发现，而不是反复转贴全文。**
 
-`pi-share-agents` 基于 `pi-subagents`，新增共享记忆层 **pi-agent-share**（代码与配置中称为
-`SYNAPSE`）。父会话负责协调和决策，子 Agent 负责有明确边界的工作；共享记忆保留结论的来源，
-来源文件发生变化时，相关记忆会被标记失效，包括尚未提交的修改。
+SYNAPSE 是第三届中国研究生操作系统开源大赛社区赛题的参赛作品，以 Pi coding agent 扩展的形式实现（本仓库），
+另含一个独立 Python 原型（`源代码及readme文档/`，初赛交付，只读保留）。它基于
+`pi-subagents` 扩展骨架，新增共享记忆与状态传递层（代码与配置中称为 `synapse`）：父会话负责
+协调和决策，子 Agent 负责有明确边界的工作；共享记忆保留结论的来源，来源文件发生变化时，
+相关记忆会被标记失效，包括尚未提交的修改。
 
-- **复用证据**：子 Agent 可检索和记录发现，宿主在委派时自动召回授权范围内的记忆。
-- **控制上下文**：支持传递正文，或只传递引用与摘要；记忆预算不截断用户任务。
-- **保留运行证据**：前台和后台共用启动契约，记录投递、用量与终态，失败不会记为成功。
+围绕赛题的三项机制要求：
 
-共享记忆默认关闭，`/synapse-setup` 始终可用。默认配置下检索按关键词与标签排序；配置
-`synapse.embedding` 后加入语义余弦分量。向量状态传递已接上生产运行路径：前后台委派经同一接缝
-发布 retrieve 信封，子会话在启动时消费并把命中的语料块注入上下文。残差（delta）编码同样可达，
-但**默认关闭**（`synapse.delta`，见[已知缺口](#已知缺口)）：全账计量显示它在基不常驻时净亏，
-未证实收益的编码不得成为默认行为。
-只使用关键词检索无需嵌入 API 密钥。
+- **低开销通信**：委派交接传引用与摘要而非全文；阶段结果以句柄兑现；全部投递、用量与终态进入只追加计量日志（不报代理值）。
+- **非文本状态传递**：检索类委派可协商为向量状态——发送侧把 float32 载荷发布到内容寻址存储，信封只携带 `stateRef` 引用，接收侧校验后对冻结语料做余弦检索；语料可驻留 POSIX 共享内存段跨进程复用。
+- **共享记忆**：子 Agent 可检索和记录发现，宿主在委派时自动召回授权范围内的记忆，跨 Agent、跨任务复用并计量命中率。
+
+应用场景：多 Agent 代码库问答与侦察、跨任务的证据沉淀与复用、需要逐项审计通信与记忆开销的自动化流水线。
 
 > 本仓库派生自 [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) 的
 > `47bae7f7`（v0.67.0），未导入完整上游提交历史。项目边界见 [VISION.md](./VISION.md)，
-> 上游与本 fork 均采用 [MIT 许可证](./LICENSE)。
+> 上游与本仓库均采用 [MIT 许可证](./LICENSE)。
 
-[快速开始](#快速开始) · [运行模式](#运行模式) · [协作角色](#四个协作角色) ·
-[实现状态](#实现状态) · [工具](#两个工具) · [配置](#配置) ·
-[测试](#测试与门禁) · [已知缺口](#已知缺口) · [上游文档](#上游能力子-agent-委派)
+[快速开始](#快速开始) · [系统环境与依赖](#系统环境与依赖) · [仓库导览](#仓库导览) ·
+[运行模式](#运行模式) · [协作角色](#四个协作角色) · [实现状态](#实现状态) ·
+[工具](#两个工具) · [配置](#配置) ·
+[测试](#测试与门禁) · [已知缺口](#已知缺口) · [上游能力](#上游能力子-agent-委派)
+
+## 系统环境与依赖
+
+| 项 | 要求 |
+|----|------|
+| 操作系统 | Linux（SHM 语料驻留段需 Linux 与 `/dev/shm`；其余功能跨平台，单元/集成测试覆盖 Linux 与 Windows） |
+| Node.js | 24.x（类型检查与测试在此版本验证） |
+| Pi coding agent | 0.85.x（扩展加载与委派流程在此版本验证） |
+| 运行时依赖 | `npm ci --ignore-scripts` 或 `node install.mjs` 安装（见快速开始） |
+| 嵌入 API（可选） | 配置 `synapse.embedding` 后需要（siliconflow 或 paratera 兼容端点）；只用关键词检索无需任何密钥 |
+| 目标平台验证 | openEuler 24.03-LTS-SP3（SHM 实测与 S1–S3 验收）；见 `docs/superpowers/runbooks/` 与 `experiments/` |
+
+## 仓库导览
+
+| 路径 | 内容 |
+|------|------|
+| `src/synapse/` | SYNAPSE 主实现（信封协议、能力协商、状态平面、共享记忆、SHM 语料驻留、计量） |
+| `src/runs/` | 委派运行时（前台/后台共用接缝）与 openEuler 适配（容器运行时、跨进程数据面、eBPF 观测采集） |
+| `test/` | 单元与集成测试 |
+| `experiments/` | 实验装置（四臂对比、judge、聚合统计）与运行手册，见 `experiments/README.md` |
+| `docs/` | 设计文档、实验方案、验收 runbook、初赛原型对照 |
+| `agents/`、`prompts/` | 四个协作角色定义与流水线模板 |
+| `guides/` | 上游委派能力的使用指南 |
+| `源代码及readme文档/` | 初赛 Python 原型（只读保留，见 `docs/synapse-python-prototype.md`） |
 
 ## 快速开始
 
 ### 1. 安装扩展
 
 前置条件：已配置模型、可正常启动的 Pi（安装流程在 0.85.1 上验证过），以及 `PATH` 中可用的
-`npm`——Pi 安装 git 包时会自己执行 `npm install --omit=dev` 拉取运行时依赖。
+`npm`。
+
+从本仓库安装（两种方式任选）：
 
 ```bash
-pi install git:github.com/Felix-bin/pi-share-agents
-```
+# 方式一：拷贝安装到 ~/.pi/agent/extensions/subagent 并安装运行时依赖
+node install.mjs
 
-Pi 会把仓库克隆到 `~/.pi/agent/git/github.com/Felix-bin/pi-share-agents`，安装运行时依赖，
-并把这个源写入 `~/.pi/agent/settings.json`。`package.json` 中的 `pi` 清单声明了扩展、skills
-与提示模板，因此 `/role-pipeline` 等快捷命令随安装一并注册，不需要再传 `--prompt-template`；
-内置角色由扩展自行发现。安装完成后新开的 Pi 会话即可使用委派工具（`subagent`、`bg_wait`、
-`subagent_supervisor`）；共享记忆工具需要先完成下一步。
-
-| 场景 | 命令 |
-|------|------|
-| 只对当前项目安装（写入 `.pi/settings.json`） | `pi install -l git:github.com/Felix-bin/pi-share-agents` |
-| 钉住某个 tag 或 commit | `pi install git:github.com/Felix-bin/pi-share-agents@<tag\|commit>` |
-| 不落盘试用一次（临时目录，不改 settings） | `pi -e git:github.com/Felix-bin/pi-share-agents` |
-| 卸载 | `pi remove git:github.com/Felix-bin/pi-share-agents` |
-
-git 源的 ref 是钉住的：`pi update --extensions` 只把克隆对齐到已配置的 ref，不会自行升到更新的提交；
-换版本用 `pi install ...@<新 ref>`。
-
-**从源码开发时**，改用临时加载，不写入 `settings.json`：
-
-```bash
+# 方式二：从源码临时加载（不写入 settings.json，适合开发）
 npm ci --ignore-scripts
 pi -e ./index.ts --prompt-template ./prompts
 ```
 
-在其他项目目录里这样加载时，把两处相对路径换成本仓库的绝对路径。仓库自带的 `install.mjs`
-（`npx pi-subagents`）是上游遗留的安装脚本，把仓库克隆到 `~/.pi/agent/extensions/subagent`；
-它已指向本 fork，但推荐的安装方式仍是上面的 `pi install`——该目录一旦存在且不是本仓库的克隆
-（例如只放了 `config.json`），脚本会拒绝写入并要求先手工清理。
+方式一会把仓库（不含 `.git` 与 `node_modules`）拷贝到 `~/.pi/agent/extensions/subagent`，
+`package.json` 中的 `pi` 清单声明了扩展、skills 与提示模板，因此 `/role-pipeline` 等快捷命令
+随安装一并注册，不需要再传 `--prompt-template`；内置角色由扩展自行发现。安装完成后新开的
+Pi 会话即可使用委派工具（`subagent`、`bg_wait`、`subagent_supervisor`）；共享记忆工具需要
+先完成下一步。卸载用 `node install.mjs --remove`。
+
+方式二在其他项目目录里使用时，把两处相对路径换成本仓库的绝对路径。
 
 ### 2. 开启共享记忆
 
@@ -115,7 +126,7 @@ pi -e ./index.ts --prompt-template ./prompts
 `project`，保持授权范围、任务与记忆数据一致。`synapse` 模式仍通过文本传递引用与摘要，
 不代表启用了向量传输，也不预设 Token 节省比例。
 
-## 本 fork 新增了什么
+## 决赛新增了什么
 
 | 路径 | 内容 |
 |------|------|
@@ -152,7 +163,7 @@ pi -e ./index.ts --prompt-template ./prompts
 
 ## 四个协作角色
 
-本 fork 新增四个内置角色，覆盖规划、取证、执行与总结，与上游角色并存：
+本仓库新增四个内置角色，覆盖规划、取证、执行与总结，与上游角色并存：
 
 | 角色 | 职责 | 声明的动作 | 主要工具 |
 |------|------|-----------|------|
@@ -336,22 +347,20 @@ npx tsc --noEmit -p tsconfig.synapse-tests.json
 # 本线的 lint 范围（见下方口径说明）
 npm run lint:synapse
 
-# 完整测试套件（含本 fork 测试）与源码类型检查
+# 完整测试套件（含本仓库测试）与源码类型检查
 npm run test:all
 npm run typecheck
 ```
 
-测试结果以当前提交的实际运行输出为准。[主测试流程](./.github/workflows/test.yml) 使用 Node.js 24，
-覆盖 Ubuntu 与 Windows；Windows 的单元和集成测试使用 `--test-concurrency=2`。
+测试结果以当前提交的实际运行输出为准；单元与集成测试覆盖 Linux 与 Windows。
 复现失败时应保留平台、Node 版本、失败用例与日志，不能仅以“环境问题”认定通过。
 
-**lint 口径（范围化，须公开说明）**：本 fork 的 lint 门禁只覆盖**改动范围**——
+**lint 口径（范围化，须公开说明）**：本仓库的 lint 门禁只覆盖**改动范围**——
 `src/synapse/` 全量，加上当前改动提交所涉文件的并集（命令 `npm run lint:synapse`）。
-上游基座在未改动的 `HEAD` 上本身即有约 11059 条 lint 告警（存量债，非本 fork 引入），
+上游基座在未改动的基线上本身即有约 11059 条 lint 告警（存量债，非本仓库引入），
 在仓库根直接运行 `npx oxlint` 会见红。清零它需要修改一万余个与本题无关的文件，
 会淹没真实 diff 并损害评审时的可复核性，因此采用「基线-棘轮」的通行做法：
-本线改动零新增告警，存量单独跟踪、赛后处理——**跟踪 issue 见
-[Felix-bin/pi-share-agents#14](https://github.com/Felix-bin/pi-share-agents/issues/14)**。
+本线改动零新增告警，存量单独跟踪、赛后处理。
 对外表述一律为**「改动范围 lint 干净」**，不得声称全仓干净。
 
 ## 已知缺口
@@ -361,7 +370,7 @@ npm run typecheck
    子会话在启动时校验并消费该载荷，把语料块命中以 steer 消息注入自己的上下文。同一次运行的账本含
    `state-prepare` / `state-send` / `state-receive` / `state-consume`，`embedding-call ok=true`（真实嵌入成本入账）、
    接收侧 `object-io read` 在位，**全账无 error 事件**；子会话 transcript 里留有命中列表原文。
-   运行清单见 `synapse/_state/p45-runs/RUN-MANIFEST.md`。
+   运行清单随该次运行的证据一并存档。
    **仍未验证的**：后台子会话（分离进程）路径。两臂差异的量化**已完成**（P4-5，2026-09-20 出数：
    判定＝净亏，生产默认关 delta、float32 直传为参赛主实现；全文披露与勘误见
    `experiments/legacy/records/P45-results-20260920.md` 与预登记 §14）。
@@ -391,15 +400,13 @@ npm run typecheck
    [初赛机制迁移覆盖核验](docs/migration-coverage-vs-python-prototype.md)。三条主链（结构化通信 /
    非文本状态 / 共享记忆）已迁移且多处更强；CNR 运行期能力探测**已迁移**（2026-09-20，`capability-probe.ts`
    ＋协商 `probe-unverified` 回落；承诺边界＝构造与语料可加载性，不含 endpoint 应答）。仍缺的是
-   **评测与执行层**：CodeAct 与轻量沙箱（M11 加分项，
-   **用户 2026-09-20 裁决：暂不引入**，按四档纪律记为规划中）、
-   A/B 运行器与 manifest 自动采集的**产品化形态**（P4-5 评测装置 `experiments/legacy/p45-*.mjs` 曾在实验层交付，2026-09-27 已删除，可从 `a8c52ba` 取回）、
+   **评测与执行层**：CodeAct 与轻量沙箱（M11 加分项，按四档纪律记为规划中）、
+   A/B 运行器与 manifest 自动采集的**产品化形态**（P4-5 评测装置曾在实验层交付，后随装置目录重组移除）、
    数据集流水线与配对统计的 CLI 化、G1/G2 关联任务族，以及 `memory/consolidate.py`。
    **在补齐之前，本仓库不得声称"覆盖初赛全部机制"。**
 10. **子代理自身 recall 路径的向量缓存开关无专项测试**（变异体 V7 存活）。发送侧选基的开关有集成
     测试覆盖（开关关闭时零读取、打开后第二次排序零读取），子代理工具路径没有；该路径不在残差
-    关键路径上，按实登记为欠债而不是"等价于已覆盖"。记录见
-    `synapse/_state/p46-gate-logs-20260920/mutation-results-vectorcache.txt`。
+    关键路径上，按实登记为欠债而不是"等价于已覆盖"（变异测试记录随实验证据存档）。
 11. **SHM 平面的写侧生命周期只完成到"装置构造保证安全"**（2026-10-01 完备性审计结论，设计 v1 声明
     的裁剪如实登记）：`writer.lock`（O_EXCL+flock）与 lease 超时接管未实现——超块里的
     `leaseMs`/`heartbeatAtMs`/`writerPid` 只写不读，并发首发发布的安全性当前依赖"语料三件字节
@@ -414,7 +421,7 @@ npm run typecheck
 
 ## 上游能力：子 Agent 委派
 
-本 fork 保留上游 `pi-subagents` 的委派能力。Pi 是父会话，子 Agent 是一个有明确职责的
+本仓库保留上游 `pi-subagents` 的委派能力。Pi 是父会话，子 Agent 是一个有明确职责的
 子 Pi 会话。前台子 Agent 在对话中流式呈现；后台子 Agent 运行在分离的 runner 进程中，可稍后查看。
 安装扩展本身不会自动启动任何东西——它只是给 Pi 一个委派工具。
 
@@ -436,4 +443,4 @@ tests and cleanup"、"run this in the background"、"show active async runs"。�
 
 ## 许可证
 
-上游与本 fork 同为 MIT，见 [LICENSE](./LICENSE)，其中保留了上游的著作权署名。
+上游与本仓库同为 MIT，见 [LICENSE](./LICENSE)，其中保留了上游的著作权署名。
