@@ -59,6 +59,7 @@ function childContract(): SynapseChildContract {
 		embedding: { dim: 2, endpoint: `http://127.0.0.1:${server.port}/v1/embeddings`, keyEnv: KEY_ENV, model: "BAAI/bge-m3", provider: "siliconflow" },
 		runId: "run-distill",
 		sessionId: "sess-parent",
+		shm: false,
 		vectorCache: false,
 	};
 }

@@ -106,7 +106,7 @@ function registerChild(contract: LaunchContract, budgetBytes = 8192, autoDistill
 		depth: 1,
 		fanoutChild: false,
 		fast: false,
-		synapse: { agent, autoDistill, contextBudgetBytes: budgetBytes, contract, runId: RUN_ID, sessionId: "sess-child" },
+		synapse: { agent, autoDistill, capabilityTools: [...CHILD_TOOLS], contextBudgetBytes: budgetBytes, contract, delta: false, embedding: null, runId: RUN_ID, sessionId: "sess-child", shm: false, vectorCache: false },
 		waitTool: { enabled: false },
 	};
 	registerSubagentPromptRuntime(

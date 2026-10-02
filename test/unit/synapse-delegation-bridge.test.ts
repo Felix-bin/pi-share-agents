@@ -30,6 +30,7 @@ const USAGE = { cacheRead: 0, cacheWrite: 0, cost: 0.1, input: 10, output: 5, tu
 function childContract(): SynapseChildContract {
 	return {
 		agent: "retriever",
+		autoDistill: false,
 		contextBudgetBytes: 8192,
 		contract: resolveLaunchContract({
 			capabilityId: capabilityForAgent({ agent: "retriever", childTools: ["read"], representationId: "unavailable" }).capabilityId,
@@ -48,6 +49,7 @@ function childContract(): SynapseChildContract {
 		embedding: null,
 		runId: "run-7",
 		sessionId: "sess-parent",
+		shm: false,
 		vectorCache: false,
 	};
 }

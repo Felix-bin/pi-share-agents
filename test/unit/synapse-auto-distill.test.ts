@@ -24,12 +24,14 @@ function contractFor(autoDistill: boolean): SynapseChildContract {
 	return {
 		agent: "retriever",
 		autoDistill,
+		capabilityTools: [],
 		contextBudgetBytes: 8192,
 		contract: { storageRoot: tempRoot } as unknown as LaunchContract,
 		delta: false,
 		embedding: null,
 		runId: "run-1",
 		sessionId: "session-1",
+		shm: false,
 		vectorCache: false,
 	};
 }

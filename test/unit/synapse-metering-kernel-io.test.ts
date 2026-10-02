@@ -31,12 +31,14 @@ function identity(overrides: Partial<MeteringIdentity> = {}): MeteringIdentity {
 function identityEvent(pid = 42, startTicks = PROCESS_START_TICKS): MeteringEvent {
 	return {
 		...identity(),
+		cgroupPath: null,
 		eventId: `event-identity-${pid}-${startTicks}`,
 		kind: "process-identity",
 		monotonicMs: 1_000,
 		pid,
 		schemaVersion: 1,
 		startTicks,
+		topology: "process",
 		ts: "2026-09-19T00:00:00.000Z",
 		uptimeAtRecordSeconds: 16,
 	};

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createMockPi as _createMockPi } from "./mock-pi.ts";
 import type { MockPi } from "./mock-pi.ts";
+import type { AgentConfig as PiAgentConfig } from "../../src/agents/agents.ts";
 
 export type { MockPi };
 
@@ -45,30 +46,15 @@ export function createEventBus() {
 	};
 }
 
-interface AgentConfig {
-	name: string;
-	aliases?: string[];
-	description?: string;
-	defaultContext?: "fresh" | "fork";
-	systemPrompt?: string;
-	model?: string;
-	fallbackModels?: string[];
-	tools?: string[];
+interface AgentConfig extends PiAgentConfig {
+	scope?: string;
 	extensions?: string[];
 	subagentOnlyExtensions?: string[];
 	skills?: string[];
 	skillPath?: string[];
-	filePath?: string;
-	thinking?: string;
-	systemPromptMode?: string;
-	inheritProjectContext?: boolean;
-	inheritSkills?: boolean;
-	scope?: string;
-	output?: string | false;
 	reads?: string[] | false;
 	progress?: boolean;
 	toolBudget?: { soft?: number; hard: number; block?: string[] | "*" };
-	mcpDirectTools?: string[];
 	maxSubagentDepth?: number;
 	completionGuard?: boolean;
 }
@@ -77,6 +63,8 @@ export function makeAgentConfigs(names: string[]): AgentConfig[] {
 	return names.map((name) => ({
 		name,
 		description: `Test agent: ${name}`,
+		filePath: "",
+		source: "runtime",
 		systemPrompt: "",
 		systemPromptMode: "replace",
 		inheritGlobalContext: false,
@@ -89,6 +77,8 @@ export function makeAgent(name: string, overrides: Partial<AgentConfig> = {}): A
 	return {
 		name,
 		description: `Test agent: ${name}`,
+		filePath: "",
+		source: "runtime",
 		systemPrompt: "",
 		systemPromptMode: "replace",
 		inheritGlobalContext: false,

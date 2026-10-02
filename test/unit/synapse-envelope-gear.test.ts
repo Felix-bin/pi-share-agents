@@ -177,7 +177,7 @@ function childConfig(contract: LaunchContract, overrides: Partial<ChildRuntimeCo
 		depth: 1,
 		fanoutChild: false,
 		fast: false,
-		synapse: { agent: AGENT, contextBudgetBytes: 8192, contract, runId: RUN_ID, sessionId: "sess-child" },
+		synapse: { agent: AGENT, autoDistill: false, capabilityTools: [...CHILD_TOOLS], contextBudgetBytes: 8192, contract, delta: false, embedding: null, runId: RUN_ID, sessionId: "sess-child", shm: false, vectorCache: false },
 		waitTool: { enabled: false },
 		...overrides,
 	};

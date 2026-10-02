@@ -37,12 +37,14 @@ function contractIn(storeRoot: string, agent = "retriever"): SynapseChildContrac
 	return {
 		agent,
 		autoDistill: true,
+		capabilityTools: [],
 		contextBudgetBytes: 8192,
 		contract: { storageRoot: storeRoot } as unknown as LaunchContract,
 		delta: false,
 		embedding: null,
 		runId: "run-1",
 		sessionId: "session-1",
+		shm: false,
 		vectorCache: false,
 	};
 }

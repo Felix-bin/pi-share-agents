@@ -58,12 +58,14 @@ function identityEvent(overrides: IdentityEventOverrides = {}): MeteringEvent {
 	const uptimeAtRecordSeconds = overrides.uptimeAtRecordSeconds ?? 16;
 	return {
 		...(overrides.identity ?? identity()),
+		cgroupPath: null,
 		eventId: `event-${startTicks}-${overrides.pid ?? 42}`,
 		kind: "process-identity",
 		monotonicMs,
 		pid: overrides.pid ?? 42,
 		schemaVersion: 1,
 		startTicks,
+		topology: "process",
 		ts: "2026-09-19T00:00:00.000Z",
 		uptimeAtRecordSeconds,
 	};

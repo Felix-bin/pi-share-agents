@@ -105,7 +105,7 @@ describe("the pinned equivalence: segment loader vs file loader", () => {
 		const buffer = Buffer.alloc(DIM * 4);
 		for (const [index, value] of query.entries()) buffer.writeFloatLE(value, index * 4);
 		const payloadId = contentStore.put(new Uint8Array(buffer), SYNAPSE_VECTOR_MEDIA_TYPE);
-		const stateRef = { baseMemoryId: null, byteLength: buffer.byteLength, dim: DIM, encoding: "float32-vector", payloadId, representationId: embedder.representationId, sha256: payloadId };
+		const stateRef = { baseMemoryId: null, byteLength: buffer.byteLength, dim: DIM, encoding: "float32-vector" as const, payloadId, representationId: embedder.representationId, sha256: payloadId };
 
 		const viaFile = retrieveWithState(deps(), { corpusSnapshotId, k: 3, stateRef });
 		const viaShm = retrieveWithState(deps({ loadCorpus: (snapshot, dim, rep) => plane.loadCorpusVectors(snapshot, dim, rep) }), { corpusSnapshotId, k: 3, stateRef });
@@ -114,8 +114,8 @@ describe("the pinned equivalence: segment loader vs file loader", () => {
 			viaFile.hits.map((hit) => hit.chunkId),
 		);
 		assert.deepEqual(
-			viaShm.hits.map((hit) => hit.score),
-			viaFile.hits.map((hit) => hit.score),
+			viaShm.hits.map((hit) => hit.cosine),
+			viaFile.hits.map((hit) => hit.cosine),
 		);
 		// The hit event proves this ranking actually served from the segment.
 		assert.ok(eventsOf("shm-hit") >= 1);

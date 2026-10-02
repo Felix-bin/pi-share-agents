@@ -156,7 +156,8 @@ describe("shm segment protocol over the in-memory fake", () => {
 		assert.ok(mapping !== null);
 		// Flip one payload byte through a second mapping — the corruption a second
 		// process (or a kernel page bug) would leave behind.
-		new Uint8Array(mapping.buffer)[8192 + 256 * 20 + 80] ^= 0xff;
+		const tampered = new Uint8Array(mapping!.buffer);
+		tampered[8192 + 256 * 20 + 80] = (tampered[8192 + 256 * 20 + 80] ?? 0) ^ 0xff;
 		const reader = attachReader(bindings);
 		const hit = (reader as { lookup(i: string, o?: { auditVerify?: boolean }): { auditChecksumOk: boolean | null } | null }).lookup("c".repeat(64), { auditVerify: true });
 		assert.equal(hit?.auditChecksumOk, false);
