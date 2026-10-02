@@ -62,7 +62,9 @@ describe("child contract resolution", () => {
 		// claiming the project's store for the host and then refused the store.
 		const contract = resolveSynapseChildContract(input());
 		assert.ok(contract);
-		assert.equal(contract.worktreePath, input().cwd);
+		// The resolver normalises path separators for cross-platform contracts;
+		// compare the two spellings of the same absolute path.
+		assert.equal(contract.worktreePath?.replaceAll("\\", "/"), input().cwd.replaceAll("\\", "/"));
 	});
 
 	it("carries the pinned corpus snapshot id, or the unset placeholder without one", () => {
