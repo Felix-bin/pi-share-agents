@@ -131,7 +131,7 @@ pi 的四个臂只在插件 `synapse` 配置块上有差别；另有两个外部
 - **LatentMAS**（隐状态通信）：GSM8K、AIME、GPQA、MBPP+ 等。
 - **StreamBench**（持续改进，含多 Agent 共享记忆基线 MAM-StreamICL）：Spider、BIRD、HotpotQA 等。
 - **SWE-QA**（ACL 2026 Findings）：仓库级代码问答。
-- **我们的 Python 原型**：用过 HotpotQA、MuSiQue、CoQA。
+- **早期独立实现版本**：用过 HotpotQA、MuSiQue、CoQA。
 
 赛题要求"关联的连续任务"，而公开 benchmark 的题目大多相互独立。所以这里沿用 StreamBench、Evo-Memory、AWM 的做法：**把公开数据集的题目重新组织成一条任务流**。选哪些题、按什么顺序由固定 id 决定，重建结果不变（`experiments/bench/build-public-families.mjs`）。
 

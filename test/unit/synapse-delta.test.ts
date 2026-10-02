@@ -15,11 +15,9 @@ import {
 } from "../../src/synapse/delta.ts";
 
 /**
- * The codec is a port of the Python reference in the SYNAPSE repository
- * (src/synapse/stateplane/residual.py), so every assertion here has a
- * counterpart that was run against that reference: the first four restate the
+ * Every assertion here is anchored one of two ways: the first four restate the
  * documented algorithm on inputs this file builds itself, and the fifth replays
- * a committed fixture the reference produced, byte for byte.
+ * the committed golden fixture byte for byte.
  */
 
 type GoldenCoverage = {
@@ -48,7 +46,7 @@ type GoldenFixture = {
 };
 
 const FIXTURE_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "delta-golden.json");
-// SAFETY: this file is a committed artifact of scripts/gen-delta-golden.mjs, which writes exactly the shape declared above.
+// SAFETY: this file is a committed generated artifact; it writes exactly the shape declared above.
 const fixture = JSON.parse(fs.readFileSync(FIXTURE_PATH, "utf-8")) as GoldenFixture;
 
 const STRIDE = 3;
@@ -69,7 +67,7 @@ function deterministicVector(dim: number, seed: number): Float32Array {
 	return values;
 }
 
-/** The companion noise the Python fixture generator mixes into a base vector. */
+/** The companion noise the fixture generator mixes into a base vector. */
 function mixedBase(target: Float32Array, mix: number): Float32Array {
 	const base = new Float32Array(target.length);
 	for (let index = 0; index < target.length; index += 1) {
@@ -129,7 +127,7 @@ function countExactHalfTies(values: Float32Array, grid: number): number {
 	return count;
 }
 
-/** Recomputes the reference's clamp count independently of the codec. */
+/** Recomputes the fixture's clamp count independently of the codec. */
 function countClamped(target: Int32Array, base: Int32Array): number {
 	let count = 0;
 	for (let index = 0; index < target.length; index += 1) {
@@ -164,7 +162,7 @@ function hexOf(payload: Uint8Array): string {
 }
 
 describe("delta codec", () => {
-	it("rounds halves to even, as the reference quantizer does (assertion 1)", () => {
+	it("rounds halves to even, as the quantizer contract requires (assertion 1)", () => {
 		const halves: readonly (readonly [number, number])[] = [
 			[0.5, 0],
 			[1.5, 2],
@@ -213,10 +211,10 @@ describe("delta codec", () => {
 		// threshold stops the loop early: fewer components than the target has.
 		assert.ok(reachable.nnz > 0, "a zero base must still send the leading components");
 		assert.ok(reachable.nnz < nonZeroComponents, `expected an early stop, got ${reachable.nnz} of ${nonZeroComponents}`);
-		// This pair sits at or below 256 dimensions with a non-empty payload, which is
-		// the one regime where this port and the reference differ in layout: the port
-		// keeps its two-byte index where the reference narrows to one. Asserting the
-		// fixed stride here pins that choice rather than leaving it incidental.
+		// This pair sits at or below 256 dimensions with a non-empty payload. The
+		// two-byte index width is fixed at every dimension rather than narrowing at
+		// 256; asserting the fixed stride here pins that choice rather than leaving
+		// it incidental.
 		assert.equal(reachable.payload.length, reachable.nnz * STRIDE);
 
 		// The card's own phrasing — a zero base selects every non-zero component —
@@ -239,7 +237,7 @@ describe("delta codec", () => {
 		assert.equal(exhaustive.payload.length, nonZeroComponents * STRIDE);
 
 		// Components arrive in decreasing residual magnitude, ties by ascending
-		// index; the reference relies on both to keep its byte count reproducible.
+		// index; both orderings are load-bearing to keep the byte count reproducible.
 		const emitted = indicesFrom(exhaustive.payload);
 		assert.equal(emitted.length, nonZeroComponents);
 		const restored = decodeDelta(exhaustive.payload, antiBase);
@@ -288,8 +286,8 @@ describe("delta codec", () => {
 		const restored = dequantize(decoded, GRID);
 		assert.ok(Math.abs(Math.hypot(...restored) - 1) < 1e-6, "dequantize must return a unit vector");
 
-		// The threshold is a contract on the quantized domain, which is the domain
-		// the reference verifies in: it quantizes the true vector before comparing.
+		// The threshold is a contract on the quantized domain: the check quantizes
+		// the true vector before comparing.
 		const integerScore = cosineInt(decoded, targetQ);
 		assert.ok(integerScore >= THRESHOLD, `quantized-domain cosine ${integerScore} fell below the threshold`);
 		// Dequantizing must not move the score; it changes representation, not direction.
@@ -306,7 +304,7 @@ describe("delta codec", () => {
 		// 1e-3 against a measured gap of 1.28e-4, so it is ~7.8× the thing it covers
 		// and real decoding degradation still lands outside it. The threshold's
 		// contract is the quantized-domain assertion above, which is where the
-		// reference verifies too.
+		// fixture pins it too.
 		const rawScore = floatCosine(restored, target);
 		assert.ok(rawScore >= THRESHOLD - 1e-3, `reconstruction scored ${rawScore} against the raw target`);
 	});
@@ -353,9 +351,9 @@ describe("delta codec", () => {
 		assert.throws(() => roundHalfEven(Number.POSITIVE_INFINITY), /finite/);
 	});
 
-	it("matches the Python reference byte for byte on every golden case (assertion 5)", () => {
+	it("matches the golden fixture byte for byte on every case (assertion 5)", () => {
 		// Pinned rather than decorative: a fixture regenerated from a different
-		// revision of the reference must fail here instead of silently re-baselining
+		// revision of the generator must fail here instead of silently re-baselining
 		// what "the same bytes" means. These two digests are what make a hand-edited
 		// fixture visible; regenerating it means updating both deliberately. The file
 		// is hashed with line endings normalised, because a checkout on a runner with
@@ -366,7 +364,7 @@ describe("delta codec", () => {
 			createHash("sha256")
 				.update(fs.readFileSync(FIXTURE_PATH, "utf-8").replace(/\r\n/gu, "\n"))
 				.digest("hex"),
-			"6079a675fa1a48f73897c8714b131e651300b9ac848bf6c4f54fd33907d678f5",
+			"62473edbced5895b32c6128f9cad753132be030011cfdf5c0d19af1dc6b96e54",
 		);
 		assert.equal(fixture.reference.stride, STRIDE);
 		assert.equal(fixture.reference.indexBytes, STRIDE - 1);
@@ -440,15 +438,14 @@ describe("delta codec", () => {
 		const largest = new Int32Array(65536);
 		assert.equal(encodeDelta(largest, Int32Array.from(largest), { grid: GRID, threshold: THRESHOLD }).payload.length, 0);
 
-		// A repeated component index resolves last-wins, which is what the reference's
-		// assignment order does too.
+		// A repeated component index resolves last-wins by assignment order.
 		assert.deepEqual(Array.from(decodeDelta(Uint8Array.from([0x00, 0x00, 0x05, 0x00, 0x00, 0x03]), Int32Array.from([10]))), [13]);
 
 		// The decode-side domain guard has a negative edge as well as a positive one.
 		assert.throws(() => decodeDelta(Uint8Array.from([0x00, 0x00, 0xff]), Int32Array.from([-2147483648])), DeltaDecodeError);
 
-		// The threshold is inclusive: a score exactly equal to it stops the scan, as
-		// the reference's `>=` does, rather than being rounded past. The equality is
+		// The threshold is inclusive: a score exactly equal to it stops the scan
+		// rather than being rounded past. The equality is
 		// exact in the integer domain — after one component the score is 16/20 — so
 		// this pair distinguishes `>=` from `>` where no other case here does.
 		assert.equal(cosineInt(Int32Array.from([0, 4]), Int32Array.from([3, 4])), 0.8);

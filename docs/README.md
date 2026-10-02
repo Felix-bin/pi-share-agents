@@ -6,8 +6,6 @@
 
 | 文档 | 内容 |
 |---|---|
-| [synapse-python-prototype.md](synapse-python-prototype.md) | Python 原型（初赛交付）的说明，以及如何建立本地检出 |
-| [migration-coverage-vs-python-prototype.md](migration-coverage-vs-python-prototype.md) | 原型各机制在本仓库中的迁移状态（§7 为 09-25 更新） |
 | [superpowers/specs/](superpowers/specs/) | 设计文档，见下表 |
 | [superpowers/runbooks/](superpowers/runbooks/) | S1、S2 真机验收运行手册 |
 | [experiments/experiment-design.md](experiments/experiment-design.md) | 实验方案设计（唯一的实验文档） |

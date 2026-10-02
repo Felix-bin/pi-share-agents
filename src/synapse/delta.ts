@@ -14,22 +14,18 @@
  * identically on both sides of a wire that neither side controls, and the only
  * way to keep that true is to keep the arithmetic free of anything ambient.
  *
- * The layout is fixed by the reference implementation this ports
- * (src/synapse/stateplane/residual.py): each component is a two-byte
+ * The layout is frozen with the codec's golden cases: each component is a two-byte
  * little-endian index followed by one int8 value, so a component costs three
  * bytes and carries no marker of its own. Two consequences belong here rather
  * than in a caller: dimensions above 65536 cannot be addressed at all, and a
  * correction outside the int8 range is clamped instead of escaped — which the
  * receiver's own verification, in a later card, is what catches.
  *
- * One deliberate difference from that reference: it selects the index width
- * from the dimension (one byte up to 256, two above), while this port fixes two
- * bytes for every dimension, because the product vector is 1024-dimensional and
- * a format that switches shape on a parameter is a format two peers can
- * disagree about. The bytes are therefore interchangeable with the reference
- * only above 256 dimensions; at or below it the reference emits a narrower
- * layout this module never produces, and cannot reliably read either — the
- * decoding side has the details.
+ * One deliberate design decision: the index width is fixed at two bytes for
+ * every dimension. A format that switches shape on a parameter is a format two
+ * peers can disagree about, so the layout never depends on the dimension; a
+ * narrower foreign layout is refused on the decoding side, which has the
+ * details.
  *
  * The arithmetic domain is the other boundary worth stating: quantized
  * components must fit int32 (guarded below), and `cosineInt` accumulates in
@@ -132,8 +128,8 @@ export function dequantize(quantized: Int32Array, grid: number): Float32Array {
 }
 
 /**
- * Cosine similarity over quantized vectors, accumulated in the same order as
- * the reference. The order is not a detail: the encoder stops on
+ * Cosine similarity over quantized vectors, accumulated in the encoder's
+ * emission order. The order is not a detail: the encoder stops on
  * `score >= threshold`, so a score that landed on a different side of the
  * threshold in one language would change how many components travel.
  */
@@ -197,7 +193,7 @@ export function encodeDelta(target: Int32Array, base: Int32Array, params: DeltaP
 		order.push(index);
 	}
 	// Array.prototype.sort is stable, so equal magnitudes keep ascending index
-	// order, which is what the reference's sorted(..., reverse=True) produces.
+	// order, which is what a stable sort by descending magnitude produces.
 	order.sort((left, right) => Math.abs(residual[right]!) - Math.abs(residual[left]!));
 
 	const reconstruction = Int32Array.from(base);
@@ -229,8 +225,8 @@ export function encodeDelta(target: Int32Array, base: Int32Array, params: DeltaP
  * that is the right kind of vector but the wrong length is not detectable here:
  * whoever wires this to a wire format (P4-4) has to compare the reconstructed
  * dimension against the frame's declared dimension before trusting the result.
- * The same goes for the layout itself. A payload written by the reference at or
- * below 256 dimensions uses a one-byte index, and what happens next depends on
+ * The same goes for the layout itself. A foreign payload written at or below
+ * 256 dimensions with a one-byte index, and what happens next depends on
  * the base it meets: against a base of that payload's own dimension the
  * two-byte read puts the first index past the end and this refuses it, but
  * against a longer base the same bytes read as perfectly well-formed indices
