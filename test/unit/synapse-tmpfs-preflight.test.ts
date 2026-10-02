@@ -132,7 +132,7 @@ describe("reading /proc/mounts", () => {
 		assert.equal(fstypeForPath(MOUNTS, OBJECTS), "tmpfs");
 		assert.equal(fstypeForPath(MOUNTS, `${OBJECTS}/ab/cdef`), "tmpfs");
 		assert.equal(fstypeForPath(MOUNTS, "/srv/synapse/ns/memory"), "ext4");
-		assert.equal(fstypeForPath(MOUNTS, "/home/felix"), "ext4");
+		assert.equal(fstypeForPath(MOUNTS, "/home/alice"), "ext4");
 	});
 
 	it("matches whole path segments, so a sibling directory is not mistaken for the mount", () => {

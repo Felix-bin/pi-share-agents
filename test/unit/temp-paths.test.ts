@@ -153,7 +153,7 @@ describe("pinning the temp root for the container topology", () => {
 	// settle that, because the worry is cheap to state and expensive to carry.
 
 	it("scopes the temp root by user, never by session, so two sessions already shared it", () => {
-		const asOneUser = { env: { USER: "felix" }, getuid: undefined, userInfo: undefined, homedir: undefined };
+		const asOneUser = { env: { USER: "alice" }, getuid: undefined, userInfo: undefined, homedir: undefined };
 
 		// Nothing session-shaped is an input at all: the same user gets the same
 		// scope id no matter how many sessions are running.
@@ -164,7 +164,7 @@ describe("pinning the temp root for the container topology", () => {
 		const base = { getuid: undefined, userInfo: undefined, homedir: undefined };
 
 		assert.notEqual(
-			resolveTempScopeId({ ...base, env: { USER: "felix" } }),
+			resolveTempScopeId({ ...base, env: { USER: "alice" } }),
 			resolveTempScopeId({ ...base, env: { USER: "someone-else" } }),
 		);
 	});

@@ -36,7 +36,7 @@ P50 时期留有 CrewAI 与 AutoGen 的 harness（`experiments/legacy/p50b/`）�
 |---|---|---|
 | D1 | 外部臂只比较默认的文本协作，不开框架自带记忆 | 先把"相对主流框架的默认用法"这一基准做扎实；与 SYN0 → SYN 同性质 |
 | D2 | 编排方式采用各框架跑固定流水线的惯用写法：CrewAI `Process.sequential`，AutoGen `RoundRobinGroupChat` | 比较对象是"这个框架的使用者会怎么写"。pi 多一个编排者 LLM，这一架构差异本身就是被测对象，由按 Agent 拆分归因 |
-| D3 | `role-pipeline.md` 是本项目自己的编排机制，**不施加给外部框架**。任务如何分配、下游能看到什么、交接什么，一律用框架默认行为 | 用户裁决：框架应该怎么执行就怎么执行 |
+| D3 | `role-pipeline.md` 是本项目自己的编排机制，**不施加给外部框架**。任务如何分配、下游能看到什么、交接什么，一律用框架默认行为 | 项目决策：框架应该怎么执行就怎么执行 |
 | D4 | 集成方式：runner 新增外部臂，每次尝试配一个本地记录代理 | 与 pi 四臂同批并发、同一 provider 窗口，从而能配对；resume、provider 回退、manifest、有效性规则全部复用；token 取自 API 层，与框架无关 |
 
 ## 4. 控制变量与自由变量
@@ -92,7 +92,7 @@ runner（与 pi 四臂同批，Promise.allSettled）
 
 ### 5.4 provider（外部臂自有配置）
 
-- 外部臂不基于 pi，**不从 pi 取 provider**（用户裁决，2026-09-25）。固定配置在 `external-arm.mjs` 的 `EXTERNAL_PROVIDER`：OpenAI 兼容接口 `https://api.deepseek.com`，模型 id `deepseek-flash`（接口 `/models` 返回的名称为 DeepSeek-V4.1-Flash）。
+- 外部臂不基于 pi，**不从 pi 取 provider**（项目决策，2026-09-25）。固定配置在 `external-arm.mjs` 的 `EXTERNAL_PROVIDER`：OpenAI 兼容接口 `https://api.deepseek.com`，模型 id `deepseek-flash`（接口 `/models` 返回的名称为 DeepSeek-V4.1-Flash）。
 - key 来自环境变量 `EXTERNAL_LLM_API_KEY`，没有时读 git 忽略的 `experiments/data/external.env`（权限 0600）；不进仓库、不进 manifest、不进任何日志。runner 在开跑与续跑前检查 key，缺失即拒绝启动。
 - 与 pi 臂的 provider 相互独立：pi 四臂主用 commandcode（`deepseek/deepseek-v4.1-flash`），额度耗尽后 supervise 回退到 DeepSeek 官方；外部臂始终是 DeepSeek 官方。因此回退之前，同一轮内 pi 臂与外部臂的网关不同，模型相同。每条记录写明实际 provider，由 experiment-design §8 的混用 provider 敏感性分析覆盖。
 - 外部臂的上游返回额度或鉴权类错误（沿用 runner 的 `PROVIDER_EXHAUSTED` 正则）时，这次尝试判无效，并以普通错误**终止实验（退出码 1）**，而不是退出码 75：supervise 的回退只切换 pi 臂的 provider，帮不了外部臂。

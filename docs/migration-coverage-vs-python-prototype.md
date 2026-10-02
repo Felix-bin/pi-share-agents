@@ -26,7 +26,7 @@
 | M8 | 消息数/文本开销/非文本规模/耗时/命中率/提升 | ✅ 计量层覆盖全部六项，且**拒绝代理值** | `metering.ts:48-123`（事件）、`metering.ts:200-206`（聚合：`hitRate`/`crossAgentReuses`/`textBytes`/`payloadBytes`/`duration.byTask`）、`metering.ts:201`（`transportBytes: "N/A"`——不报代理值） |
 | M9 | 五大模块 + ≥10 轮连续任务 | ✅ → §7：五大模块齐备；每组 10 轮 × 4 臂的执行装置已就绪 | 同 M7 |
 | M10 | 源码+文档+部署+实验报告+视频，openEuler 可复现 | 🟡 本仓库层面：openEuler 适配归操作系统分支；文档在 | `docs/`、README |
-| M11 | CodeAct + 轻量沙箱（加分） | ❌ **不迁移（用户裁决 2026-09-20：暂不引入）**，按四档纪律记为**规划中**，不作为已实现能力计分 | 见 §2「缺口 B」 |
+| M11 | CodeAct + 轻量沙箱（加分） | ❌ **不迁移（项目决策 2026-09-20：暂不引入）**，按四档纪律记为**规划中**，不作为已实现能力计分 | 见 §2「缺口 B」 |
 
 ---
 
@@ -51,7 +51,7 @@
 | `modes/text_mode.py`、`modes/synapse_mode.py` | `config.ts` 的 `synapse.mode`、`capability.ts` | 已迁移（更强：`off`/`text`/`synapse` 三态） |
 | `runtime/team.py`（`build_team`：角色 + 能力 + check_fn） | `roles.ts` + Pi 委派运行时 | 已迁移 |
 | `runtime/exec_child.py`（子侧启动契约） | `child-contract.ts`、`lifecycle.ts`、`access.ts` | 已迁移 |
-| `runtime/model.py`、`runtime/subprocess_executor.py`（CodeAct 双档执行器） | —— | **不迁移**（用户裁决 2026-09-20：暂不引入；赛题 M11 属加分项，材料中按「规划中」表述，不得写成已实现） |
+| `runtime/model.py`、`runtime/subprocess_executor.py`（CodeAct 双档执行器） | —— | **不迁移**（项目决策 2026-09-20：暂不引入；赛题 M11 属加分项，材料中按「规划中」表述，不得写成已实现） |
 | `eval/harness.py`（`ABRunner`）、`eval/manifest.py`、`eval/schema.py`、`eval/metrics.py` | `metering.ts` + `experiments/bench/` + `experiments/analysis/` | **已迁移** → §7：多臂 runner（manifest 自动采集、失败留证、续跑、provider 回退）、aggregate、配对 bootstrap；结果 schema 校验仍未做 |
 | `qa/dataset.py`、`qa/pipeline.py`、`qa/harness.py`、`qa/scoring.py`、`qa/stats.py` | `experiments/bench/build-public-families.mjs`、`experiments/analysis/score-public.mjs` | **形态不同地迁移** → §7：公开数据集（MuSiQue）经四角色流水线作答，EM/F1 评分与配对 bootstrap；原型的 CoQA 未迁 |
 | `tasks.py`（G1/G2 关联任务族、漂移序列、负样本族） | `experiments/bench/families/` | **已迁移** → §7（关联任务族）；漂移序列与负样本族未迁 |

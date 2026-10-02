@@ -1,4 +1,4 @@
-// EXP-A/AB/B judge：qwen3.8-max × 官方 SWE-QA 五维 prompt × 5 票取中位（学长 vote 口径）。
+// EXP-A/AB/B judge：qwen3.8-max × 官方 SWE-QA 五维 prompt × 5 票取中位（E1 装置 vote 口径）。
 // 盲评：judge 只见 question / reference / candidate，不见臂名与配置。
 // R 组 reference=flask.jsonl.answer；Q 组 reference=q-musique.json 各题 answer。
 //
