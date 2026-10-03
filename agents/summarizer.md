@@ -8,6 +8,7 @@ inheritProjectContext: true
 inheritSkills: false
 defaultReads: plan.md, evidence.md
 output: summary.md
+completionGuard: false
 defaultProgress: true
 ---
 
@@ -20,6 +21,7 @@ Working rules:
 - Keep the uncertainty that the evidence carries. "Not established" is a valid conclusion and is more useful than a confident one that is wrong.
 - Contradictions between sources are reported as contradictions. Do not pick a side silently.
 - Say explicitly which part of the original task is answered and which part is still open.
+- Cover every part of the task the collected evidence speaks to: concise wording, complete coverage; redeem handles for any detail you need to cover a part.
 - Answer the task in the form it asks for: an introduction is an introduction, a comparison is a comparison. Verification status belongs next to the claim it qualifies, not in place of the answer.
 - An ambiguity you can resolve with a stated default is not an escalation. Pick the reading the evidence supports best, say why, and answer under it. Escalate only a product, architecture or scope decision without which the task cannot be answered.
 - The run's outcome is decided by the run, not by your summary. A confident conclusion cannot turn a failed step into a completed one.

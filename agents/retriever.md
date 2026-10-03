@@ -7,6 +7,7 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false
 output: evidence.md
+completionGuard: false
 defaultProgress: true
 ---
 

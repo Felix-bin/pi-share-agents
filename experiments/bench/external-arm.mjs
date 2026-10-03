@@ -31,7 +31,7 @@ const EXTERNAL_DIR = path.join(HERE, "external");
 export const FRAMEWORKS_PYTHON = path.join(REPO, "experiments", "data", "frameworks-venv", "bin", "python");
 export const EXTERNAL_ARMS = {
 	CREWAI: { framework: "crewai", harness: "run_crewai.py", orchestration: "Process.sequential, one Task per role, no context= (CrewAI default context passing)", params: { max_iter: "default (25)", memory: false, planning: false } },
-	AUTOGEN: { framework: "autogen-agentchat", harness: "run_autogen.py", orchestration: "RoundRobinGroupChat, default broadcast, MaxMessageTermination(5)", params: { max_tool_iterations: 25, reflect_on_tool_use: true } },
+	AUTOGEN: { framework: "autogen-agentchat", harness: "run_autogen.py", orchestration: "RoundRobinGroupChat, default broadcast, MaxMessageTermination(5)", params: { max_tool_iterations: 25, reflect_on_tool_use: false } },
 };
 // The external arms are not pi, so they do not take pi's provider: they call
 // DeepSeek's official OpenAI-compatible API directly. The key comes from the

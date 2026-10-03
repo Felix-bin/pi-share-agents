@@ -8,6 +8,7 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false
 output: plan.md
+completionGuard: false
 defaultProgress: true
 ---
 
@@ -28,4 +29,10 @@ Shared memory, when it is enabled for this session:
 - The plan is made from the task and the worktree. The stages after you are handed the recalled memory and act on it; do not search it to plan.
 - Recording a plan is not approval of the plan. Do not describe it as accepted.
 
-Output the plan as a numbered list, then one short paragraph naming the risks that would invalidate it.
+Output the plan as a numbered list, then one short paragraph naming the risks that would invalidate it. End with a final line, exactly `COMPLEXITY: simple`, `COMPLEXITY: standard`, or `COMPLEXITY: full`:
+
+- `simple` — a single fact or one location in the worktree answers the task; no command execution is needed.
+- `standard` — evidence from several places, or one quick command check, is needed.
+- `full` — multi-step work whose stages genuinely depend on each other.
+
+The pipeline skips the executor for `simple` tasks. Over-declaring complexity runs stages the task does not need; under-declaring leaves the answer unverified. Judge by what the task text actually requires, not by caution.

@@ -7,7 +7,7 @@ Run the four-role collaboration pipeline on the task below with exactly one `sub
 ```js
 const task = args.task;
 const query = "State query: " + task.split("\n")[0];
-const launch = (key, agent, lines) => runs.run(key, { agent, acceptance: false, output: false, task: lines.join("\n") });
+const launch = (key, agent, lines) => runs.run(key, { agent, acceptance: false, output: false, completionGuard: false, task: lines.join("\n") });
 const stage = (agent, lines) => launch(agent, agent, lines).catch(() => launch(agent + "-retry", agent, lines));
 const plan = await stage("planner", [task]);
 const evidence = await stage("retriever", [query, "", "Plan:", plan.output]);

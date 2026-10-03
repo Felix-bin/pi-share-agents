@@ -4,9 +4,11 @@
 The task text verbatim is the group's first message; the four AssistantAgents
 speak once each in pipeline order and the chat ends after five messages (the
 task and four replies; MaxMessageTermination counts chat messages, not agent
-events). Only the loop bounds are set: max_tool_iterations=25 (the default of 1
-ends an agent's turn after its first tool call) and reflect_on_tool_use=True so
-a turn ends in text. What each agent sees is the group chat's default
+events). Loop bounds: max_tool_iterations=25 (the default of 1 ends an agent's
+turn after its first tool call). reflect_on_tool_use=False (2026-10-03 fix:
+with it on, thinking-mode models emit empty reflect text and the run aborts;
+off, a tool-using turn ends at the tool result and the summarizer still ends
+the chat in text). What each agent sees is the group chat's default
 broadcast; handoffs.jsonl records, per agent, the chat messages delivered to it
 before its turn, rebuilt from the run's own message stream.
 
@@ -77,7 +79,7 @@ async def run(spec: dict) -> int:
                 system_message=role["prompt"],
                 model_client=client,
                 tools=tools,
-                reflect_on_tool_use=True,
+                reflect_on_tool_use=False,  # 2026-10-03: True forces a post-tool text turn; thinking-mode models return empty reflect text and abort the run
                 max_tool_iterations=MAX_TOOL_ITERATIONS,
             )
         )

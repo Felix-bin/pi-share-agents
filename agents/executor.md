@@ -7,6 +7,7 @@ systemPromptMode: replace
 inheritProjectContext: true
 inheritSkills: false
 defaultReads: plan.md, evidence.md
+completionGuard: false
 defaultProgress: true
 ---
 
