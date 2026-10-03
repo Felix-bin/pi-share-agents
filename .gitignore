@@ -31,3 +31,4 @@ tmp/
 experiments/*/sweqa/__pycache__/
 # Downloaded datasets, built worktree and venv (see experiments/README.md)
 experiments/data/
+__pycache__/
