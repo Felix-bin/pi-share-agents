@@ -16,8 +16,8 @@ REPO = Path(__file__).resolve().parents[2]
 ENV_FALLBACK = Path(os.environ.get("P50O_ENV_FILE", "")) if os.environ.get("P50O_ENV_FILE") else None
 FLASK_JSONL = REPO / "experiments" / "data" / "swe-qa" / "Benchmark" / "flask.jsonl"
 MUSIQUE_FAMILY = REPO / "experiments" / "bench" / "families" / "q-musique.json"
-API_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-MODEL_ID = "deepseek-v4.1-flash"
+API_BASE = os.environ.get("P50O_API_BASE", "https://api.commandcode.ai/provider/v1")  # 2026-10-05 起切换 commandcode
+MODEL_ID = "deepseek/deepseek-v4.1-flash"
 MAX_TOKENS = 32768
 
 FAMILY_DIRS = {"r": REPO / "experiments" / "data" / "flask-src", "q": REPO / "experiments" / "data" / "worktree" / "musique"}
@@ -33,14 +33,14 @@ def load_questions(n: int, family: str) -> list[str]:
 
 
 def load_key() -> str:
-    env = os.environ.get("DASHSCOPE_API_KEY")
+    env = os.environ.get("COMMANDCODE_API_KEY")
     if env:
         return env
     if ENV_FALLBACK and ENV_FALLBACK.is_file():
         for line in ENV_FALLBACK.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("DASHSCOPE_API_KEY="):
+            if line.strip().startswith("COMMANDCODE_API_KEY="):
                 return line.split("=", 1)[1].strip()
-    raise RuntimeError("set DASHSCOPE_API_KEY (or P50O_ENV_FILE pointing at a .env holding it)")
+    raise RuntimeError("set COMMANDCODE_API_KEY (or P50O_ENV_FILE pointing at a .env holding it)")
 
 
 class WorktreeTools:

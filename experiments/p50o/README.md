@@ -78,8 +78,12 @@ MuSiQue（Q 族）：`--family q`（题源 `experiments/bench/families/q-musique
 
 ## 模型与密钥
 
-被测与判分均 deepseek-v4.1-flash @ 百炼平台（dashscope compatible-mode），密钥经
-DASHSCOPE_API_KEY 环境变量（synapse/.env），不落仓库。
+被测与判分 LLM：**deepseek/deepseek-v4.1-flash @ commandcode**（`https://api.commandcode.ai/provider/v1`，
+OpenAI 兼容；2026-10-05 起全部实验切换至该平台，`P50O_API_BASE`/`P50O_JUDGE_BASE` 可覆盖）。
+语料向量嵌入（text-embedding-v4/1024）commandcode 无嵌入模型，保留百炼 dashscope。
+密钥经环境变量 `COMMANDCODE_API_KEY`（LLM）与 `DASHSCOPE_API_KEY`（嵌入）注入（synapse/.env），不落仓库。
+f1 轮起另支持 `--flow revisit`（连续任务流：5 题正跑 + 5 题逐字重访，storageRoot 跨轮持久），
+判分配 `--revisit-mod 5` 将重访轮映射回原题 reference。
 
 ## 已知坑（本装置实测）
 

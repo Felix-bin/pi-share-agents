@@ -37,9 +37,13 @@ const MUSIQUE_FAMILY = `${WSL_REPO}/experiments/bench/families/q-musique.json`;
 const MUSIQUE_WORKTREE = `${WSL_REPO}/experiments/data/worktree/musique`;
 const CORPUS_SRC_ROOT = args["corpus-root"] ?? path.join(repoRoot, "experiments", "data", "_corpus-cache"); // 语料快照根：--corpus-root 覆盖
 const CORPUS_ID = "63a385a420d3bdd080b21981640d964d46b9f1637050a4276ee0510ec8fd56dc";
-const BAILIAN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const MODEL = { id: "deepseek-v4.1-flash" };
-const EMBEDDING = { provider: "bailian", endpoint: `${BAILIAN_BASE}/embeddings`, model: "text-embedding-v4", dim: 1024, keyEnv: "DASHSCOPE_API_KEY" };
+// 被测/判分 LLM 供应商：commandcode（2026-10-05 起全部实验切换，P50O_API_BASE 可覆盖）。
+// 嵌入（语料向量检索）commandcode 无嵌入模型，保留百炼 dashscope（keyEnv 区分）。
+const LLM_BASE = process.env.P50O_API_BASE ?? "https://api.commandcode.ai/provider/v1";
+const LLM_PROVIDER = "commandcode";
+const MODEL = { id: "deepseek/deepseek-v4.1-flash" };
+const EMBEDDING_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const EMBEDDING = { provider: "bailian", endpoint: `${EMBEDDING_BASE}/embeddings`, model: "text-embedding-v4", dim: 1024, keyEnv: "DASHSCOPE_API_KEY" };
 const REPO = path.resolve(args["plugin-repo"] ?? WSL_REPO); // pi 插件产品：默认即本仓（装置自包含），--plugin-repo 覆盖
 const ROUND_TIMEOUT_MS_DEFAULT = 15 * 60_000;
 const SETUP_TIMEOUT_MS = 30_000;
@@ -60,10 +64,10 @@ const TEMPLATE_TXT = args["template-txt"] ?? "role-pipeline";
 const TIMEOUT_MS = Number(args["timeout-ms"] ?? ROUND_TIMEOUT_MS_DEFAULT);
 const SEAL = args.seal !== "0"; // 密封沙盒：每题把任务语料复制到临时目录并作为 cwd，切断对题库/宿主仓的文件访问（默认开，--seal 0 关闭）
 
-const apiKey = process.env.DASHSCOPE_API_KEY ?? "";
+const apiKey = process.env.COMMANDCODE_API_KEY ?? process.env.DASHSCOPE_API_KEY ?? "";
 for (const [what, ok] of [
 	["pi cli", fs.existsSync(CLI)],
-	["DASHSCOPE_API_KEY", apiKey.length > 0],
+	["COMMANDCODE_API_KEY", apiKey.length > 0],
 	["template(syn)", fs.existsSync(`${WSL_REPO}/prompts/${TEMPLATE_SYN}.md`)],
 	["template(txt)", fs.existsSync(`${WSL_REPO}/prompts/${TEMPLATE_TXT}.md`)],
 	...(FAMILY === "r"
@@ -76,9 +80,13 @@ for (const [what, ok] of [
 }
 fs.mkdirSync(path.join(expDir, "evidence"), { recursive: true });
 
-const questions = FAMILY === "r"
+let questions = FAMILY === "r"
 	? fs.readFileSync(FLASK_QUESTIONS, "utf-8").trim().split("\n").slice(0, TASKS).map((line) => JSON.parse(line).question)
 	: (JSON.parse(fs.readFileSync(MUSIQUE_FAMILY, "utf-8")).tasks ?? []).slice(0, TASKS).map((t) => t.task ?? t.question);
+// 连续任务流（--flow revisit）：前 5 轮正跑 + 后 5 轮逐字重访（赛题"彼此关联的连续任务"结构；
+// storageRoot 跨轮持久，共享记忆真实累积——单发题上无前轮可复用，机制无正贡献舞台）。
+const FLOW = (args.flow ?? "") === "revisit";
+if (FLOW) questions = [...questions, ...questions];
 const CORPUS_SOURCE_DIR = FAMILY === "r" ? FLASK_SRC : MUSIQUE_WORKTREE; // 任务语料（密封沙盒的复制源）
 
 function loadTemplate(name) {
@@ -111,11 +119,11 @@ function synapseConfigFor(arm, storageRoot) {
 function writeAgentConfig(agentDir, arm, storageRoot) {
 	const models = {
 		providers: {
-			bailian: {
-				name: "Aliyun Bailian (platform key)",
-				baseUrl: BAILIAN_BASE,
+			commandcode: {
+				name: "CommandCode (provider gateway)",
+				baseUrl: LLM_BASE,
 				api: "openai-completions",
-				apiKey: "$DASHSCOPE_API_KEY",
+				apiKey: "$COMMANDCODE_API_KEY",
 				compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
 				models: [{ id: MODEL.id, name: `${MODEL.id} (Bailian platform)`, reasoning: false, input: ["text"], contextWindow: 131072, maxTokens: 32768, cost: { input: 0.15, output: 1.5, cacheRead: 0.0375, cacheWrite: 0.15 } }],
 			},
@@ -134,7 +142,7 @@ function runPiRound({ agentDir, tempRoot, prompt, roundLog, armKey, cwd }) {
 	fs.mkdirSync(tempRoot, { recursive: true });
 	const events = [];
 	let carry = "", stderr = "";
-	const child = spawn(process.execPath, [CLI, "-e", path.join(REPO, "index.ts"), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc", "--provider", "bailian", "--model", MODEL.id], { cwd, env: { ...process.env, DASHSCOPE_API_KEY: apiKey, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENTS_TEMP_ROOT: tempRoot }, stdio: ["pipe", "pipe", "pipe"] });
+	const child = spawn(process.execPath, [CLI, "-e", path.join(REPO, "index.ts"), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc", "--provider", LLM_PROVIDER, "--model", MODEL.id], { cwd, env: { ...process.env, COMMANDCODE_API_KEY: apiKey, DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY ?? "", PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENTS_TEMP_ROOT: tempRoot }, stdio: ["pipe", "pipe", "pipe"] });
 	const append = (prefix, chunk) => {
 		carry += String(chunk);
 		let at;
@@ -206,20 +214,29 @@ for (const [index, question] of questions.entries()) {
 		const evidence = path.join(expDir, "evidence", key);
 		fs.rmSync(evidence, { recursive: true, force: true });
 		fs.mkdirSync(evidence, { recursive: true });
-		const workRoot = path.join(os.tmpdir(), "pi-p50o", createHash("sha256").update(expDir).digest("hex").slice(0, 8), key);
+		// 流式模式：storageRoot/agentDir 按臂持久（共享记忆跨轮真实累积）；单发模式按题隔离。
+		const workRoot = FLOW
+			? path.join(os.tmpdir(), "pi-p50o", createHash("sha256").update(expDir).digest("hex").slice(0, 8), `flow-${arm}`)
+			: path.join(os.tmpdir(), "pi-p50o", createHash("sha256").update(expDir).digest("hex").slice(0, 8), key);
 		const agentDir = path.join(workRoot, "agent");
 		const storageRoot = path.join(workRoot, "state");
-		fs.rmSync(workRoot, { recursive: true, force: true });
+		if (FLOW) { if (index === 0) fs.rmSync(workRoot, { recursive: true, force: true }); }
+		else fs.rmSync(workRoot, { recursive: true, force: true });
 		if (arm === "SYN" || ABLATION[arm]?.corpus) {
 			fs.mkdirSync(path.join(storageRoot, "corpus", CORPUS_ID), { recursive: true });
-			for (const file of ["meta.json", "vectors.f32", "chunks.json"]) fs.copyFileSync(`${CORPUS_SRC_ROOT}/${CORPUS_ID}/${file}`, path.join(storageRoot, "corpus", CORPUS_ID, file));
+			for (const file of ["meta.json", "vectors.f32", "chunks.json"]) {
+				const dst = path.join(storageRoot, "corpus", CORPUS_ID, file);
+				if (!fs.existsSync(dst)) fs.copyFileSync(`${CORPUS_SRC_ROOT}/${CORPUS_ID}/${file}`, dst);
+			}
 		} else fs.mkdirSync(storageRoot, { recursive: true });
 		writeAgentConfig(agentDir, arm, storageRoot);
 		// 密封沙盒：任务语料整份复制到临时目录，cwd 指向副本——题库（含金标）与宿主仓不在可达树上。
 		// Windows 坑：cpSync 递归复制含 junction 的 .venv 会令 node 原生崩溃（静默 exit 127），
 		// 故过滤 .venv 后以 junction 回接（executor 的 pytest 可用，行为与密封前轮一致）。
-		const sealDir = path.join(workRoot, "seal");
+		// 流式模式下沙盒仍按轮独立（语料只读、每轮干净副本），记忆驻留在 storageRoot 不受影响。
+		const sealDir = FLOW ? path.join(workRoot, "seals", key) : path.join(workRoot, "seal");
 		if (SEAL) {
+			fs.rmSync(sealDir, { recursive: true, force: true });
 			fs.cpSync(CORPUS_SOURCE_DIR, sealDir, { recursive: true, filter: (s) => !s.split(/[\\/]/).includes(".venv") });
 			const venvLink = path.join(sealDir, ".venv"), venvSrc = path.join(CORPUS_SOURCE_DIR, ".venv");
 			if (fs.existsSync(venvSrc)) {
@@ -232,7 +249,7 @@ for (const [index, question] of questions.entries()) {
 
 		const prompt = templates[arm] + question + "\n";
 		fs.writeFileSync(path.join(evidence, "prompt.md"), prompt, "utf-8");
-		const outcome = await runPiRound({ agentDir, tempRoot: path.join(workRoot, "tmp"), prompt, roundLog: path.join(evidence, "rpc.jsonl"), armKey: key, cwd });
+		const outcome = await runPiRound({ agentDir, tempRoot: path.join(workRoot, "tmp", key), prompt, roundLog: path.join(evidence, "rpc.jsonl"), armKey: key, cwd });
 
 		const result = outcome.subagentEnd?.result ?? {};
 		const usage = result.usage ?? null;

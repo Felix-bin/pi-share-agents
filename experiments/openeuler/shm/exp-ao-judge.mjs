@@ -14,14 +14,15 @@ const repoRoot = path.resolve(here, "..", "..", "..");
 const SWEQA = path.join(repoRoot, "experiments", "data", "swe-qa");
 const FLASK = path.join(repoRoot, "experiments", "data", "swe-qa", "Benchmark", "flask.jsonl");
 const MUSIQUE_FAMILY = path.join(repoRoot, "experiments", "bench", "families", "q-musique.json");
-const BAILIAN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const JUDGE_MODEL = "deepseek-v4.1-flash";
+const BAILIAN_BASE = process.env.P50O_JUDGE_BASE ?? "https://api.commandcode.ai/provider/v1"; // 2026-10-05 起判分走 commandcode
+const JUDGE_MODEL = process.env.P50O_JUDGE_MODEL ?? "deepseek/deepseek-v4.1-flash";
 const DIMS = ["correctness", "completeness", "relevance", "clarity", "reasoning"];
 
 const args = parseArgs(process.argv.slice(2));
 const expDir = path.resolve(args["exp-dir"] ?? "");
 const VOTES = Number(args.votes ?? 5);
 const FAMILY = args.family ?? "r";
+const REVISIT_MOD = Number(args["revisit-mod"] ?? 0); // >0：连续任务流重访轮，reference 按 index%N 映射
 
 const partial = ["exp-a-partial.jsonl", "exp-ab-partial.jsonl", "exp-b-partial.jsonl", "p50o-partial.jsonl", "CREWAI-partial.jsonl", "CREWAI7-partial.jsonl", "AUTOGEN-partial.jsonl"].map((n) => path.join(expDir, n)).find((f) => fs.existsSync(f));
 if (!partial) fail(`no partial jsonl under ${expDir}`);
@@ -48,14 +49,15 @@ function parseScores(text) {
 }
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
 
-let key = process.env.DASHSCOPE_API_KEY;
+let key = process.env.COMMANDCODE_API_KEY ?? process.env.DASHSCOPE_API_KEY;
 if (!key) {
 	// 回退链：本机 synapse/.env（Windows 装置路径）→ 服务器路径。
 	for (const envPath of ["D:/操作系统开源大赛/synapse/.env", "/root/.pi/agent/synapse/.env"]) {
 		if (key || !fs.existsSync(envPath)) continue;
 		for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
 			const t = line.trim();
-			if (t.startsWith("DASHSCOPE_API_KEY=")) key = t.slice("DASHSCOPE_API_KEY=".length);
+			if (t.startsWith("COMMANDCODE_API_KEY=")) key = t.slice("COMMANDCODE_API_KEY=".length);
+			else if (t.startsWith("DASHSCOPE_API_KEY=")) key = t.slice("DASHSCOPE_API_KEY=".length);
 		}
 	}
 }
@@ -84,7 +86,7 @@ for (const row of rows) {
 	if (judged.has(key)) { console.log(`[judge] ${key}: already judged, skip`); continue; }
 	const answerPath = path.join(expDir, "evidence", key, "answer.md");
 	if (!fs.existsSync(answerPath)) continue;
-	const ref = references[row.index];
+	const ref = references[REVISIT_MOD > 0 ? row.index % REVISIT_MOD : row.index];
 	const reference = FAMILY === "r" ? ref.answer : (ref.answer ?? ref.answer);
 	const question = FAMILY === "r" ? ref.question : (ref.task ?? ref.question);
 	const candidate = fs.readFileSync(answerPath, "utf-8");
