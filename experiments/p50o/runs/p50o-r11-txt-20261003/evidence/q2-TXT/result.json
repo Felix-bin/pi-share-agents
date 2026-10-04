@@ -1,0 +1,25 @@
+{
+	"arm": "TXT",
+	"answerChars": 40064,
+	"cacheRead": 3083264,
+	"childIn": 277450,
+	"childOut": 82779,
+	"index": 1,
+	"parentIn": 890,
+	"parentOut": 312,
+	"problem": null,
+	"question": "What is the purpose of the registration tracking flag in the blueprint collection class that prevents setup methods from being called after the blueprint has been registered once?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"template": "naive-pipeline",
+	"totalIn": 278340,
+	"totalOut": 83091,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 635880
+}

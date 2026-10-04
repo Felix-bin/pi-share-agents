@@ -1,0 +1,1 @@
+The conclusion memory was rejected (`not-authorised: summarizer may not write shared memory`), so this synthesis exists only in this response; the underlying verified run remains in the executor's record `7e7149947b55c3a6…c48f8`.

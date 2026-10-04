@@ -1,0 +1,25 @@
+{
+	"arm": "TXT",
+	"answerChars": 15220,
+	"cacheRead": 1927168,
+	"childIn": 218156,
+	"childOut": 68309,
+	"index": 0,
+	"parentIn": 8084,
+	"parentOut": 391,
+	"problem": null,
+	"question": "What is the relationship between the ASCII-only encoding control parameter in the framework's JSON serialization provider and Unicode character representation in serialized output?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"template": "naive-pipeline",
+	"totalIn": 226240,
+	"totalOut": 68700,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 886405
+}

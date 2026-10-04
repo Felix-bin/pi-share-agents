@@ -1,0 +1,29 @@
+## Answer
+
+**The control is a pure passthrough switch, not a Flask-specific notion of Unicode.** `DefaultJSONProvider.ensure_ascii` (defined `ensure_ascii = True` at `experiments/data/flask-src/src/flask/json/provider.py:144`, class at `:124`) is forwarded verbatim into stdlib `json.dumps` via `kwargs.setdefault("ensure_ascii", self.ensure_ascii)` at `provider.py:177`. Flask interprets nothing about Unicode itself; the entire observable effect on serialized output is the stdlib `json` encoder's documented behavior for that flag (executor-measured; see caveats).
+
+**The relationship, stated concretely:**
+- `True` (the class default) → the serialized string is ASCII-only. Every non-ASCII code point is replaced by an escape sequence: `\uXXXX` for BMP (test asserts `"\N{SNOWMAN}"` → `'"\\u2603"'`, `tests/test_json.py:49-54`), and a **surrogate pair** for code points above U+FFFF. Dict keys are escaped exactly like values.
+- `False` → literal code points are emitted in the output string (i.e. UTF-8 bytes on the wire); same test asserts `'"☃"'`.
+- Both modes produce valid JSON, and `loads()` round-trips either form to an identical Python string. So this parameter changes the *representation*, not the *information*. Flask's own docstring states the tradeoff as compatibility vs. performance/size (`provider.py:145-148`).
+
+**Precedence (verified from source, executor-verified by execution):** per-call `dumps(..., ensure_ascii=…)` > `app.json.ensure_ascii` instance attribute > class default `True` > stdlib default. Because Flask uses `setdefault`, a per-call kwarg always wins.
+
+**Where the attribute does *not* apply — the notable edge:** the context-free `flask.json.dumps` (`src/flask/json/__init__.py:40-44`) only does `kwargs.setdefault("default", _default)`; it does **not** forward `ensure_ascii`. The attribute is honored only on the app-context path (`current_app.json.dumps`), which is also what `JSONProvider.response` (`provider.py:189-216`, `f"{self.dumps(obj, **dump_args)}\n"`) and therefore `jsonify`/view-returned dicts use. The test client inherits it too: `EnvironBuilder.json_dumps` is literally `self.app.json.dumps(obj, **kwargs)` (`src/flask/testing.py:94`), asserted at `tests/test_testing.py:111-113`.
+
+**Channel coverage in this checkout:** exactly 5 occurrences of the name — `provider.py:144, :171, :177`, `tests/test_json.py:52`, `tests/test_testing.py:112`. No subclass override in `src/`, no docs entry for the name. `docs/config.rst:441` only records that the predecessor config key `JSON_AS_ASCII` was removed in Flask 2.3 with "equivalent attributes" on `app.json` — so the *concept* is legacy-documented even though the current attribute name is not. (This refines, rather than contradicts, the evidence block's "no docs entry".)
+
+**Scope of the question, and why it matters here:** the tree that actually has this parameter is the vendored Flask clone `experiments/data/flask-src` — `pallets/flask` checked out at SWE-QA's pinned commit (`experiments/bench/prepare-public-data.sh:6`), version `3.2.0.dev` (`pyproject.toml:3`), with `.venv` = CPython 3.13.9 Windows (`flask-src/.venv/pyvenv.cfg`). The SYN/pi plugin tree has **no counterpart parameter** (`JSON.stringify` only, 30+ hits, zero ascii-named flags), so the question has no referent on the plugin side. And no experiment runner sets `app.json.ensure_ascii`: the only `ensure_ascii` use under `experiments/` is stdlib `json.dumps(..., ensure_ascii=False)` for the external harness's own JSONL/meta logs (`bench/external/common.py:81, :87`), whose byte metric is `len(text.encode("utf-8"))` (`:79`). That means the harness's byte accounting already assumes the `False`/literal-UTF-8 semantics and never travels through Flask's provider — a byte claim measured on the `True` path would not transfer to the harness metric.
+
+## What this rests on
+
+- Source (re-read by me): `src/flask/json/provider.py:144, 166-178, 189-216`; `src/flask/json/__init__.py:40-44`; `src/flask/testing.py:88-94`; `tests/test_json.py:49-54`; `tests/test_testing.py:111-113`; `docs/config.rst:441`; `pyproject.toml:3`; `experiments/data/flask-src/.venv/pyvenv.cfg`; `experiments/bench/prepare-public-data.sh:6`; `experiments/bench/external/common.py:79-87`.
+- Executor-run (reported, not re-run by me): precedence chain, byte deltas 21.8%/63.9%, lone-surrogate 500 under `False`. Consistency check I derived myself: per non-ASCII code point the `True`→`False` byte reduction is 50% for 3-byte UTF-8 (CJK), 66.7% for 2-byte and for 4-byte/non-BMP, 0% for ASCII — so both reported figures fall inside the arithmetically possible range rather than being independently confirmed.
+- Contradictions found: none between sources. One refinement (docs do carry the legacy `JSON_AS_ASCII` removal note, `docs/config.rst:441`), one scope boundary (the plugin has no such parameter).
+
+## Still open
+
+- No execution was possible on my side (no run tool), so byte counts, the C-encoder code path, and the lone-surrogate failure mode remain executor-reported rather than independently reproduced.
+- Tokenizer token counts were never measured; the 21.8%/63.9% figures are UTF-8 byte deltas and must not be restated as token savings.
+- Only this checkout's Flask (`3.2.0.dev`, CPython 3.13.9 Windows) was inspected; no other Flask copy or version on this machine, and the stability of these semantics across Flask ≥2.2, was verified.
+- Nothing could be cached in shared memory — my `synapse_write` was rejected (`not-authorised: summarizer may not write shared memory`), so this conclusion lives only in this response plus the pre-existing executor memory `7557b3d679b8`.

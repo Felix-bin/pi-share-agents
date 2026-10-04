@@ -1,0 +1,1 @@
+ANSWER: 8.005 million

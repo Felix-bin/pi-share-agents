@@ -1,0 +1,17 @@
+## Answer
+
+The chain the evidence supports:
+
+1. **The edict and its addressee.** The corpus preserves one edict it explicitly describes as "addressed to" anyone: `002-Sino-Tibetan-relations-during-the-Ming-dynasty.md:3` — *"The Information Office of the State Council of the PRC preserves an edict of the Zhengtong Emperor (r. 1435–1449) addressed to the Karmapa in 1445 … Zhengtong had the following message delivered to the Great Treasure Prince of Dharma, the Karmapa."* So: Zhengtong Emperor, 1445, addressee = the Karmapa, titled "Great Treasure Prince of Dharma". A corpus-wide grep for "addressed to" returns only this hit plus an unrelated ZIP-code sentence in `035-Bloomingdale-Florida.md:3`; the other edict hits (`007:3`, `014:3`, `023:3`, and non-Ming files) name no Karmapa addressee.
+
+2. **The city where that person was greeted by the Yongle Emperor.** `003-Sino-Tibetan-relations-during-the-Ming-dynasty.md:3` states it in one sentence: *"During his travels beginning in 1403, Deshin Shekpa was induced by further exhortations by the Ming court to visit Nanjing by April 10, 1407. … The Yongle Emperor came out of the palace in Nanjing to greet the Karmapa and did not require him to kowtow like a tributary vassal."* City = **Nanjing**. Corroborated by `016:3` ("At Linggu Temple in Nanjing … During his stay in Nanjing, Deshin Shekpa was bestowed the title 'Great Treasure Prince of Dharma' by the Yongle Emperor") and `021:3` ("…Hou Xian and Zhi Guang did not return to Nanjing until 1407").
+
+   The identity link that makes this the *same* person as the edict's addressee is inferential, not stated: `002:3` uses the title "Great Treasure Prince of Dharma", and `016:3` says Yongle bestowed exactly that title on Deshin Shekpa; `009:3` names him ("Deshin Shekpa, 5th Karmapa Lama (1384–1415)"). No corpus sentence asserts the identity outright. The plan's alternative document — Yongle's own letter of invitation (`009:3`) — points at the same man, so the city and its meaning do not change between the two readings.
+
+3. **What the city's name means.** `001-Nanjing.md:3`: *"Nanjing ( listen; Chinese: 南京, \"Southern Capital\")…"* and *"The city whose name means \"Southern Capital\" has a prominent place in Chinese history and culture…"* → 南京 = **"Southern Capital"**.
+
+   Counter-gloss, reported as-is: the same line of `001` also says *"Nanjing is particularly known as Jinling (金陵, literally meaning Gold Mountain) and the old name has been used since the Warring States Period in Zhou Dynasty."* That gloss attaches to the *older* name Jinling, not to Nanjing; the question asks about the city whose name means "Southern Capital", so the default reading is "Southern Capital". The corpus contains no sentence resolving the two glosses explicitly — the choice follows from the question's own phrasing matching `001`'s gloss of Nanjing.
+
+**Open / not established:** (a) the identity of `002`'s addressee with `003`'s greeter is supported only via the shared title, not asserted; (b) no corpus line says the Zhengtong edict's addressee was in Nanjing; (c) the Jinling "Gold Mountain" vs Nanjing "Southern Capital" pair is two glosses for two different names, reported without a corpus sentence adjudicating it.
+
+ANSWER: Southern Capital

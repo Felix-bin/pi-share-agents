@@ -1,0 +1,18 @@
+## Conclusion
+
+In this Flask `3.2.0.dev` checkout, `DefaultJSONProvider.ensure_ascii` (default `True`, declared at `src/flask/json/provider.py:144`, consumed only at `:177` via `kwargs.setdefault("ensure_ascii", self.ensure_ascii)` before stdlib `json.dumps` at `:179`) is a **pure representation switch, not a content switch**. With `True`, every non-ASCII code point is emitted as an ASCII `\uXXXX` escape, so the serialized text is pure ASCII; with `False`, the code points are emitted literally into the string, which then leaves as UTF-8 bytes — and JSON decoded from either form yields the identical string. The practical consequence is that only the `False` branch requires a Unicode-capable transport and it hard-fails rather than degrades: `ensure_ascii=False` on a lone surrogate raised `UnicodeEncodeError` at Werkzeug `wrappers/response.py:297` under execution. Precedence is `per-call kwarg > attribute > stdlib default` (because of `setdefault`), verified in both directions by execution, and the attribute does govern the `jsonify`/`response` path (`response()` at `:189-215` sets only `indent`/`separators`); one code path bypasses it — module-level `flask.json.dumps` outside an app context.
+
+## What this rests on
+
+- **Define/consume sites, read directly:** `provider.py:144` (`ensure_ascii = True`) and `:177`/`:179`; `json/__init__.py:170` routes `jsonify` to `json.response`; `sansio/app.py:230,329` pins the provider. Grep: `ensure_ascii` appears only in `provider.py` (3 hits) in `src/`; `JSON_AS_ASCII` = 0 hits.
+- **Executed verification (executor, `./.venv/Scripts/python.exe` 3.13.9):** precedence rule both directions; consumption on `dumps`/`dump`/`response`/`jsonify`/test-client; non-consumption outside app context; escaping-vs-formatting byte split; lone-surrogate failure at Werkzeug `response.py:297`; `56 passed` with the named in-tree tests.
+- **In-tree assertions pinning the exact literals:** `tests/test_json.py:49-54` parametrizes `True → '"\\u2603"'` vs `False → '"\u2603"'`; `tests/test_testing.py:110-114` sets `False` and asserts a raw `€` in the body.
+- **Shared memory:** no prior *conclusion* on this topic existed, so nothing is contradicted or superseded; the three recalled records (`7a89c40a4252` planner template, `0b19fa16a023` retriever seam map, `3b75de1d976e` executor run) are consistent with each other and with this conclusion. Recall was keyword-only — the search reported `semantic: "unavailable"`, so a semantically-similar conclusion filed under different words would not have surfaced.
+
+## What remains open
+
+- The docstring's "better performance and size" claim is **unmeasured**; only the size half was quantified, and only on `dumps`. Do not repeat the performance half as established.
+- The `True`-branch behaviour on lone surrogates was not separately executed, and surrogate handling at call sites other than `response`/`jsonify` (e.g. `json.dump` to a file) is untested here.
+- The UTF-8-on-the-wire step is Werkzeug-level evidence (`wrappers/response.py:297`), not vendored Flask source — it is dependency evidence and can drift with the Werkzeug version.
+- `JSON_AS_ASCII` migration framing (deprecated 2.2.0, removed 2.3.0) rests on quoted `CHANGES.rst` lines that were line-number-verified but not re-read in full.
+- Scope limit: this is a **dev tree** (`3.2.0.dev`), so nothing here is asserted about released Flask versions beyond the changelog migration note; likewise the TS-side negative grep (`pi-share-agents-openeuler-wsl/src/**/*.ts` has no `ensure_ascii`/`ensureAscii` knob) was re-run by the executor with 0 hits, but that only tells you the SYNAPSE side does not mirror this parameter — it is not evidence about how the framework behaves.

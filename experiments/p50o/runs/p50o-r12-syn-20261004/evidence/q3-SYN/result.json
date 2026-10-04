@@ -1,0 +1,25 @@
+{
+	"arm": "SYN",
+	"answerChars": 9937,
+	"cacheRead": 646912,
+	"childIn": 91625,
+	"childOut": 35443,
+	"index": 2,
+	"parentIn": 1062,
+	"parentOut": 481,
+	"problem": null,
+	"question": "What is the modular component registration architecture that separates static asset serving from the main application framework while preserving consistent caching behavior across both components?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"template": "opt-pipeline",
+	"totalIn": 92687,
+	"totalOut": 35924,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 322247
+}

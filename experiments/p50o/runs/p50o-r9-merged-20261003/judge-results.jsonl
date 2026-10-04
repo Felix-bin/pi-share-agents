@@ -1,0 +1,5 @@
+{"correctness":1,"completeness":1,"relevance":1,"clarity":1,"reasoning":1,"key":"q5-SYN","parseFailures":0,"total":5,"votes":5}
+{"correctness":7,"completeness":8,"relevance":10,"clarity":13,"reasoning":13,"key":"q4-SYN","parseFailures":0,"total":51,"votes":5}
+{"correctness":19,"completeness":19,"relevance":14,"clarity":16,"reasoning":18,"key":"q2-SYN","parseFailures":2,"total":86,"votes":5}
+{"correctness":17,"completeness":17,"relevance":13,"clarity":14,"reasoning":16,"key":"q3-SYN","parseFailures":3,"total":77,"votes":5}
+{"correctness":17,"completeness":18,"relevance":13,"clarity":14,"reasoning":16,"key":"q1-SYN","parseFailures":3,"total":78,"votes":5}

@@ -1,0 +1,34 @@
+## Answer
+
+**Short form:** the dual base is a **dispatch-substitutability + debug-marker device**, not a boundary between validation failures and encoding issues. The corpus contains no evidence that `UnexpectedUnicodeError` ever encoded such a separation; and the class is now unreachable — no raise site, no test, no doc, no changelog, no export — so whatever it once signalled has been retired by a later architectural decision that **reversed** it.
+
+### 1. What the dual inheritance mechanically does
+
+- `class UnexpectedUnicodeError(AssertionError, UnicodeError):` at `src/flask/debughelpers.py:17`; body is the docstring alone (18–20) — no `__init__`, no methods, no `msg`.
+- Dispatch in Flask is MRO-walking, not type-name matching: `_find_error_handler` (`src/flask/sansio/app.py:823-850`) loops `for c in (code, None) if code is not None else (None,)`, then `for name in (*blueprints, None)`, then `for cls in exc_class.__mro__`. Because the class is **not** an `HTTPException`, `_get_exc_class_and_code` yields `code=None`, so the `code` branch is skipped entirely: only blueprint/app class-hierarchy handlers can ever match.
+- So each extra base is one more **registration hook** for app authors, not a statement about the failure's nature. Empirically (executor probe, WSL `openEuler-SP3`, venv 3.11.6, `PROPAGATE_EXCEPTIONS=False`): MRO = `[UnexpectedUnicodeError, AssertionError, UnicodeError, ValueError, Exception, BaseException, object]`; `AssertionError` handler wins when both `AssertionError` and `UnicodeError` are registered (MRO-first-match beats registration order); a `ValueError` handler also fires; a blueprint handler beats an app handler.
+- That is the opposite of separation: the two identities **collide**, and the assertion reading takes precedence when a user registers both. Reading MRO order as deliberate precedence is inference — no file in the checkout states it.
+
+### 2. Why this is not a "validation vs encoding" seam
+
+Corpus-wide (`.git` excluded) `UnexpectedUnicodeError` has **exactly one hit — its own definition line**, re-verified in this session. There is no `raise`, no `except UnicodeError`, no `isinstance` check; it is not re-exported from `src/flask/__init__.py` (which exports no error class at all); `tests/` has 0 hits for it (the only test hits are for the sibling: `tests/test_basic.py:1108,1116` → `DebugFilesKeyError`); `CHANGES.rst` has 0 hits. Meanwhile the two siblings **are** wired: `app.py:502` (raised `:504`, guarded by `not self.debug` at `:495`), `wrappers.py:208` (under `current_app.debug`), `templating.py:83`. `UnexpectedUnicodeError` has no counterpart to any of these. Where a real seam exists it is elsewhere: HTTP-level validation lives in werkzeug `HTTPException`/`BadRequest` and is routed through the *code* branch, while encoding is normalised in `json/` (`json/tag.py` `TagBytes`).
+
+Also note the plan's `FormDataRoutingRedirect` line was wrong: it is **50**, not 48 (`DebugFilesKeyError` at 23 is correct; the sole internal raise, `DebugFilesKeyError(...).with_traceback(...)`, is at `:98`).
+
+### 3. What the class actually encodes: a retired decision, and its reversal
+
+- The base pair mirrors the older sibling: the *original* failure type goes in the bases so existing `except` code still works, plus `AssertionError` as a "this is a developer error, debug-quality message" marker. `DebugFilesKeyError(KeyError, AssertionError)` at `:23` preserves `KeyError` semantics; `UnexpectedUnicodeError` preserves `UnicodeError` semantics.
+- Base order differs between the two (`AssertionError` first vs `KeyError` first), so precedence flips: `AssertionError` beats `UnicodeError`, but `KeyError` beats `AssertionError`. The `DebugFilesKeyError` MRO is C3 linearization — `[self, KeyError, LookupError, AssertionError, Exception, BaseException, object]` — and was **not** empirically probed (the probe covered only `UnexpectedUnicodeError`). Whether the asymmetry is intentional is not established.
+- History (executor's `git log -S` pickaxe, recorded in memory `b566294ff85b`; I cannot execute git, so this is inherited, not re-verified by me): the class was added with `2b885ce4` (2012-10-30, "Added better error reporting for unicode errors in sessions") and its only raise site lived in `flask/sessions.py` `_tag_string`; that raise and import were deleted by `5e1ced3c` (2017-06-01, session-serializer refactor into `flask.json.tag`), replaced by `json/tag.py` `TagBytes` (`check=isinstance(value, bytes)`, `to_json=b64encode(...)`). The old architectural decision — "unexpected unicode/binary in a session is a programming error worth asserting on" — was **reversed** into "bytes are a supported, base64-tagged session value". Validation and encoding stopped being in tension there; the debug exception stopped being needed and was never removed.
+
+### 4. Direct answers to the task's parts
+
+- *Which architectural decisions are reflected by the dual base?* (a) handler-dispatch compatibility under MRO-walking lookup; (b) confinement to the class-hierarchy branch, i.e. a developer-facing diagnostic rather than an HTTP protocol error (no `HTTPException` base); (c) participation in the layered precedence blueprint-before-app; (d) preservation of the original exception type for substitutability — the same pattern as the sibling helper classes.
+- *Does it separate validation failures from encoding issues?* **No.** No raise site, no test, no doc, no changelog, no export, and an explicit docstring that frames the class as *better error reporting*, not as a taxonomy. Nothing in the corpus states that intent; the two bases overlap at dispatch time rather than dividing responsibility.
+- *Which part remains open?* Upstream design intent; the code-branch behaviour (moot — not an `HTTPException`); any `-O`/assert-stripping relevance (moot — no `raise` statement exists); whether the base-order asymmetry is deliberate.
+
+### Rests on / open
+
+- **Rests on:** `debughelpers.py:17-20`, `:23`, `:50`, `:98`; `sansio/app.py:823-850`; `app.py:495-504`; `wrappers.py:206-210`; `templating.py:81-85`; `json/tag.py` `TagBytes`; `__init__.py` read in full; repo-wide grep (1 hit) and `tests/`, `CHANGES.rst` searches (0 hits); executor probe memory `b566294ff85b` (MRO + handler precedence + git pickaxe); the `DebugFilesKeyError` MRO is derivation only.
+- **Open:** upstream intent for the dual base; empirical confirmation of `DebugFilesKeyError`'s MRO; code-branch behaviour (moot).
+- **Process note:** I could not persist this conclusion — `synapse_write` returned `not-authorised: summarizer may not write shared memory` (same class of failure the executor hit as `retriever may not write shared memory`). The only stored record remains `b566294ff85b`; this synthesis exists solely in this response.

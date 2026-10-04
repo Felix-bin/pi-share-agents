@@ -1,0 +1,23 @@
+## Conclusion
+
+In the vendored Flask checkout under test (`experiments/data/flask-src`, pinned by `pyproject.toml:3` to `Flask` **3.2.0.dev**), the ASCII-only encoding control parameter is a **representation-only toggle, not a value-semantics switch**. `DefaultJSONProvider.ensure_ascii = True` (declared once, `src/flask/json/provider.py:144`) is injected into the stdlib serializer as a **default** — `kwargs.setdefault("ensure_ascii", self.ensure_ascii)` at `provider.py:177` — so `True` renders non-ASCII characters as `\uXXXX` escape sequences (ASCII-only bytes) while `False` renders the literal Unicode character (UTF-8 bytes on the wire); either way the serialized text decodes back to the same characters. The executor's executed repro in the checkout's `.venv` measured the byte difference: `{"s":"\u2603"}\n` = 15 bytes escaped vs 12 bytes literal UTF-8 (`b'\xe2\x98\x83'`), and confirmed an explicit `ensure_ascii=` kwarg overrides the attribute. Because the value is only a default, "ASCII-only" is the framework's out-of-the-box behaviour, not a hard constraint. `jsonify` reaches the same default via `json/__init__.py:170` → `provider.py:~214` (`response()` → `self.dumps`) → `:177`; the app-level setting also governs test-client JSON bodies via `flask/testing.py:94`.
+
+## Rests on
+
+- Source read I re-checked myself: `provider.py:124` (class), `:144-148` (declaration + docstring), `:177` (`setdefault`), `:~214` (`self.dumps` inside `response()`); `json/__init__.py:40-44, 138-170`; `flask/testing.py:94`; `pyproject.toml:2-3`.
+- Behavioural contract in-tree: `tests/test_json.py:48-54` (True → `'"\\u2603"'`, False → `'"\u2603"'`), `tests/test_testing.py:110-114` (app setting reaches `EnvironBuilder` input bytes). I read these but did not run them.
+- Executor's executed run (reproduced in the checkout `.venv`, Python 3.13.9): `tests/test_json.py` 31 passed, `tests/test_testing.py -k "json or ensure"` 3 passed, plus the 15-vs-12-byte measurement; recorded as tool-result memory `5e193856…`. System-Python attempts failed on missing `werkzeug` (exit 4), so the venv is the working interpreter.
+- My own whole-checkout grep: `ensure_ascii` occurs only at `src/flask/json/provider.py:144,171,177` and in the two test files — no competing definition in the checkout.
+
+## Contradictions / corrections found while checking
+
+- **Path misattribution (substance holds):** the claim "the only outside call sites are `bench/external/common.py:81,87`" points outside the checkout — reading that path returns ENOENT. The file is actually `experiments/bench/external/common.py` (one level up), where lines 81 and 87 are bare stdlib `json.dumps(..., ensure_ascii=False)` calls by the *experiment harness* writing its own handoff/meta files. Consumer choice, not framework semantics — so the conclusion is unaffected, but the citation as given is wrong.
+- **Retriever open item (c) is now closed, not contradicted:** the retriever listed the wire-byte/UTF-8 consequence of `ensure_ascii=False` as not established (tests assert on `str` and input bytes only); the executor's run measured it at runtime. Consistent with, not opposed to, the source-read account.
+- **Nuance the sources under-emphasise:** outside an app context, `flask.json.dumps` skips the provider entirely (`json/__init__.py:40-44` sets only `default`, then stdlib `json.dumps`), so escaping there comes from stdlib's own default, not from the provider attribute. Same effective default, different mechanism.
+
+## Open
+
+- Nothing here transfers to another Flask version: line numbers and the default are revision-specific, and no runnable version string exists in-tree (`CHANGES.rst:7` — `__version__` removed). The clone is pinned to "SWE-QA's pinned commit" (`experiments/bench/prepare-public-data.sh:6`); that this commit is what upstream would call Flask 3.2.0.dev is not established in-tree.
+- No end-to-end HTTP response-body encoding check (the repro went through `app.json`/`EnvironBuilder`, not a live WSGI response); `charset`/mimetype interaction on the actual wire is untested.
+- Jinja's `tojson` internals remain unexamined (Jinja is not vendored here), so any inference extending this to template-embedded JSON is unsupported.
+- Shared-memory note: I could not record a `conclusion` memory (summarizer has no write authorisation in this session); the reusable conclusion above is therefore only in this response, and the prior tool-result memory `5e193856…` stays the sole stored record.

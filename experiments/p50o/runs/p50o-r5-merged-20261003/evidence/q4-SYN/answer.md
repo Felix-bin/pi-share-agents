@@ -1,0 +1,19 @@
+## Conclusion
+
+The question's premise does not hold up against the checkout: `UnexpectedUnicodeError(AssertionError, UnicodeError)` at `src/flask/debughelpers.py:17` is **definition-only** — one occurrence in the whole clone, zero raise sites, imported and re-exported by nothing — so it reflects no operating separation between validation failures and encoding issues in Flask's current layered architecture. What the dual base does encode is a **dormant, declared contract**: with `AssertionError` listed first, the class is not an `HTTPException` (MRO → `AssertionError` → `UnicodeError` → `ValueError`), so raising it would land on the coding-error side of the stack — 500 in production, propagate under `TESTING`/`DEBUG` (`app.py:843-844`), and `AssertionError` wins handler precedence over `UnicodeError` in `_find_error_handler` — while the `UnicodeError` base second keeps it catchable by encoding-aware `except UnicodeError` code. That is "this is an internal invariant/encoding bug, not a bad request", but it is declarative, not exercised. The separation the architecture actually runs is implemented elsewhere and differently: one layer down, `werkzeug/exceptions.py:189 BadRequestKeyError(BadRequest, KeyError)` is the live dual-inheritance bridge (HTTPException dispatch for the 4xx path + `KeyError` compatibility), with the `show_exception` debug gate defaulting to `False`; the encoding-side counterpart in this layer is gone, deleted on 2017-06-01 by `5e1ced3c` when the session serializer moved to `flask/json/tag.py`, leaving the class stranded and unchanged from release 1.0 through 3.1.3. Read historically, the dual inheritance is a 2012 Python-2 `str`/`unicode` era artifact (`2b885ce4`, 2012-10-30), not a design statement about Flask 3.x layering.
+
+## What this rests on
+
+- `src/flask/debughelpers.py:17-20` read directly — literal declaration, base order `AssertionError` first, docstring-only body; siblings `DebugFilesKeyError(KeyError, AssertionError)` at :23 and `FormDataRoutingRedirect(AssertionError)` at :50 are the ones that are raised.
+- Retriever finding `c0d153b6dcbd` — definition-only status (single grep hit, no importer, not re-exported).
+- Executor provenance `833986285787` — introduced 2012-10-30 with the `sessions.py` raise site, raise site present through 0.10–0.12.5, deleted 2017-06-01 by `5e1ced3c`, class retained.
+- Executor runtime probe `91186a1d65ef` — MRO order, `AssertionError` handler precedence, non-`HTTPException`, 500 vs propagate, `BadRequestKeyError.show_exception` debug gate.
+- Re-verified for this synthesis: `app.py:841-844` (`propagate = self.config["PROPAGATE_EXCEPTIONS"]` → `self.testing or self.debug`) and `werkzeug/exceptions.py:189-216` (`BadRequestKeyError(BadRequest, KeyError)`, `show_exception = False`).
+- Recorded as conclusion memory `63e5be4b5079` under topic `flask-UnexpectedUnicodeError-dual-inheritance`; no prior conclusion on this topic was contradicted.
+
+## What remains open
+
+- **Intent is not established.** Why the definition was left in place after its raise site was deleted rests on inference; no commit message, comment, or issue states it, and there is no `CHANGES.rst` entry or removal commit.
+- **Internal contradiction not resolvable from the code:** the docstring still says "Raised in places where we want some better error reporting" for a class nothing raises.
+- **Claim limit:** nothing here supports saying the class *implements* validation/encoding separation in Flask 3.x; any such statement must be worded as a dormant declared contract. Whether maintainers ever noticed the strand is unverified.
+- **Unrelated anomaly, unexplained:** tag `3.1.3` (dated 2026-02-18, `stable` line) is not an ancestor of HEAD (`git describe` = `3.1.1-30-g85c5d93c`).

@@ -1,0 +1,20 @@
+{
+	"arm": "SYN",
+	"answerChars": 0,
+	"cacheRead": 0,
+	"childIn": 0,
+	"childOut": 0,
+	"index": 4,
+	"parentIn": 1062,
+	"parentOut": 527,
+	"problem": "timeout-or-no-subagent-result",
+	"question": "What is the dependency chain in the test function that verifies subdomain routing through configuration, route registration, and request context creation?",
+	"roles": null,
+	"stages": [],
+	"template": "opt-pipeline",
+	"totalIn": 1062,
+	"totalOut": 527,
+	"unit": "p50o",
+	"valid": false,
+	"wallMs": 1505201
+}

@@ -1,0 +1,25 @@
+{
+	"arm": "TXT",
+	"answerChars": 18948,
+	"cacheRead": 851200,
+	"childIn": 130349,
+	"childOut": 42711,
+	"index": 1,
+	"parentIn": 980,
+	"parentOut": 614,
+	"problem": null,
+	"question": "What is the meaning of the name of the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"template": "naive-pipeline",
+	"totalIn": 131329,
+	"totalOut": 43325,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 290389
+}

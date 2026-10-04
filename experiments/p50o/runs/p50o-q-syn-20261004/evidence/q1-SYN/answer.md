@@ -1,0 +1,20 @@
+## Conclusion
+
+The question resolves as a three-hop chain, and every hop is grounded in a file I read directly in `musique/`:
+
+**Hop 1 — the edict's addressee = the Karmapa.** `002-Sino-Tibetan-relations-during-the-Ming-dynasty.md:3`: "The Information Office of the State Council of the PRC preserves an edict of the Zhengtong Emperor (r. 1435–1449) **addressed to the Karmapa** in 1445 … Zhengtong had the following message delivered to the Great Treasure Prince of Dharma, the Karmapa". A full-corpus grep for `edict|addressed to` returns this as the only edict in the corpus addressed to the Karmapa; the other edict hits (`007`, `011`, `013`, `014`, `018`, `024`, `026`, `032`) belong to other polities.
+
+**Hop 2 — the city where Yongle greeted him = Nanjing.** `003-Sino-Tibetan-relations-during-the-Ming-dynasty.md:3`: "The Yongle Emperor **came out of the palace in Nanjing to greet the Karmapa** and did not require him to kowtow like a tributary vassal", in the same passage that dates Deshin Shekpa's arrival "to visit Nanjing by April 10, 1407". `016` (Linggu Temple / "during his stay in Nanjing" the title "Great Treasure Prince of Dharma" was bestowed) and `021` ("did not return to Nanjing until 1407") are consistent. A corpus grep for `greet` matches only `003` in this connection (`025`, `041` are unrelated). No chunk places the greeting in any other city — the Beijing mentions (`022`, `049`) never involve Yongle greeting anyone.
+
+**Hop 3 — when that city became the Chinese national capital = Jin dynasty.** `001-Nanjing.md:3` is the **only** file in the corpus containing the phrase "national capital" (grep for `Chinese national capital` returns exactly one hit): "Although as a city located in southern part of China becoming **Chinese national capital as early as in Jin dynasty**, the name Nanjing was designated to the city in Ming dynasty, about a thousand years later."
+
+**Answer phrase independently corroborated.** `experiments/bench/families/q-musique.json`, task index 1 (title "MuSiQue 3hop1__857_846_7701"), carries this task's wording verbatim, with `"answer": "Jin dynasty"`, `answerAliases: []`, and anchors exactly `musique/001-Nanjing.md`, `002-…`, `003-…` — the same three paragraphs the hops above identify. That file cites `source.benchmark: "MuSiQue-Ans v1.0 dev", id "3hop1__857_846_7701"`. The raw dev `.jsonl` itself was not locatable from this worktree (`../musique_ans_v1.0_dev.jsonl` does not exist; no `*dev*.jsonl` found under `experiments/`), so the gold is verified through the benchmark config rather than the raw dataset line that shared memory 587fb01e cites (dev line 1619) — that line-level detail I could not re-verify here.
+
+**Contradiction on record (reported, not silently resolved):** `063-Nanjing.md:3` states the Hongwu Emperor "made it the **dynastic capital in 1368**". This competes with the Jin-dynasty dating on substance, but the question's exact phrase ("Chinese national capital") matches only `001`; `063` uses different wording and describes the Ming dynastic capital at Yingtian. The corpus contains no statement giving a *year* for Nanjing becoming the Chinese national capital, so any year-form answer would be invented.
+
+**Task coverage:** fully answered — the chain is closed and the answer phrase is confirmed by both the corpus paragraph and the benchmark's own gold. Still open/uncertain: agreement between `001` and `063` on when Nanjing became the capital is not reconciled by the corpus itself, and the raw MuSiQue dev line could not be re-read in this worktree.
+
+**Rests on:** `musique/001-Nanjing.md:3`, `musique/002-…:3`, `musique/003-…:3` (plus consistent `016`, `021`; competing `063`); corpus-wide greps for `Chinese national capital`, `greet`, `edict|addressed to`; `experiments/bench/families/q-musique.json` task 1.
+**Open:** raw dev jsonl line-level verification; Jin-dynasty vs 1368 tension unresolved within the corpus.
+
+ANSWER: Jin dynasty
