@@ -1,0 +1,21 @@
+{
+	"arm": "ABNM",
+	"answerChars": 0,
+	"cacheRead": 0,
+	"childIn": 0,
+	"childOut": 0,
+	"index": 4,
+	"parentIn": 9280,
+	"parentOut": 517,
+	"problem": "timeout-or-no-subagent-result",
+	"question": "What is the dependency chain in the test function that verifies subdomain routing through configuration, route registration, and request context creation?",
+	"roles": null,
+	"stages": [],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 9280,
+	"totalOut": 517,
+	"unit": "p50o",
+	"valid": false,
+	"wallMs": 1505059
+}

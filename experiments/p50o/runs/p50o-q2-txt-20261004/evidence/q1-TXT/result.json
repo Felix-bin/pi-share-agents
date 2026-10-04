@@ -1,0 +1,26 @@
+{
+	"arm": "TXT",
+	"answerChars": 8949,
+	"cacheRead": 379648,
+	"childIn": 102738,
+	"childOut": 29061,
+	"index": 0,
+	"parentIn": 8152,
+	"parentOut": 568,
+	"problem": null,
+	"question": "When did the city where the Yongle emperor greeted the person to whom the edict was addressed become the Chinese national capital?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 110890,
+	"totalOut": 29629,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 380972
+}

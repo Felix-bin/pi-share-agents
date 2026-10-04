@@ -1,0 +1,26 @@
+{
+	"arm": "SYN",
+	"answerChars": 3078,
+	"cacheRead": 131712,
+	"childIn": 45650,
+	"childOut": 12414,
+	"index": 3,
+	"parentIn": 9326,
+	"parentOut": 545,
+	"problem": null,
+	"question": "In 2010, what was the population of the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 54976,
+	"totalOut": 12959,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 153331
+}

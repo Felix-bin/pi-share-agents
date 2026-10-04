@@ -1,0 +1,26 @@
+{
+	"arm": "TXT",
+	"answerChars": 5447,
+	"cacheRead": 227200,
+	"childIn": 81607,
+	"childOut": 15297,
+	"index": 2,
+	"parentIn": 8152,
+	"parentOut": 573,
+	"problem": null,
+	"question": "What was the overwhelming ethnic majority in the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 89759,
+	"totalOut": 15870,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 248153
+}

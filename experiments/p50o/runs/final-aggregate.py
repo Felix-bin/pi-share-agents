@@ -18,7 +18,7 @@ def arg(name):
 # sealed（2026-10-04 密封轮）：密封沙盒修复题库可达性泄漏后的最终口径。
 # legacy（历史，仅复现已废弃的 10-04 晨数字：其 TXT/SYN 轮存在题库金标引用，见 runs/README）。
 SEALED = {
-	"r": {  # R 族 SWE-QA Flask 5 题
+	"r": {  # R 族 SWE-QA Flask 5 题（全部=r17 密封口径——r18 宽窗试验净变差 74.2→67.3，回退，见 runs/README 沿革）
 		"TXT":     "p50o-r17-txt-20261004",
 		"SYN":     "p50o-r17-syn-20261004",
 		"CREWAI":  "p50o-b-fw7-20261003",   # 框架臂本就 root 前缀密封，沿用
@@ -27,11 +27,12 @@ SEALED = {
 		"ABNM":    "p50o-r17-abnm-20261004",
 		"ABNC":    "p50o-r17-abnc-20261004",
 	},
-	"q": {  # Q 族 MuSiQue 5 题
+	"q": {  # Q 族 MuSiQue 5 题（SYN=r17 密封口径——r18 宽窗试验净变差 95.6→93.0，回退；ABNM=自适应关记忆产品行）
 		"TXT":     "p50o-q2-txt-20261004",
 		"SYN":     "p50o-q2-syn-20261004",
 		"CREWAI":  "p50o-q-fw2-20261004",
 		"AUTOGEN": "p50o-q-ag-20261004",
+		"ABNM":    "p50o-q2-abnm-20261004",
 	},
 }
 LEGACY = {

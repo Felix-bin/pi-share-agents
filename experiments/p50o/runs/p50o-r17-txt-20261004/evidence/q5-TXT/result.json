@@ -1,0 +1,26 @@
+{
+	"arm": "TXT",
+	"answerChars": 61850,
+	"cacheRead": 2637568,
+	"childIn": 243198,
+	"childOut": 84524,
+	"index": 4,
+	"parentIn": 8101,
+	"parentOut": 511,
+	"problem": null,
+	"question": "What is the dependency chain in the test function that verifies subdomain routing through configuration, route registration, and request context creation?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 251299,
+	"totalOut": 85035,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 733979
+}

@@ -1,0 +1,26 @@
+{
+	"arm": "ABFH",
+	"answerChars": 5540,
+	"cacheRead": 306432,
+	"childIn": 67341,
+	"childOut": 23002,
+	"index": 4,
+	"parentIn": 9158,
+	"parentOut": 503,
+	"problem": null,
+	"question": "What is the dependency chain in the test function that verifies subdomain routing through configuration, route registration, and request context creation?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "ablation-fullhandover",
+	"totalIn": 76499,
+	"totalOut": 23505,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 242149
+}

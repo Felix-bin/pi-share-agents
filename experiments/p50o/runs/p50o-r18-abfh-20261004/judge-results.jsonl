@@ -1,0 +1,5 @@
+{"correctness":1,"completeness":1,"relevance":1,"clarity":1,"reasoning":1,"key":"q5-ABFH","parseFailures":0,"total":5,"votes":5}
+{"correctness":18,"completeness":18,"relevance":15,"clarity":16,"reasoning":17,"key":"q3-ABFH","parseFailures":0,"total":84,"votes":5}
+{"correctness":19,"completeness":20,"relevance":14,"clarity":17,"reasoning":18,"key":"q1-ABFH","parseFailures":1,"total":88,"votes":5}
+{"correctness":18,"completeness":17,"relevance":14,"clarity":15,"reasoning":17,"key":"q4-ABFH","parseFailures":2,"total":81,"votes":5}
+{"correctness":19,"completeness":20,"relevance":17,"clarity":19,"reasoning":19,"key":"q2-ABFH","parseFailures":8,"total":94,"votes":5}

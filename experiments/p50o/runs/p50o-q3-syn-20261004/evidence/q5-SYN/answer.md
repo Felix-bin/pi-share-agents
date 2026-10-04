@@ -1,0 +1,15 @@
+## Answer: Nanjing's area is 2,548 square miles
+
+The chain resolves as follows, all three links read directly from the corpus:
+
+1. **The edict's addressee is the Karmapa** — `002-Sino-Tibetan-relations-during-the-Ming-dynasty.md:3` is the only "edict … addressed to" a person in the corpus: "The Information Office of the State Council of the PRC preserves an edict of the Zhengtong Emperor (r. 1435–1449) **addressed to the Karmapa** in 1445 … Zhengtong had the following message delivered to the Great Treasure Prince of Dharma, the Karmapa:". The executor's separate enumeration of the addressee set found only two other candidates, both of which fail the second property: Sagya Gyaincain (Hongwu-era title edict, `007-…:3`) and Ecdicius (Julian's order, Roman-era, `020-…:3`).
+2. **Yongle greeted that same figure in Nanjing** — `003-Sino-Tibetan-relations-during-the-Ming-dynasty.md:3`: "Deshin Shekpa was induced … to visit **Nanjing** by April 10, 1407 … The **Yongle Emperor came out of the palace in Nanjing to greet the Karmapa** and did not require him to kowtow like a tributary vassal." A corpus-wide search for `greet|to meet|welcom` returns no other Yongle-and-a-person greeting event, so the Karmapa is the sole person satisfying both properties.
+3. **Nanjing's stated area** — `036-Nanjing.md:3`: "Nanjing, with a total land area of **6,598 square kilometres (2,548 sq mi)**, is situated in the heartland of drainage area of lower reaches of Yangtze River…". This is the corpus's only land-area figure for the city (a search for `2,548`/`6,598` and for area terms across all `*Nanjing*` files returns only this line; the other Nanjing files carry population, history or other material instead).
+
+Therefore the city is **Nanjing** and its area is **2,548 square miles**.
+
+### What this rests on, and what stays open
+- Sources: `002-…:3`, `003-…:3`, `036-Nanjing.md:3`, with corroborating completeness sweeps by the retriever (`greet|to meet|welcom`, Nanjing area grep) and the executor (`grep -i "edict"` over all 67 files, `grep "Yongle"`).
+- **Document-identity ambiguity (does not affect the answer):** `009-…:3` records instead the Yongle Emperor's 1403 invitation *letter* to Deshin Shekpa, 5th Karmapa Lama — a different document type with the same addressee title. Whether "the edict" means the Zhengtong edict (`002`) or the Yongle letter (`009`), the addressee resolves to the Karmapa and the city to Nanjing, so the area figure is unchanged.
+- **Link strength:** no corpus text states that the `002` edict and the `003` greeting concern the same individual event — `002` is Zhengtong-era (1445) while the greeting is Yongle-era (1407). The link is the shared title "Karmapa" (Deshin Shekpa, 5th Karmapa Lama), an explicit textual identity, not a same-reign statement.
+- **Path note:** the task named a `musique/` directory, but no such directory exists in this worktree; the 67 `.md` paragraphs sit at the corpus root, and that corpus is what was searched. The answer is unaffected by this reading.

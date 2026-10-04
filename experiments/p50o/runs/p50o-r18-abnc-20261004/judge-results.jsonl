@@ -1,0 +1,5 @@
+{"correctness":17,"completeness":14,"relevance":14,"clarity":16,"reasoning":16,"key":"q5-ABNC","parseFailures":2,"total":77,"votes":5}
+{"correctness":19,"completeness":20,"relevance":15,"clarity":17,"reasoning":18,"key":"q1-ABNC","parseFailures":3,"total":89,"votes":5}
+{"correctness":15,"completeness":13,"relevance":14,"clarity":16,"reasoning":15,"key":"q4-ABNC","parseFailures":5,"total":73,"votes":5}
+{"correctness":17,"completeness":18,"relevance":13,"clarity":15,"reasoning":17,"key":"q2-ABNC","parseFailures":10,"total":80,"votes":1}
+{"correctness":17,"completeness":18,"relevance":14,"clarity":15,"reasoning":16.5,"key":"q3-ABNC","parseFailures":10,"total":80.5,"votes":4}

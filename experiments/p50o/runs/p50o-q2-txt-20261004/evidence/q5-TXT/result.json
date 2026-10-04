@@ -1,0 +1,26 @@
+{
+	"arm": "TXT",
+	"answerChars": 7064,
+	"cacheRead": 256512,
+	"childIn": 87135,
+	"childOut": 20767,
+	"index": 4,
+	"parentIn": 8150,
+	"parentOut": 496,
+	"problem": null,
+	"question": "How many square miles is the city where the Yongle emperor greeted the person to whom the edict was addressed?\n\nAnswer using only the documents in the musique/ directory of this worktree (each file holds one source paragraph). Put your final answer on the last line as `ANSWER: <short answer only — the entity, number or phrase itself, no explanation>`.",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 95285,
+	"totalOut": 21263,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 264877
+}
