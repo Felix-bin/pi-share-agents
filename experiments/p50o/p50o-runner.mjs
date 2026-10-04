@@ -9,6 +9,10 @@
 //   3. 计量零账本依赖：subagent tool_execution_end 的 result.usage 即四子代理合计，
 //      result.details.workflow.value 即最终答案，runFanoutBudget.used 即角色数。
 //   4. 数据集：公开权威基准（R=SWE-QA Flask 前 N 题 / Q=MuSiQue 前 N 题），题面原样。
+//   5. 密封沙盒（2026-10-04）：每题将任务语料整份复制到临时目录作为 cwd——早前 pilot 轮发现
+//      cwd=语料目录时文件工具可向上逃逸读到题库金标与宿主仓（TXT q5/q-syn q1 曾实质引用），
+//      密封后题库与宿主仓物理不在可达树上；框架臂本就以 root 前缀校验密封。
+//   6. 消融臂（--arms ABFH,ABNM,ABNC）：三机制消融（压缩传递/共享记忆/语料向量），见 ABLATION。
 // 模板与数据文件按绝对路径引用 openeuler-wsl 协作克隆（同 SHA 可溯源），语料快照引用
 // _shm_dev 归档（text-embedding-v4/1024，63a385a…）。
 //
@@ -36,9 +40,16 @@ const CORPUS_ID = "63a385a420d3bdd080b21981640d964d46b9f1637050a4276ee0510ec8fd5
 const BAILIAN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const MODEL = { id: "deepseek-v4.1-flash" };
 const EMBEDDING = { provider: "bailian", endpoint: `${BAILIAN_BASE}/embeddings`, model: "text-embedding-v4", dim: 1024, keyEnv: "DASHSCOPE_API_KEY" };
-const REPO = path.resolve(args["plugin-repo"] ?? path.join(repoRoot, "..", "pi-share-agents")); // pi 插件产品：默认兄弟克隆（数据优化口径的工作产品），--plugin-repo 覆盖
+const REPO = path.resolve(args["plugin-repo"] ?? WSL_REPO); // pi 插件产品：默认即本仓（装置自包含），--plugin-repo 覆盖
 const ROUND_TIMEOUT_MS_DEFAULT = 15 * 60_000;
 const SETUP_TIMEOUT_MS = 30_000;
+
+// 消融臂（R 族三机制消融）：模板与机制开关的组合，其余与 SYN 产品形态完全一致。
+const ABLATION = {
+	ABFH: { template: "ablation-fullhandover", memory: true, corpus: true, label: "no-compress（阶段间全文转贴，截断传递移除）" },
+	ABNM: { template: "opt-pipeline", memory: false, corpus: true, label: "no-shared-memory（共享记忆关闭，语料向量保留）" },
+	ABNC: { template: "opt-pipeline", memory: true, corpus: false, label: "no-corpus-vectors（语料向量快照关闭，共享记忆保留）" },
+};
 
 const expDir = path.resolve(args["exp-dir"] ?? "");
 const ARMS = (args.arms ?? "TXT,SYN").split(",").map((x) => x.trim()).filter(Boolean);
@@ -47,6 +58,7 @@ const TASKS = Number(args.tasks ?? 1);
 const TEMPLATE_SYN = args["template-syn"] ?? "opt-pipeline";
 const TEMPLATE_TXT = args["template-txt"] ?? "role-pipeline";
 const TIMEOUT_MS = Number(args["timeout-ms"] ?? ROUND_TIMEOUT_MS_DEFAULT);
+const SEAL = args.seal !== "0"; // 密封沙盒：每题把任务语料复制到临时目录并作为 cwd，切断对题库/宿主仓的文件访问（默认开，--seal 0 关闭）
 
 const apiKey = process.env.DASHSCOPE_API_KEY ?? "";
 for (const [what, ok] of [
@@ -57,7 +69,8 @@ for (const [what, ok] of [
 	...(FAMILY === "r"
 		? [["flask src", fs.existsSync(FLASK_SRC)], ["flask questions", fs.existsSync(FLASK_QUESTIONS)]]
 		: [["musique family", fs.existsSync(MUSIQUE_FAMILY)], ["musique worktree", fs.existsSync(MUSIQUE_WORKTREE)]]),
-	...(ARMS.includes("SYN") ? [["corpus", fs.existsSync(`${CORPUS_SRC_ROOT}/${CORPUS_ID}/meta.json`)]] : []),
+	...([...ARMS].filter((a) => a === "SYN" || (ABLATION[a]?.corpus)).length > 0 ? [["corpus", fs.existsSync(`${CORPUS_SRC_ROOT}/${CORPUS_ID}/meta.json`)]] : []),
+	...(ARMS.some((a) => ABLATION[a]) ? [["ablation template", fs.existsSync(`${WSL_REPO}/prompts/ablation-fullhandover.md`)]] : []),
 ]) {
 	if (!ok) { console.error(`missing ${what}`); process.exit(1); }
 }
@@ -66,7 +79,7 @@ fs.mkdirSync(path.join(expDir, "evidence"), { recursive: true });
 const questions = FAMILY === "r"
 	? fs.readFileSync(FLASK_QUESTIONS, "utf-8").trim().split("\n").slice(0, TASKS).map((line) => JSON.parse(line).question)
 	: (JSON.parse(fs.readFileSync(MUSIQUE_FAMILY, "utf-8")).tasks ?? []).slice(0, TASKS).map((t) => t.task ?? t.question);
-const workDir = FAMILY === "r" ? FLASK_SRC : MUSIQUE_WORKTREE;
+const CORPUS_SOURCE_DIR = FAMILY === "r" ? FLASK_SRC : MUSIQUE_WORKTREE; // 任务语料（密封沙盒的复制源）
 
 function loadTemplate(name) {
 	const raw = fs.readFileSync(`${WSL_REPO}/prompts/${name}.md`, "utf-8");
@@ -74,16 +87,23 @@ function loadTemplate(name) {
 	return (anchorAt >= 0 ? raw.slice(0, anchorAt) : raw.split("Task:")[0]) + "Task:\n\n";
 }
 const templates = { SYN: loadTemplate(TEMPLATE_SYN), TXT: loadTemplate(TEMPLATE_TXT) };
+for (const [arm, ab] of Object.entries(ABLATION)) templates[arm] = loadTemplate(ab.template);
 
 const log = (message) => console.log(`[p50o] ${new Date().toISOString().slice(11, 19)} ${message}`);
 
-/** 与 p50 同款：唯一臂间差异在 mode（TXT=text 且 memory 关闭=M3 基线；SYN=synapse+memory+corpus）。 */
+/** 臂间差异在机制开关：TXT=text 基线；SYN=synapse+memory+corpus 全开；消融臂按 ABLATION 逐项关闭。 */
 function synapseConfigFor(arm, storageRoot) {
-	const config = { mode: arm === "TXT" ? "text" : "synapse", storageRoot: storageRoot.replaceAll("\\", "/") };
-	if (arm === "SYN") {
-		config.memory = "project";
-		config.corpusSnapshotId = CORPUS_ID;
-		config.embedding = { ...EMBEDDING };
+	const ab = ABLATION[arm];
+	const synFamily = arm === "SYN" || ab !== undefined;
+	const config = { mode: synFamily ? "synapse" : "text", storageRoot: storageRoot.replaceAll("\\", "/") };
+	if (synFamily) {
+		if (arm === "SYN" || ab.memory) {
+			config.memory = "project";
+		}
+		if (arm === "SYN" || ab.corpus) {
+			config.corpusSnapshotId = CORPUS_ID;
+			config.embedding = { ...EMBEDDING };
+		}
 	}
 	return config;
 }
@@ -109,12 +129,12 @@ function writeAgentConfig(agentDir, arm, storageRoot) {
 }
 
 /** One pi RPC process, one prompt — p50 mechanics; completion = subagent tool_execution_end. */
-function runPiRound({ agentDir, tempRoot, prompt, roundLog, armKey }) {
+function runPiRound({ agentDir, tempRoot, prompt, roundLog, armKey, cwd }) {
 	fs.rmSync(tempRoot, { force: true, recursive: true });
 	fs.mkdirSync(tempRoot, { recursive: true });
 	const events = [];
 	let carry = "", stderr = "";
-	const child = spawn(process.execPath, [CLI, "-e", path.join(REPO, "index.ts"), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc", "--provider", "bailian", "--model", MODEL.id], { cwd: workDir, env: { ...process.env, DASHSCOPE_API_KEY: apiKey, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENTS_TEMP_ROOT: tempRoot }, stdio: ["pipe", "pipe", "pipe"] });
+	const child = spawn(process.execPath, [CLI, "-e", path.join(REPO, "index.ts"), "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-session", "--mode", "rpc", "--provider", "bailian", "--model", MODEL.id], { cwd, env: { ...process.env, DASHSCOPE_API_KEY: apiKey, PI_CODING_AGENT_DIR: agentDir, PI_SUBAGENTS_TEMP_ROOT: tempRoot }, stdio: ["pipe", "pipe", "pipe"] });
 	const append = (prefix, chunk) => {
 		carry += String(chunk);
 		let at;
@@ -190,15 +210,29 @@ for (const [index, question] of questions.entries()) {
 		const agentDir = path.join(workRoot, "agent");
 		const storageRoot = path.join(workRoot, "state");
 		fs.rmSync(workRoot, { recursive: true, force: true });
-		if (arm === "SYN") {
+		if (arm === "SYN" || ABLATION[arm]?.corpus) {
 			fs.mkdirSync(path.join(storageRoot, "corpus", CORPUS_ID), { recursive: true });
 			for (const file of ["meta.json", "vectors.f32", "chunks.json"]) fs.copyFileSync(`${CORPUS_SRC_ROOT}/${CORPUS_ID}/${file}`, path.join(storageRoot, "corpus", CORPUS_ID, file));
 		} else fs.mkdirSync(storageRoot, { recursive: true });
 		writeAgentConfig(agentDir, arm, storageRoot);
+		// 密封沙盒：任务语料整份复制到临时目录，cwd 指向副本——题库（含金标）与宿主仓不在可达树上。
+		// Windows 坑：cpSync 递归复制含 junction 的 .venv 会令 node 原生崩溃（静默 exit 127），
+		// 故过滤 .venv 后以 junction 回接（executor 的 pytest 可用，行为与密封前轮一致）。
+		const sealDir = path.join(workRoot, "seal");
+		if (SEAL) {
+			fs.cpSync(CORPUS_SOURCE_DIR, sealDir, { recursive: true, filter: (s) => !s.split(/[\\/]/).includes(".venv") });
+			const venvLink = path.join(sealDir, ".venv"), venvSrc = path.join(CORPUS_SOURCE_DIR, ".venv");
+			if (fs.existsSync(venvSrc)) {
+				fs.rmSync(venvLink, { recursive: true, force: true });
+				fs.symlinkSync(venvSrc, venvLink, "junction");
+			}
+			log(`${key}: sealed sandbox ready (${sealDir})`);
+		}
+		const cwd = SEAL ? sealDir : CORPUS_SOURCE_DIR;
 
 		const prompt = templates[arm] + question + "\n";
 		fs.writeFileSync(path.join(evidence, "prompt.md"), prompt, "utf-8");
-		const outcome = await runPiRound({ agentDir, tempRoot: path.join(workRoot, "tmp"), prompt, roundLog: path.join(evidence, "rpc.jsonl"), armKey: key });
+		const outcome = await runPiRound({ agentDir, tempRoot: path.join(workRoot, "tmp"), prompt, roundLog: path.join(evidence, "rpc.jsonl"), armKey: key, cwd });
 
 		const result = outcome.subagentEnd?.result ?? {};
 		const usage = result.usage ?? null;
@@ -218,7 +252,7 @@ for (const [index, question] of questions.entries()) {
 		if (problem === null && roles !== null && roles < 4) problem = `roles=${roles}<4`;
 		if (answer !== null) fs.writeFileSync(path.join(evidence, "answer.md"), answer, "utf-8");
 		const row = {
-			arm, answerChars: answer === null ? 0 : answer.trim().length, cacheRead: usage?.cacheRead ?? 0, childIn: usage?.input ?? 0, childOut: usage?.output ?? 0, index, parentIn, parentOut, problem, question, roles, stages, template: arm === "SYN" ? TEMPLATE_SYN : TEMPLATE_TXT, totalIn: (usage?.input ?? 0) + parentIn, totalOut: (usage?.output ?? 0) + parentOut, unit: "p50o", valid: problem === null, wallMs: outcome.wallMs,
+			arm, answerChars: answer === null ? 0 : answer.trim().length, cacheRead: usage?.cacheRead ?? 0, childIn: usage?.input ?? 0, childOut: usage?.output ?? 0, index, parentIn, parentOut, problem, question, roles, stages, sealed: SEAL, template: arm === "TXT" ? TEMPLATE_TXT : (ABLATION[arm]?.template ?? TEMPLATE_SYN), totalIn: (usage?.input ?? 0) + parentIn, totalOut: (usage?.output ?? 0) + parentOut, unit: "p50o", valid: problem === null, wallMs: outcome.wallMs,
 		};
 		fs.appendFileSync(partialPath, `${JSON.stringify(row)}\n`, "utf-8");
 		fs.writeFileSync(path.join(evidence, "result.json"), `${JSON.stringify(row, null, "\t")}\n`, "utf-8");

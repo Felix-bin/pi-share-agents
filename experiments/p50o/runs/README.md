@@ -1,5 +1,13 @@
 # p50o 实验运行数据索引（2026-10-03/04）
 
+> **⚠ 2026-10-04 晚作废声明**：下表 10-04 晨全部轮次（r5–r16、q-*、含"最终报告口径"一节的
+> 63.4%/81.0%/71.4% 等数字）经审计发现题库可达性泄漏后**全部作废**——pi 臂以语料目录为 cwd 时
+> 文件工具可向上逃逸，TXT q5 与 Q 族多个答案实质引用了题库金标（`experiments/data/swe-qa/Benchmark/flask.jsonl`、
+> `experiments/bench/families/q-musique.json`），SYN 的 Q 族答案亦有金标佐证性引用。
+> 框架臂（b-fw*/q-fw/q-ag）以 root 前缀校验密封，不受影响，沿用。
+> **最终口径 = r17 密封轮**（`p50o-r17-*`、`p50o-q2-*`，装置见 `../README.md` 密封沙盒一节），
+> 一键复核：`python experiments/p50o/runs/final-aggregate.py`。以下沿革表仅作过程记录保留。
+
 每个目录对应一次运行，含：计量记录（`p50o-partial.jsonl` / 框架 `*-partial.jsonl`）、
 判分结果（`judge-results.jsonl`）、每题答案与题面（`evidence/qN-臂/answer.md|prompt.md`）、
 每 attempt 摘要（`result.json`）。**RPC 原始事件流（rpc.jsonl）体积过大未入库**，
