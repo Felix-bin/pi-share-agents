@@ -18,11 +18,11 @@ const plan = await stage("planner", [task]);
 const planBlock = trunc(plan.output, 12, 2);
 const evidence = await stage("retriever", [query, "", "Plan:", planBlock]);
 const results = await stage("executor", ["Plan:", planBlock, "", "Evidence:", trunc(evidence.output, 100, 6)]);
-const summary = await stage("summarizer", ["Task:", task, "", "Evidence:", trunc(evidence.output, 600, 12), "", "Executed results:", trunc(results.output, 300, 8)]);
+const summary = await stage("summarizer", ["Task:", task, "", "Evidence:", trunc(evidence.output, 80, 5), "", "Executed results:", trunc(results.output, 60, 5)]);
 return summary.output;
 ```
 
-A stage that fails is re-run once in a fresh child. Each stage is a fresh child: the planner sees only the task, the retriever the state query (embedded by the host) and the truncated plan, the executor the truncated plan and the truncated evidence, while the summarizer — the final composition stage — receives wide windows over the evidence and the executed results so every facet of the question can be covered. When shared memory is in `synapse` mode a stage's output is a `[SYNAPSE result]` block with a handle: truncation keeps the block head and tail (the handle) and drops only middle lines, so a stage that needs the details can still redeem them by handle.
+A stage that fails is re-run once in a fresh child. Each stage is a fresh child: the planner sees only the task, the retriever the state query (embedded by the host) and the truncated plan, the executor the truncated plan and the full evidence, the summarizer the task plus truncated evidence and results. When shared memory is in `synapse` mode a stage's output is a `[SYNAPSE result]` block with a handle: truncation keeps the block head and tail (the handle) and drops only middle lines, so a stage that needs the details can still redeem them by handle.
 
 When the call returns, reply with the summarizer's answer to the task in the form the task asks for (keep any required final line exactly as the summarizer wrote it, as plain text with no markdown around it), then at most three short lines on what the stages could not establish. Do not re-run a stage or read handles yourself.
 

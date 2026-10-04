@@ -1,0 +1,35 @@
+## What the dual inheritance actually encodes
+
+The class in question is the whole of `src/flask/debughelpers.py:17-20`:
+
+```python
+class UnexpectedUnicodeError(AssertionError, UnicodeError):
+    """Raised in places where we want some better error reporting for
+    unexpected unicode or binary data.
+    """
+```
+
+It has no body beyond the docstring — no `__init__`, no message assembly, no exit path. The two bases place the type simultaneously in two unrelated taxonomies, and that is the entire architectural statement it makes:
+
+- **`UnicodeError` keeps the *cause* classification.** It stays a member of the standard text-encoding family (`UnicodeError` → `ValueError` → `Exception`), so any caller that handles decoding/encoding problems — `except UnicodeError`, `except ValueError`, `except Exception` — still matches it. A class inheriting only `AssertionError` would have dropped out of that family entirely.
+- **`AssertionError` adds the *handling* classification.** In this codebase `AssertionError` is the convention for "the application violated an internal invariant", raised bare in `ctx.py:268` and `ctx.py:429` (popped the wrong context), `sansio/app.py:415` and `sansio/app.py:657` (setup after first request; endpoint function overwritten), and `sansio/blueprints.py:215` (blueprint registered twice). It is also the class singled out in the `test_client` docstring (`app.py:673-678`): without `testing`, "the only indication of an AssertionError or other exception will be a 500 status code response". Adding it makes the type flow through the debug/testing propagation path — `handle_exception` re-raises when `PROPAGATE_EXCEPTIONS` or `self.testing or self.debug` (`app.py:841-847`) — and surface in the interactive debugger rather than being flattened into a generic 500.
+- **Order matters.** `AssertionError` is listed first, so it precedes `UnicodeError` in the MRO (Python's standard linearisation); both bases ultimately descend from `Exception` via distinct branches (`AssertionError` directly, `UnicodeError` through `ValueError`), so the bases are compatible and every except-clause that names either one catches the instance. (This follows from Python's class semantics; it is not executed anywhere in the worktree.)
+
+### What that says about separation between validation failures and encoding issues
+
+It says Flask **does not separate the two by exception type**. The design collapses "this is an encoding problem" and "this is a programming error to be debugged" into one catchable concrete class, and keeps the distinction in *what each facet is used for* — the encoding family decides who may legitimately catch it at the data-producing boundary, the `AssertionError` facet decides which internal path handles it. The same stacking is the module's house style: `DebugFilesKeyError(KeyError, AssertionError)` (`debughelpers.py:23`) is a client-facing lookup failure that is also an assertion, and it is raised from the patched `request.files.__getitem__` built by `attach_enctype_error_multidict` (`debughelpers.py:~92-104`) — installed only when `current_app.debug` is set (`wrappers.py:196-208`) and asserted in tests via `pytest.raises(DebugFilesKeyError)` (`tests/test_basic.py:1108-1119`). The pattern is not universal: `FormDataRoutingRedirect(AssertionError)` (`debughelpers.py:50`), raised only from `Flask.raise_routing_exception` under `self.debug` (`app.py:490-505`), subclasses only `AssertionError`, because its cause is Flask's own routing state rather than user data.
+
+So the layering separation is **spatial, not taxonomic**. It lives in where the type is placed and loaded: `debughelpers.py` is a debug-only leaf that imports the Flask globals (`from .globals import request_ctx`), Werkzeug and Jinja types, and `Blueprint`/`App` — the opposite of `sansio/`, which per `src/flask/sansio/README.md` must do no IO and "cannot use the Flask globals". Every use site imports these classes lazily inside the debug branch (`app.py:502`, `wrappers.py:208`, `templating.py:83`), so the normal request path never sees them. The validation-vs-debug split is enforced by the routing/WSGI layer returning a 400 instead of an exception: Flask's changelog records that unprintable Unicode characters in the `Host` header "will result in a HTTP 400 response and not HTTP 500 as previously" (`CHANGES.rst:679-681`, Version 1.1.0, :pr:`2994`) — that separation happens in request handling, not in this class hierarchy.
+
+## The premise that is not supported
+
+The question assumes this class is raised in debug mode for unexpected unicode or binary data. **It is not, in this revision.** A repository-wide search for `UnexpectedUnicodeError` returns exactly one hit — the definition on line 17. It is never raised, never imported (the three importers of `debughelpers` pull in `FormDataRoutingRedirect`, `attach_enctype_error_multidict` and `explain_template_loading_attempts`), never referenced by an error handler, never tested, and not mentioned in `docs/` or `CHANGES.rst`. It is vestigial code carrying an intact design intention; the docstring states the intent of a raise site that does not exist here. Consequently, "how much does this separate validation failures from encoding issues *in practice*" is not established by this worktree — the class currently separates nothing, because nothing constructs it.
+
+## What this rests on, and what is open
+
+Rests on: `src/flask/debughelpers.py` (lines 17-20, 23-31, 50-74, 92-104); `src/flask/app.py:490-505` (debug-gated `FormDataRoutingRedirect`), `app.py:673-678`, `app.py:841-847`; `src/flask/wrappers.py:196-208`; `src/flask/templating.py:83`; `src/flask/ctx.py:268,429`; `src/flask/sansio/app.py:415,657`; `src/flask/sansio/blueprints.py:215`; `src/flask/sansio/README.md`; `tests/test_basic.py:1108-1119`; `CHANGES.rst:655-681`; and repo-wide greps for `UnexpectedUnicodeError`, `UnicodeError`, `debughelpers`.
+
+Open or unverified:
+- The retriever and executor payloads referenced by handles `07c1faa5…` and `42880a61…` were **not present in my context**; shared memory served `namespace-mismatch` (the state store belongs to a different seal), so neither could be re-read. I therefore cannot report what the executed result established, and my answer stands on direct file evidence only. No execution was performed here (no shell available), so the MRO/catchability statements are language-semantics, not observed behaviour.
+- Why the raise sites disappeared (and whether removal was deliberate) is not recoverable from the worktree: no changelog entry, comment or test marks the deprecation.
+- The only execution artifact visible in the working directory, `flask_mut2_i417ar2x/mutated_test.py`, exercises `subdomain_matching=False` with `url_for(..., subdomain=...)` and asserts a 200/`b"xxx"` result — a different concern from this exception hierarchy, so it contributes nothing to this question.

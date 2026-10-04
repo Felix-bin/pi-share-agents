@@ -1,0 +1,26 @@
+{
+	"arm": "ABNC",
+	"answerChars": 6558,
+	"cacheRead": 578688,
+	"childIn": 78483,
+	"childOut": 33097,
+	"index": 8,
+	"parentIn": 9297,
+	"parentOut": 597,
+	"problem": null,
+	"question": "What architectural decisions are reflected by the dual inheritance from both AssertionError and UnicodeError in the debug-mode exception class for unexpected unicode or binary data regarding separation between validation failures and encoding issues in Flask's layered architecture?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 87780,
+	"totalOut": 33694,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 499644
+}

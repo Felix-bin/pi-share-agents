@@ -1,0 +1,10 @@
+{"correctness":8,"completeness":7,"relevance":9,"clarity":13,"reasoning":11,"key":"q5-SYN","parseFailures":0,"total":48,"votes":5}
+{"correctness":6,"completeness":7,"relevance":13,"clarity":15,"reasoning":15,"key":"q4-SYN","parseFailures":0,"total":56,"votes":5}
+{"correctness":18,"completeness":19,"relevance":14,"clarity":17,"reasoning":18,"key":"q3-SYN","parseFailures":3,"total":86,"votes":5}
+{"correctness":18,"completeness":19,"relevance":10,"clarity":14,"reasoning":16,"key":"q2-SYN","parseFailures":5,"total":77,"votes":5}
+{"correctness":18,"completeness":20,"relevance":14,"clarity":18,"reasoning":18,"key":"q6-SYN","parseFailures":10,"total":88,"votes":3}
+{"correctness":8,"completeness":8,"relevance":10,"clarity":16,"reasoning":13,"key":"q10-SYN","parseFailures":0,"total":55,"votes":5}
+{"correctness":19,"completeness":20,"relevance":15,"clarity":18,"reasoning":19,"key":"q1-SYN","parseFailures":10,"total":91,"votes":3}
+{"correctness":18,"completeness":19,"relevance":13,"clarity":15,"reasoning":17,"key":"q8-SYN","parseFailures":6,"total":82,"votes":5}
+{"correctness":19,"completeness":19,"relevance":14,"clarity":18,"reasoning":18,"key":"q7-SYN","parseFailures":8,"total":88,"votes":5}
+{"correctness":13,"completeness":14,"relevance":13.5,"clarity":15,"reasoning":15,"key":"q9-SYN","parseFailures":10,"total":70.5,"votes":4}

@@ -1,0 +1,25 @@
+## Purpose of the flag
+
+The flag is `_got_registered_once` on `Blueprint` (`src/flask/sansio/blueprints.py:172`, a class attribute defaulting to `False`). It is a one-way "setup is closed" latch, and its purpose is to turn a *silently inconsistent* program into a loud failure: once a blueprint has been registered at least once, its setup is nothing more than recorded intentions that were already flushed into an application, so any later setup call could not be applied consistently across the apps and names the blueprint is registered on. Instead of a half-applied change, the caller gets an `AssertionError` telling them to finish all imports, decorators and functions before registering.
+
+Why the recorded nature matters: "The basic concept of blueprints is that they record operations to execute when registered on an application" (`docs/blueprints.rst:51`). Concretely, `Blueprint.record` appends to `self.deferred_functions` (`:204`, `:230`), and `Blueprint.register` drains that list once — `for deferred in self.deferred_functions: deferred(state)` (`:334-335`) — while the per-blueprint/per-name handler dicts are merged into the app only on the first registration for that blueprint or name (`:316-332`). A `route`/`before_request`/`errorhandler` call arriving after the drain would therefore be appended behind a list that has already been consumed for that app: it would take effect on some later registration and never on the already-registered one, which is exactly the "changes will not be applied consistently" condition the error message names. This is a consistency guard, not a functional gate — the flag never changes what registration produces.
+
+How it is wired:
+
+- Set: `self._got_registered_once = True` in `Blueprint.register()` (`:320`), right after `app.blueprints[name] = self` and before the deferred replays. `register` itself is **not** decorated with `@setupmethod`, so registering the same blueprint again (with a different `name=`) remains allowed — only *setup* is locked.
+- Read: only in `Blueprint._check_setup_finished()` (`:213-220`), which raises `AssertionError("The setup method '<name>' can no longer be called on the blueprint '<name>'. It has already been registered at least once, any changes will not be applied consistently. …")`.
+- Enforced: the `setupmethod` decorator calls `self._check_setup_finished(f_name)` before every wrapped body (`src/flask/sansio/scaffold.py:42-49`). It decorates 17 methods in `blueprints.py` — including `record` and `record_once` themselves, `register_blueprint`, `add_url_rule`, and the `app_*` helpers — plus all shared `Scaffold` setup methods (`route`, `get`/`post`/…, `before_request`, `errorhandler`, `register_error_handler`, etc.). So the lock covers every public setup path, including the low-level recording primitives.
+- Never reset: no code assigns it back to `False`, so the lock is permanent for the life of the blueprint object, even if registration happened on a different app.
+
+Two context points that confirm intent rather than accident:
+
+- It replaced a warning: "Use Blueprint decorators and functions intended for setup after registering the blueprint will show a warning. In the next version, this will become an error just like the application setup methods" (`CHANGES.rst:297-300`, 2.2.0, issue 4571); shipped as an error in 2.3.0 — "Calling setup methods on blueprints after registration is an error instead of a warning" (`CHANGES.rst:160-161`, PR 4997).
+- It mirrors the app-side latch: `App` uses the same design with `_got_first_request` and the analogous message (`src/flask/sansio/app.py:411`, `:413-417`), and the base `Scaffold._check_setup_finished` deliberately raises `NotImplementedError` (`scaffold.py:220-221`) so each subclass supplies its own trigger condition — first request for an app, first registration for a blueprint.
+
+On naming: there is no class literally called "collection" in this working directory; the class that collects/records the blueprint's setup operations and carries this flag is `Blueprint` (`flask.sansio.blueprints.Blueprint`), so I answered under that reading.
+
+## What this rests on, and what stays open
+
+- Rests on direct reads of `src/flask/sansio/blueprints.py` (flag, check, register, deferred replay), `src/flask/sansio/scaffold.py` (`setupmethod`, base check), `src/flask/sansio/app.py` (app-side parallel), `CHANGES.rst`, and `docs/blueprints.rst`/`docs/lifecycle.rst`.
+- Open / not established: no test in `tests/` references `_check_setup_finished`, `setupmethod`, or the error text (0 grep matches), so this guard's behaviour is not asserted anywhere in this working tree — the rationale above is read from the source and changelog, not from a passing test.
+- The two upstream evidence bodies referenced for this task (retriever handle `f2fce5…`, executor handle `8a092b…`) were not present in my context, and the shared-memory store is not accessible from this seal (`namespace-mismatch` on both read and write), so I could not cross-check or reconcile them; nothing above depends on their content.

@@ -1,0 +1,26 @@
+{
+	"arm": "ABNC",
+	"answerChars": 7528,
+	"cacheRead": 949120,
+	"childIn": 122198,
+	"childOut": 40309,
+	"index": 2,
+	"parentIn": 9279,
+	"parentOut": 557,
+	"problem": null,
+	"question": "What is the modular component registration architecture that separates static asset serving from the main application framework while preserving consistent caching behavior across both components?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 131477,
+	"totalOut": 40866,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 394302
+}

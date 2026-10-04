@@ -1,0 +1,35 @@
+## Purpose of the registration-tracking flag (`Blueprint._got_registered_once`)
+
+`Blueprint` — the class described in its own docstring as "a collection of routes and other app-related functions that can be registered on a real application later" (`src/flask/sansio/blueprints.py:121-123`) — carries a class-level latch `_got_registered_once = False` (`blueprints.py:172`) that is flipped to `True` inside `Blueprint.register` (`blueprints.py:320`).
+
+The flag is not bookkeeping for its own sake: it exists to make it **impossible to keep building a blueprint after its state has already been copied into an application**, and to fail loudly instead of silently producing a half-applied setup. Three pieces make that work:
+
+1. **The latch.** `register` sets `self._got_registered_once = True` immediately after `app.blueprints[name] = self` and before anything derived from the blueprint is applied (`blueprints.py:319-321`).
+2. **The gate.** `Blueprint._check_setup_finished` (`blueprints.py:213-221`) raises `AssertionError` when the latch is set: *"The setup method '{f_name}' can no longer be called on the blueprint '{self.name}'. It has already been registered at least once, any changes will not be applied consistently. Make sure all imports, decorators, functions, etc. needed to set up the blueprint are done before registering it."*
+3. **The trigger.** The `setupmethod` decorator (`scaffold.py:42-49`) calls `self._check_setup_finished(f_name)` before running any wrapped method body, so every `@setupmethod`-decorated method is gated. `Scaffold._check_setup_finished` is abstract (`scaffold.py:220-221`), so `Blueprint` supplies the blueprint-specific rule, exactly as `App` supplies the different rule `_got_first_request` (`sansio/app.py:413-417`).
+
+**Why "any changes will not be applied consistently" is literally true here.** Blueprint setup is *deferred state*, consumed at registration time:
+
+- `record`/`record_once` append to `deferred_functions` (`blueprints.py:223-244`), and `register` iterates that exact list once (`blueprints.py:335-336`). A function recorded after registration would never be called for that registration.
+- The one-time merges happen only on first registration: `_merge_blueprint_funcs` is called when `first_bp_registration or first_name_registration` (`blueprints.py:331-332`), folding `before_request`/`after_request`/`teardown_request`/`template_context_processors`/`url_default_functions`/`url_value_preprocessors` into the app (`blueprints.py:405-410`).
+- A single `Blueprint` object may legitimately be registered more than once — on several apps, or several times with different `name=`/`url_prefix` (`blueprints.py:255-266`, and `docs/blueprints.rst:119-121`: "you can register blueprints multiple times though not every blueprint might respond properly to that"). Adding routes after the first registration would therefore reach some mounts of the blueprint and not others — the inconsistency the error message names. `register` itself is deliberately *not* a `@setupmethod`, so re-registration stays legal; only further *setup* is blocked.
+
+**Version history (this behaviour was a deliberate escalation, not an accident):** 2.2 emitted a warning — "Use Blueprint decorators and functions intended for setup after registering the blueprint will show a warning. In the next version, this will become an error just like the application setup methods" (`CHANGES.rst:297-300`, issue 4571) — and 2.3 turned it into an error: "Calling setup methods on blueprints after registration is an error instead of a warning" (`CHANGES.rst:160-161`, PR 4997). The worktree is `version = "3.2.0.dev"` (`pyproject.toml:3`), so the hard-error form is the one in force.
+
+Two details that qualify the flag and are easy to get wrong:
+
+- **It is set before the registration work runs, and is never reset.** `_got_registered_once = True` precedes `make_setup_state`, the static-route rule, the merges and the deferred calls (`blueprints.py:320-336`). A registration that later raises still locks the blueprint, and nothing clears the latch — consistent with `docs/blueprints.rst:44-46` ("you cannot unregister a blueprint once an application was created").
+- **It is not the same mechanism as `first_registration`.** `BlueprintSetupState.first_registration` (`blueprints.py:46,62`), computed as `first_bp_registration` in `register` (`blueprints.py:316,321`), is what makes `record_once` callbacks fire only on the first app/name registration (`blueprints.py:232-244`). `_got_registered_once` is a one-way "setup finished" latch; `first_registration` is a per-registration "is this the first one" test. The task's question is about the former; the latter is only related by name.
+
+The `@setupmethod` surface this gates on a `Blueprint` is broad: `record`, `record_once`, `register_blueprint`, `add_url_rule`, `app_template_filter`/`_test`/`_global`, `before_app_request`, `after_app_request`, `teardown_app_request`, `app_context_processor`, `app_errorhandler`, `app_url_value_preprocessor`, `app_url_defaults` (`blueprints.py:223,232,255,412,443,460,477,496,515,534,553,563,573,583,595,612,624`), plus the whole `Scaffold` set it inherits — `route`, `get`/`post`/`put`/`delete`/`patch`, `endpoint`, `before_request`, `after_request`, `teardown_request`, `context_processor`, `url_value_preprocessor`, `url_defaults`, `errorhandler`, `register_error_handler` (`scaffold.py:295,303,311,319,327,335,367,435,459,486,507,541,558,583,597,641`).
+
+### What this conclusion rests on
+
+- Direct reading of `src/flask/sansio/blueprints.py` (latch at 172, gate at 213-221, set at 320, `register` body 300-336, merges 405-410), `src/flask/sansio/scaffold.py` (decorator 42-49, abstract hook 220-221), `src/flask/sansio/app.py` (app-side hook 413-417).
+- `CHANGES.rst:160-161` (2.3, error) and `CHANGES.rst:297-300` (2.2, warning); `docs/blueprints.rst:44-46` and `:119-121`; `docs/lifecycle.rst:41-51` on the same ordering hazard for the app object; `pyproject.toml:3` for the version in force.
+
+### Still open / limits of this answer
+
+- The inherited `retriever` (handle `25be5fee…`) and `executor` (handle `cb8cd10c…`) payloads could not be read from this session — `synapse_read` returned `namespace-mismatch` against the sibling `state` namespace — so nothing from those runs is incorporated and no dynamic check was repeated here. Everything above is grounded in the files as read.
+- No test in `tests/` exercised this blueprint-level error: greps for `_got_registered_once`, "registered at least once", "no longer be called" and an `AssertionError` search in `tests/test_blueprints.py` all returned nothing. The only related test is the *application*-level one (`tests/test_basic.py:1687-1690`). So the safety-net claim is established by the source alone and is unverified by the suite in this worktree.
+- Why the 2.2→2.3 escalation was chosen (PR 4997, issue 4571) is not documented beyond the CHANGES entries; the underlying rationale given in the code and the message is quoted above, not reconstructed from an external discussion.

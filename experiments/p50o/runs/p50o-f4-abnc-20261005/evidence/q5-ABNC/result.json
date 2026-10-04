@@ -1,0 +1,26 @@
+{
+	"arm": "ABNC",
+	"answerChars": 5679,
+	"cacheRead": 770304,
+	"childIn": 95115,
+	"childOut": 34825,
+	"index": 4,
+	"parentIn": 8639,
+	"parentOut": 500,
+	"problem": null,
+	"question": "What is the dependency chain in the test function that verifies subdomain routing through configuration, route registration, and request context creation?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 103754,
+	"totalOut": 35325,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 343050
+}

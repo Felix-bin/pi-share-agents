@@ -1,0 +1,31 @@
+## The dependency chain
+
+The test is `tests/test_testing.py::test_blueprint_with_subdomain` (defined at line 117). Its chain is four links long, and each link is a prerequisite of the next:
+
+**1. Configuration (`tests/test_testing.py:118–120`) — gates matching, supplies the host**
+- `flask.Flask(__name__, subdomain_matching=True)` stores the flag on the app (`src/flask/sansio/app.py:407`). Nothing consumes it at registration time; it is read only at request time by `Flask.create_url_adapter`, where `elif not self.subdomain_matching:` forces `subdomain = self.url_map.default_subdomain or ""` (`src/flask/app.py:458–462`). With the flag off, a rule carrying the subdomain `"xxx"` could never match, so this config line is the gate on link 3.
+- `app.config["SERVER_NAME"] = "example.com:1234"` is consumed in two places: `EnvironBuilder` uses it as `http_host` (`src/flask/testing.py:67`) and the app-context URL adapter binds to it (`src/flask/app.py:469–473`).
+- `app.config["APPLICATION_ROOT"] = "/foo"` feeds the `app_root` used in the built `base_url` (`src/flask/testing.py:68`) and `script_name` in the app-context adapter (`src/flask/app.py:471`).
+- After this stage the URL map is still empty, so no request can route yet.
+
+**2. Route registration (`123–129`) — puts the subdomain-bearing rule into the map**
+- `flask.Blueprint("company", __name__, subdomain="xxx")` stores the subdomain (`src/flask/sansio/blueprints.py:203`).
+- `@bp.route("/")` → `BlueprintSetupState.add_url_rule` injects `options.setdefault("subdomain", self.subdomain)` (`src/flask/sansio/blueprints.py:103`) and registers the endpoint `"company.index"` via `self.app.add_url_rule` (`same file:110–115`).
+- `app.register_blueprint(bp)` → `Blueprint.register` drives that registration. This must precede link 3: the context's URL adapter can only match rules already present in `app.url_map`.
+
+**3. Request-context creation (`131`) — turns config + registered rule into a matched request**
+- `app.test_request_context("/", subdomain="xxx")` → `Flask.test_request_context` (`src/flask/app.py:1423–1477`) constructs `EnvironBuilder(self, "/", subdomain="xxx")`. The builder's guard at `src/flask/testing.py:59` rejects `subdomain` together with `base_url`; here `base_url` is `None`, so it proceeds: `http_host = app.config.get("SERVER_NAME") or "localhost"`, then `http_host = f"{subdomain}.{http_host}"` → `"xxx.example.com:1234"`, and `base_url = "http://xxx.example.com:1234/foo"` using `PREFERRED_URL_SCHEME` and `APPLICATION_ROOT` (`src/flask/testing.py:67–75`).
+- `builder.get_environ()` → `self.request_context(environ)` (`src/flask/app.py:1475`) → `RequestContext` (`src/flask/ctx.py:287`), whose `__init__` calls `app.create_url_adapter(self.request)` (`src/flask/ctx.py:323`). Because `host_matching` is off and `subdomain_matching` is true, it calls `url_map.bind_to_environ(request.environ, server_name=SERVER_NAME, subdomain=None)` (`src/flask/app.py:465`), and Werkzeug derives subdomain `"xxx"` from `HTTP_HOST`.
+- Entering the `with ctx:` block pushes the context (`src/flask/ctx.py:367`), which pushes an app context if none is active and calls `match_request` → `url_adapter.match(return_rule=True)` → `request.url_rule`, `request.view_args` (`src/flask/ctx.py:362–365`).
+
+**4. Assertions that consume the chain (`132`, `135`, `137–138`)**
+- `ctx.request.url == "http://xxx.example.com:1234/foo/"` reads the environ link 3 built from `SERVER_NAME` + `subdomain` + `APPLICATION_ROOT`.
+- `ctx.request.blueprint == bp.name` is the actual routing check: `Request.blueprint` is `endpoint.rpartition(".")[0]` (`src/flask/wrappers.py:162–176`), so `"company"` proves the matched rule was the blueprint's `"company.index"` rule found on subdomain `xxx`.
+- `client.get("/", subdomain="xxx")` re-enters the same builder path (`src/flask/testing.py:69–70`) and asserts the view returns exactly that same URL string, exercising links 1–3 through a full dispatch instead of a bare context.
+
+**Same-shape variant in the same file.** `tests/test_testing.py::test_subdomain` (302) has the identical three elements — configuration at 303–304 (`subdomain_matching=True`, `SERVER_NAME = "example.com"`), route registration at 307 (`@app.route("/", subdomain="<company_id>")`), request-context creation at 311 (`app.test_request_context()`, used only to make `url_for` build the URL) — but its verification is the client response (`315–320`), not an assertion on the context. If the question means that test, the chain is config → route with a dynamic subdomain converter → context/`url_for` → `client.get`, with no `request.blueprint` link. I treat the blueprint test as the subject because it is the one where all three stages are discrete lines and the created request context is itself the instrument of verification. `tests/test_reqctx.py::test_proper_test_request_context` (63) also combines a `SERVER_NAME` config, a `subdomain="foo"` route and `test_request_context`, but it asserts `url_for(..., _external=True)` output — URL building, not subdomain dispatch — so it does not match "subdomain routing".
+
+## What this rests on, and what is open
+
+- **Rests on:** `tests/test_testing.py:117–138` and `302–320`; `tests/test_reqctx.py:63–92`; `src/flask/app.py:458–465`, `1423–1477`; `src/flask/ctx.py:287–325`, `358–370`; `src/flask/testing.py:59–75`; `src/flask/sansio/app.py:407`; `src/flask/sansio/blueprints.py:64–70`, `103`, `110–115`, `203`; `src/flask/wrappers.py:162–176`.
+- **Open / not established:** the two evidence handles named in the task (`2df8e48c…` from `retriever`, `4451b75a…` from `executor`) were not readable from this session — `synapse_read get/search` on both, and `synapse_write`, all returned `namespace-mismatch` (the state directory belongs to a different seal path), so the retrieved and executed evidence was not available to me and shared memory could not be updated. Consequently I could not confirm any test-run output, and the chain above is derived from the sources rather than from a reproduced execution. Which of the same-shape tests the question intends is also not settled by the wording; the blueprint test is my stated best reading, not a fact the sources force.

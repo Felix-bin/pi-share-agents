@@ -1,0 +1,32 @@
+## Answer
+
+There is no separate static-asset-serving component in this tree; the static/caching split is implemented as a **shared base class plus deliberate duplication**, and the modular registration mechanism is the **blueprint**. Concretely:
+
+**1. Modular component = `Blueprint`, registered through deferred functions and a setup-state object.**
+`class Blueprint(Scaffold)` (`src/flask/sansio/blueprints.py:119`) accumulates registration work rather than applying it: `record`/`record_once` append to `self.deferred_functions` (`sansio/blueprints.py:204, 230`), and `Blueprint.register` marks `_got_registered_once` and replays them against a `BlueprintSetupState` (`sansio/blueprints.py:320-335`). `BlueprintSetupState.add_url_rule` applies the blueprint's `url_prefix`/`subdomain` and prefixes the endpoint with the (nested) name before delegating to `app.add_url_rule` (`sansio/blueprints.py:87-116`). The docs describe exactly this role: a blueprint is "not a pluggable app… a set of operations which can be registered on an application, even multiple times", and it can "provide template filters, static files, templates, and other utilities" (`docs/blueprints.rst:29-37`).
+
+**2. What is "separated" is the static *configuration*, not static serving.**
+`Scaffold` — documented as "Common behavior shared between `Flask` and `Blueprint`" (`src/flask/sansio/scaffold.py:53`) — owns all static-location state: `_static_folder`/`_static_url_path` (`scaffold.py:72-73`), the `static_folder` property that joins it to `root_path` and its setter (`scaffold.py:224-238`), `has_static_folder` (`scaffold.py:241-246`), and `static_url_path` derived from the folder's basename (`scaffold.py:249-262`). Both `Flask.__init__` and `Blueprint.__init__` pass `static_folder`/`static_url_path` up to that base (`src/flask/app.py:239-246`; `src/flask/blueprints.py:32-38`).
+
+The *serving* itself is **duplicated in the two concrete classes**, each carrying the note "this is a duplicate of the same method in the Flask class": `Flask.send_static_file` (`app.py:308-328`) and `Blueprint.send_static_file` (`blueprints.py:82-102`). Route wiring also differs per class:
+
+- the app registers its own rule in `Flask.__init__` when `has_static_folder` is true, at `f"{self.static_url_path}/<path:filename>"`, `endpoint="static"`, with a weakref-guarded lambda to avoid an app↔view reference cycle (`app.py:262-279`);
+- the blueprint registers the same shape at *registration* time: `state.add_url_rule(f"{self.static_url_path}/<path:filename>", view_func=self.send_static_file, endpoint="static")` (`sansio/blueprints.py:323-328`), which the setup state turns into the app endpoint `<blueprint>.static` (`docs/blueprints.rst:206-210`).
+
+**3. Consistent caching is achieved by duplicating the hook, not by sharing it.**
+`get_send_file_max_age` is defined twice with identical bodies — `Flask.get_send_file_max_age` (`app.py:281-306`) and `Blueprint.get_send_file_max_age` (`blueprints.py:56-80`) — both reading `current_app.config["SEND_FILE_MAX_AGE_DEFAULT"]` and converting a `timedelta` to whole seconds. The reason for the duplication is stated in both `send_static_file` bodies: "send_file only knows to call get_send_file_max_age on the app, call it here so it works for blueprints too." Accordingly, each `send_static_file` computes `max_age = self.get_send_file_max_age(filename)` and passes it explicitly into `send_from_directory` (`app.py:323-327`; `blueprints.py:99-101`). The generic path works the other way: `_prepare_send_file_kwargs` substitutes `current_app.get_send_file_max_age` as `max_age` only when it is `None` (`src/flask/helpers.py:387-389`), and `send_file`/`send_from_directory` funnel through it (`helpers.py:511-522, 565-566`). `docs/config.rst:250-260` documents the resulting contract: `SEND_FILE_MAX_AGE_DEFAULT` can be overridden per file "on the application or blueprint", and `None` means conditional requests instead of a timed cache.
+
+Behaviour is pinned by tests on both paths: `tests/test_blueprints.py:223-245` subclasses `Blueprint` with `get_send_file_max_age → 100`, sets the app config to a *different* value, and asserts the blueprint's static response has `Cache-Control: max-age=100`; `tests/test_helpers.py:60-85` covers `send_file`/`send_static_file` picking up `SEND_FILE_MAX_AGE_DEFAULT = 3600` and a `Flask`-subclass override of 10.
+
+**Reading of the question's framing.** The premise of a component that *separates static asset serving from the main application framework* is not what the code shows, so I answer under the closest supported reading: the "modular component" is the blueprint, and the separation is (a) static *configuration* lifted into the framework-agnostic `Scaffold` base and (b) static *route registration* moved into the blueprint's setup state, while the *serving + caching* implementation is intentionally kept identical in `Flask` and `Blueprint` by duplication. Consistency across the two is by mirrored code and a shared config key, not by a shared implementation or a distinct serving component — a tradeoff the source comments acknowledge explicitly.
+
+## What this rests on
+
+- Direct reads of `src/flask/sansio/scaffold.py`, `src/flask/sansio/blueprints.py`, `src/flask/app.py`, `src/flask/blueprints.py`, `src/flask/helpers.py`, `docs/blueprints.rst`, `docs/config.rst`, `CHANGES.rst:1292-1300`, `tests/test_blueprints.py`, `tests/test_helpers.py`.
+- `src/` contains only the `flask` package; no static-serving module or extension exists in this tree, which is the basis for the framing correction.
+
+## Still open
+
+- **The retriever and executor result bodies were not available to me.** Both `synapse_read` and `synapse_write` in this session return `namespace-mismatch` (state dir belongs to `seals/q1-ABNC`, not `seals/q8-ABNC`), and the handle texts were not supplied at startup. Everything above is therefore grounded solely in my own source reads; any runtime verification the executor performed (e.g. asserted `max_age` values from an executed script) is unconfirmed here, and no conclusion of mine depends on it.
+- The presence of `flask_mut2_i417ar2x/mutated_test.py` (subdomain/SERVER_NAME behaviour with `subdomain_matching=False`) neither supports nor contradicts this answer; it is not about static serving or caching.
+- Whether the task intended some component outside this working tree cannot be established from the evidence; inside this tree the described standalone component does not exist.
