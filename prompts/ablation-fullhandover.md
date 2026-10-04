@@ -12,9 +12,12 @@ const launch = (key, agent, lines) => runs.run(key, { agent, acceptance: false, 
 const stage = (agent, lines) => launch(agent, agent, lines).catch(() => launch(agent + "-retry", agent, lines));
 const plan = await stage("planner", [task]);
 const planBlock = trunc(plan.output, 12, 2);
+const simple = /COMPLEXITY:\s*simple/.test(plan.output); // 复杂度门：simple（含召回已答）跳过 executor
 const evidence = await stage("retriever", [query, "", "Plan:", planBlock]);
-const results = await stage("executor", ["Plan:", planBlock, "", "Evidence:", trunc(evidence.output, 100, 6)]);
-const summary = await stage("summarizer", ["Task:", task, "", "Evidence:", trunc(evidence.output, 80, 5), "", "Executed results:", trunc(results.output, 60, 5)]);
+const results = simple ? null : await stage("executor", ["Plan:", planBlock, "", "Evidence:", trunc(evidence.output, 100, 6)]);
+const summary = await stage("summarizer", simple
+	? ["Task:", task, "", "Plan:", planBlock, "", "Evidence:", trunc(evidence.output, 80, 5), "", "Note: the planner classified this task as simple (recalled conclusion); the executor stage was skipped by the complexity gate."]
+	: ["Task:", task, "", "Evidence:", trunc(evidence.output, 80, 5), "", "Executed results:", trunc(results.output, 60, 5)]);
 return summary.output;
 ```
 

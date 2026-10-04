@@ -107,8 +107,12 @@ function renderParts(input: { agent: string; memoryId: string; output: string })
 	// Drop lines from the end of each block until the whole block fits; findings go last.
 	const keptEstablished = [...established];
 	const keptOpen = [...open];
+	// 首行控制位：输出首行（如 planner 的 COMPLEXITY 判定）始终随块可见——
+	// 蒸馏的 KEY LINES 只挑要点行，控制行会被丢掉，而 workflowScript 的复杂度门依赖它。
+	const firstLine = clip((input.output.split(/\r?\n/)[0] ?? "").trim());
 	const compose = (): string => {
 		const parts = [header];
+		if (firstLine.length > 0) parts.push(firstLine);
 		// Only a stage that wrote a status block vouched for its lines; a plan's steps are not findings.
 		if (keptEstablished.length > 0) parts.push(vouched ? "ESTABLISHED:" : "KEY LINES:", ...keptEstablished.map((line) => `- ${line}`));
 		if (keptOpen.length > 0) parts.push("NOT ESTABLISHED:", ...keptOpen.map((line) => `- ${line}`));

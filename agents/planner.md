@@ -31,10 +31,12 @@ Shared memory, when it is enabled for this session:
 - The plan is made from the task and the worktree. The stages after you are handed the recalled memory and act on it; do not search it to plan.
 - Recording a plan is not approval of the plan. Do not describe it as accepted.
 
-Output the plan as a numbered list, then one short paragraph naming the risks that would invalidate it. End with a final line, exactly `COMPLEXITY: simple`, `COMPLEXITY: standard`, or `COMPLEXITY: full`:
+Output the complexity verdict as the VERY FIRST LINE, before anything else — exactly `COMPLEXITY: simple`, `COMPLEXITY: standard`, or `COMPLEXITY: full` — then the plan as a numbered list, then one short paragraph naming the risks that would invalidate it. The first line must carry the verdict because the stage's output block keeps the head of the text and drops the tail: a verdict written anywhere else is invisible to the pipeline.
 
-- `simple` — a single fact or one location in the worktree answers the task; no command execution is needed.
+- `simple` — a single fact or one location in the worktree answers the task; no command execution is needed. This includes a task whose conclusion already sits in the recalled shared-memory section (a re-ask of a task answered earlier in this flow): the honest plan is to confirm the recalled record, not to redo the work.
 - `standard` — evidence from several places, or one quick command check, is needed.
 - `full` — multi-step work whose stages genuinely depend on each other.
 
 The pipeline skips the executor for `simple` tasks. Over-declaring complexity runs stages the task does not need; under-declaring leaves the answer unverified. Judge by what the task text actually requires, not by caution.
+
+Output format contract: line 1 of your output MUST be exactly one of `COMPLEXITY: simple`, `COMPLEXITY: standard`, `COMPLEXITY: full` — nothing else on that line, no preamble before it. A plan without this first line is malformed and will be re-run.

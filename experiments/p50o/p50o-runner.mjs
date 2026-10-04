@@ -266,7 +266,7 @@ for (const [index, question] of questions.entries()) {
 		}
 		let problem = outcome.problem;
 		if (problem === null && (usage === null || answer === null)) problem = "no-usage-or-answer";
-		if (problem === null && roles !== null && roles < 4) problem = `roles=${roles}<4`;
+		if (problem === null && roles !== null && roles < 3) problem = `roles=${roles}<3`; // simple 门跳过 executor 时 3 角色为设计行为（roles 数照记）
 		if (answer !== null) fs.writeFileSync(path.join(evidence, "answer.md"), answer, "utf-8");
 		const row = {
 			arm, answerChars: answer === null ? 0 : answer.trim().length, cacheRead: usage?.cacheRead ?? 0, childIn: usage?.input ?? 0, childOut: usage?.output ?? 0, index, parentIn, parentOut, problem, question, roles, stages, sealed: SEAL, template: arm === "TXT" ? TEMPLATE_TXT : (ABLATION[arm]?.template ?? TEMPLATE_SYN), totalIn: (usage?.input ?? 0) + parentIn, totalOut: (usage?.output ?? 0) + parentOut, unit: "p50o", valid: problem === null, wallMs: outcome.wallMs,
