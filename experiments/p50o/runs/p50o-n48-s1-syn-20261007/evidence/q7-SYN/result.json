@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 87417,
+	"arm": "SYN",
+	"answerChars": 2314,
+	"cacheRead": 53504,
+	"childIn": 18772,
+	"childOut": 5254,
+	"index": 6,
+	"parentIn": 9365,
+	"parentOut": 522,
+	"problem": null,
+	"question": "What does the method that enables the test helper class representing pathlib.Path objects return when invoked by the standard library path conversion function?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 28137,
+	"totalOut": 5776,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 132334
+}

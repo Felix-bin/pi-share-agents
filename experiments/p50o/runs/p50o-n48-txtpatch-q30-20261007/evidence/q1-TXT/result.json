@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 7794323,
+	"arm": "TXT",
+	"answerChars": 38518,
+	"cacheRead": 7223808,
+	"childIn": 433089,
+	"childOut": 128916,
+	"index": 0,
+	"parentIn": 8099,
+	"parentOut": 411,
+	"problem": null,
+	"question": "Why does unconditionally setting the session access tracking attribute in dictionary access methods impact signed cookie string conversion performance during frequent read operations?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 441188,
+	"totalOut": 129327,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 1453000
+}

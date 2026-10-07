@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 441228,
+	"arm": "SYN",
+	"answerChars": 5337,
+	"cacheRead": 329984,
+	"childIn": 73005,
+	"childOut": 28343,
+	"index": 10,
+	"parentIn": 9360,
+	"parentOut": 536,
+	"problem": null,
+	"question": "What is the architectural pattern of the test class that isolates request context lifecycle management from streaming response generation logic?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 82365,
+	"totalOut": 28879,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 414113
+}

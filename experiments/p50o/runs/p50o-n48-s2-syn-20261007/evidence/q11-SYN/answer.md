@@ -1,0 +1,23 @@
+## Why `test_existing_handler` asserts an empty handler list
+
+The assertion `assert not app.logger.handlers` is the observable proof of a deliberate contract: **Flask does not attach its own default handler to the app logger when a handler is already reachable on the logging chain.** Adding a stream handler to the root logger makes one reachable, so the app logger stays empty by design.
+
+The mechanism (`tests/test_logging.py:48–51`, `src/flask/sansio/app.py:442–467`, `src/flask/logging.py:31–47, 58–78`):
+
+1. `app.logger` is a lazy `cached_property` whose body is `return create_logger(self)` (`src/flask/sansio/app.py:442–467`). First access is what runs the handler decision.
+2. `create_logger` names the logger after the app (`logging.getLogger(app.name)`), then attaches `default_handler` only under `if not has_level_handler(logger)` (`src/flask/logging.py:71–78`).
+3. `has_level_handler` does not look at `logger.handlers` alone — it walks the chain: it checks every handler on the current logger, then follows `current.parent` while `propagate` is true (`src/flask/logging.py:31–47`). A handler on the root logger therefore satisfies it.
+4. The guard is `any(handler.level <= level for handler in current.handlers)`. A freshly constructed `logging.StreamHandler()` has level `0` (`logging.NOTSET`), so the comparison holds and `has_level_handler` returns `True` — regardless of the logger's effective level. `create_logger` then skips `addHandler`, and `app.logger.handlers` is `[]`.
+
+That is exactly the case the test builds: `logging.root.addHandler(logging.StreamHandler())` followed by `assert not app.logger.handlers`. Its sibling `test_logger` (`tests/test_logging.py:38–41`), which leaves the root logger bare, asserts the opposite — `app.logger.handlers == [default_handler]`. The pair pins both branches of the same `if`.
+
+The second assertion in the test, `assert app.logger.level == logging.NOTSET`, isolates *level* handling from *handler* handling: `create_logger` only raises the level `if app.debug and not logger.level` (`src/flask/logging.py:73–74`), and the `app` fixture never sets `debug`, so the level must remain untouched while the handler is suppressed. The intent is also the documented one: `docs/logging.rst:148–156` recommends adding handlers to the root logger instead of only the app logger, so the test confirms Flask defers to that configuration via propagation rather than emitting a second handler (and thus duplicate output) on the app logger.
+
+**Verification status:** confirmed by execution — `.venv/Scripts/python.exe -m pytest tests/test_logging.py::test_existing_handler tests/test_logging.py::test_has_level_handler -q` exits 0 with "2 passed in 0.08s", and an inline probe showed `has_level_handler(...) -> False` before the root handler is added and `-> True` (with `create_logger(app).handlers -> []`) after. The `reset_logging` autouse fixture (`tests/test_logging.py:13–35`) empties the root handlers and the `flask_test` logger around each test, so the empty list is Flask's doing, not test-order pollution.
+
+**Contradiction in the collected evidence (reported, not resolved silently):** the retriever explained the `True` result as "the `flask_test` logger's effective level is `NOTSET` (0), so `0 <= 0`". The executor's probe contradicts this — the effective level was `30` (`WARNING`, inherited from the root default) and the guard still returned `True`. The correct reason is that the *handler's* level is `0`, which is `<=` any effective level. The retriever's conclusion stands; its stated reason does not. The retriever also cited `has_level_handler` as lines 29–45; the definition is at line 31 (guard at 39).
+
+## What this rests on / what remains open
+
+- **Rests on:** the test body (`tests/test_logging.py:48–51`), the `create_logger`/`has_level_handler` code (`src/flask/logging.py:31–47, 58–78`), the `cached_property` entry point (`src/flask/sansio/app.py:442–467`), the autouse `reset_logging` fixture (`tests/test_logging.py:13–35`), the parallel `test_logger` assertion (`tests/test_logging.py:38–41`), the documented root-handler guidance (`docs/logging.rst:148–156, 173–175`), and a passing two-test run plus a direct probe of `has_level_handler`.
+- **Open:** no commit message, `CHANGES.rst` entry, or code comment stating the test's authoring rationale was found, so "regression guard against duplicate logging" is an inference from the code and docs, not a quoted intent. Whether the wider suite passes was not verified. A standalone script under `flask_mut2_i417ar2x/mutated_test.py` concerns `url_for`/test-client behavior and has no relation to this test.

@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 185575,
+	"arm": "SYN",
+	"answerChars": 3919,
+	"cacheRead": 127488,
+	"childIn": 35661,
+	"childOut": 12548,
+	"index": 20,
+	"parentIn": 9351,
+	"parentOut": 527,
+	"problem": null,
+	"question": "Where does the inheritance chain between parent and child configuration classes affect configuration resolution when loading from a class object?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 45012,
+	"totalOut": 13075,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 170148
+}

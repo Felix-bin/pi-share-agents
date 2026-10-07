@@ -1,0 +1,33 @@
+## Answer
+
+The namespace object itself provides **no thread-safety whatsoever**. Isolation is entirely structural: Flask gives each application context its *own* namespace instance, binds that instance on a `ContextVar`, and reaches it through a proxy that re-resolves the `ContextVar` on every access. Nothing is shared to be synchronized.
+
+**1. The class has no concurrency machinery.** `_AppCtxGlobals` (`src/flask/ctx.py:29`) is an attribute bag over `self.__dict__` (`__getattr__`/`__setattr__`/`__delattr__`, `ctx.py:48-63`) plus `get`, `pop`, `setdefault`, `__contains__`, `__iter__`, `__repr__`. It defines no `__init__`, holds no lock, and `ctx.py` does not import `threading`. (read directly; matches the retriever's finding)
+
+**2. One fresh namespace per app context.** `AppContext.__init__` allocates it: `self.g: _AppCtxGlobals = app.app_ctx_globals_class()` (`ctx.py:248`), with the overridable default `app_ctx_globals_class = _AppCtxGlobals` (`src/flask/sansio/app.py:185`). So the "namespace for storing data during an application context" is not a process-wide global; it is an attribute of one context object, and `tests/test_appctx.py:134-165` shows the class itself can be swapped (which is how one would inject locking if isolation were required on top).
+
+**3. The binding lives on a `ContextVar`, not on a thread-local or a module global.** `_cv_app: ContextVar[AppContext] = ContextVar("flask.app_ctx")` (`src/flask/globals.py:24`). `AppContext.push()` records a token: `self._cv_tokens.append(_cv_app.set(self))` (`ctx.py:253`); `AppContext.pop()` runs `_cv_app.reset(self._cv_tokens.pop())` in a `finally` (`ctx.py:265`) and then asserts the popped context is `self` (`ctx.py:267-271`). Because the token list is stored on the `AppContext` instance rather than in the `ContextVar`, re-entrant pushes are stack-scoped: each `set` is undone by its matching `reset`.
+
+**4. Access re-resolves the `ContextVar` every time.** `g` is `LocalProxy(_cv_app, "g", unbound_message=_no_app_msg)` (`globals.py:31-33`). Each use reads the `ContextVar` *now* — i.e. in the calling thread's (or copied async context's) own binding — and then fetches `.g` off whichever `AppContext` is bound there. Two threads therefore cannot reach each other's `_AppCtxGlobals`, and in a fresh thread with no binding, bare `g` raises the documented `RuntimeError: Working outside of application context.` (`globals.py:19-25`).
+
+**5. Request contexts nest onto the same mechanism.** `RequestContext.push()` reuses the current app context or creates one (`ctx.py:367-379`); `RequestContext.pop()` pops it only if it created it (`ctx.py:396-425`).
+
+**Runtime verification (executor, CPython 3.13.9, `PYTHONPATH` pinned to this worktree's `src`; exit 0 on both runs, `SUMMARY i=PASS ii=PASS iii=PASS`):**
+- (i) Two threads held simultaneously behind a `threading.Barrier(2)`, both inside `with app.app_context()`: `id(g)=2216613228096` / `2216622299472`, proxy resolves to own namespace and no value leaks → PASS.
+- (ii) Child thread while the parent holds a context: bare `g` before push raises the `RuntimeError`; after the child pushes (and in the literal `_cv_app.set(ctx)` variant) the parent's `g` value, namespace object, and `_cv_app.get()` binding are unchanged → PASS.
+- (iii) Nested `app.app_context()`: the inner namespace is a **fresh** object, not a copy — outer values are `<absent>` inside it — and after the inner pop the outer object and binding are restored exactly → PASS.
+
+So the answer to "how does it maintain thread-safety and isolation" is: **the namespace is never shared across concurrent contexts in the normal threaded-WSGI path shown here, and the `ContextVar` + token `reset` + per-access `LocalProxy` chain is what enforces that.** The isolation is documented as such: `docs/reqcontext.rst:39-46` (context unique to each thread, implemented with `contextvars` and Werkzeug `LocalProxy`), `docs/reqcontext.rst:225-231` (proxies point to the unique object bound to each worker behind the scenes), `docs/appcontext.rst:86-97` (`g` has the same lifetime as the app context and is not a place to store data between requests), `docs/quickstart.rst:458-482`, and `docs/design.rst:175-184` (greenlet contexts supported too).
+
+## What this rests on, and what remains open
+
+Rests on: `src/flask/ctx.py:29`, `48-63`, `248`, `249`, `253`, `265`, `267-271`, `338-346`, `367-425`; `src/flask/globals.py:19-25`, `24`, `31-33`; `src/flask/sansio/app.py:185`; `docs/reqcontext.rst:39-46`, `225-231`; `docs/appcontext.rst:86-97`; `docs/quickstart.rst:458-482`; `docs/design.rst:175-184`; `tests/test_appctx.py:134-165`; `tests/test_reqctx.py:148-201`; and the executor's three runtime checks (handle `b1c704c99f704efa98d524c36994e5b022d0f644a99aaf96f8547b98afc04554`, recorded in shared memory as `df77325757cc…`).
+
+Open / not established:
+- **The shared-`AppContext` case is not covered.** The checks exercised threads that each establish their *own* context (and a child thread pushing its own). No run tested two threads deliberately sharing the *same* `AppContext`/`_AppCtxGlobals` object; if they did, concurrent mutation would be unsynchronized, since the class has no lock. `ctx.py:338-346` documents the analogous caveat for request-context copying ("cannot be used to move a request context to a different thread unless access to the request object is locked").
+- **Async tasks are inferred, not observed.** An `asyncio` task created while an app context is pushed inherits a *reference* to the same `AppContext` by context copy, so it would share one namespace. That follows from `contextvars` copy semantics plus `ctx.py:248`; no test or doc in this repo asserts it, and the executor did not run it.
+- **Werkzeug `LocalProxy` internals were not read** (`.venv` is gitignored and skipped by search), so "re-resolves on every access" rests on the `globals.py:31-33` construction site plus `docs/reqcontext.rst:44-46`, not on the proxy's source.
+- **No thread-based concurrency test exists in the suite** (only greenlet copying tests, `tests/test_reqctx.py:148-201`), so the runtime confirmation is external to the repo's own test set.
+- Environment caveat for reuse: the venv's `flask.pth` points at a different directory, so any repeat run must pin `PYTHONPATH` to this worktree's `src` and verify `flask.__file__`.
+
+No contradiction was found between code and docs; the only framing difference is that `docs/design.rst:175-184` calls the mechanism "thread locals" while the implementation is `contextvars`-based.

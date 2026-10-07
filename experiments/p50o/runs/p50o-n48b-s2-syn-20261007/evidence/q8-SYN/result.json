@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 290676,
+	"arm": "SYN",
+	"answerChars": 5129,
+	"cacheRead": 212736,
+	"childIn": 50544,
+	"childOut": 17448,
+	"index": 7,
+	"parentIn": 9363,
+	"parentOut": 585,
+	"problem": null,
+	"question": "Why does the test that validates blueprint names cannot contain dots ensure that creating a modular route component with names containing dot characters raises a ValueError?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 59907,
+	"totalOut": 18033,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 242540
+}

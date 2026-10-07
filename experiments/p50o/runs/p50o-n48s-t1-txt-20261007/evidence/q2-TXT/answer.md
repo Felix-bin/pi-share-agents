@@ -1,0 +1,43 @@
+# Purpose of the registration-tracking flag in the blueprint class
+
+The flag is `Blueprint._got_registered_once`, declared at `src/flask/sansio/blueprints.py:172` as a class attribute defaulting to `False` on `class Blueprint(Scaffold)` (`:119`, whose docstring calls it "a collection of routes and other app-related functions that can be registered on a real application later"). Its purpose is to make blueprint setup a **one-shot, registration-time-only** operation: the first time a blueprint is registered on any app, the flag latches to `True` permanently, and from then on every setup method on that blueprint raises `AssertionError` instead of silently appending more deferred functions, routes, or callbacks that may never be applied to the already-registered app.
+
+**Where it is set.** Inside `Blueprint.register` (`:273`), immediately after the duplicate-name `ValueError` check and before any setup work:
+
+```
+app.blueprints[name] = self
+self._got_registered_once = True
+```
+(`:319-320`)
+
+The ordering is the point: the flag is set *before* `state = self.make_setup_state(app, options, first_bp_registration)` (`:321`), before the static-folder rule (`:323-328`), before `_merge_blueprint_funcs` (`:331-332`), before the deferred-function loop `for deferred in self.deferred_functions: deferred(state)` (`:334-335`), and before the nested-blueprint recursion `for blueprint, bp_options in self._blueprints:` (`:349`), which re-enters `blueprint.register` and therefore latches the child blueprint's own flag too. `Blueprint.register` itself is deliberately *not* decorated with `@setupmethod`, which is why it can still execute and set the flag (the executor's in-process run confirmed a child blueprint goes `False` → `True` when its parent is registered).
+
+**Where it is enforced.** It is read in exactly one place, `Blueprint._check_setup_finished` (`:213-220`):
+
+```
+def _check_setup_finished(self, f_name: str) -> None:
+    if self._got_registered_once:
+        raise AssertionError(
+            f"The setup method '{f_name}' can no longer be called on the blueprint"
+            f" '{self.name}'. It has already been registered at least once, any"
+            " changes will not be applied consistently.\n"
+            "Make sure all imports, decorators, functions, etc. needed to set up"
+            " the blueprint are done before registering it."
+        )
+```
+
+and every setup method is routed through that guard by the `setupmethod` decorator in `src/flask/sansio/scaffold.py:42-48`, whose wrapper calls `self._check_setup_finished(f_name)` before delegating to the wrapped function. On `Blueprint` the decorated surface includes `record` (`:223`), `record_once` (`:232`), `register_blueprint` (`:255`), `add_url_rule` (`:412`), the `app_template_filter` / `app_template_test` / `app_template_global` families and their `add_*` forms, `before_app_request`, `after_app_request`, `teardown_app_request`, `app_context_processor`, `app_errorhandler`, `app_url_value_preprocessor`, `app_url_defaults`. The executor reproduced the failure at runtime: a `@bp.route('/x')` after registration, as well as `bp.register_blueprint(...)` and `bp.record_once(...)`, each raised `AssertionError` with exactly the `:215-220` message. The base `Scaffold._check_setup_finished` is `raise NotImplementedError` (`scaffold.py:220`) — the concrete behavior is supplied by the subclass.
+
+**Why the rationale is what the message says.** The error text states the reason directly: "It has already been registered at least once, any changes will not be applied consistently." Once `register` has run, the blueprint's `deferred_functions` have already been replayed against a specific app's setup state, its functions merged into the app, and its nested blueprints registered. A route or callback added afterwards would apply to nothing (the app was already built) or, if the same blueprint were registered on a second app, would apply to one app and not the other — an inconsistency the flag prevents by turning it into an immediate hard error. The accompanying instruction ("Make sure all imports, decorators, functions, etc. needed to set up the blueprint are done before registering it") states the intended workflow: define the blueprint completely, then register it.
+
+**Documented as an intentional change.** `CHANGES.rst:160-161` (section `Version 2.3.0`, heading at `:135`) records: "Calling setup methods on blueprints after registration is an error instead of a warning. :pr:`4997`". The prior behavior is at `CHANGES.rst:297-299`: "Use Blueprint decorators and functions intended for setup after registering the blueprint will show a warning. In the next version, this will become an error just like the application setup methods. :issue:`4571`." So the flag is the mechanism behind a deliberate warning→error promotion.
+
+**The distinguishing note — this is not `first_registration`.** `BlueprintSetupState.first_registration` (`:46`, `:62`) is a *per-app, per-registration* concept, computed at `:316-317` as `first_bp_registration` / `first_name_registration` and consumed at `:241` in `record_once`'s wrapper (`if state.first_registration: func(state)`). The executor demonstrated the difference empirically: with one blueprint registered on two apps, the `record_once` callback ran once per app (`['a1', 'a2']`) while `_got_registered_once` stayed `True`, and a third registration under `name='b2'` did not re-run the callback and did not clear the flag. `first_registration` gates whether a given `record_once` callback runs for a given app; `_got_registered_once` is permanent and gates whether setup methods may be called *at all*. A whole-worktree grep for `_got_registered_once` / `got_registered` returns exactly three source hits, all in this file — `172` (declare), `214` (read), `320` (write) — so the flag is never reset and there is no re-registration path that clears it.
+
+**Reading of "blueprint collection class".** Resolved to `Blueprint` in `src/flask/sansio/blueprints.py`: it is the class whose docstring describes collecting routes and app-related functions, it is the only blueprint class carrying such a flag, and the flag's name and guard message are blueprint-specific. The `Flask` application class has a same-shaped mechanism with a different trigger — `_got_first_request` (`src/flask/sansio/app.py:411`, read at `:414`, set in `Flask.full_dispatch_request` at `src/flask/app.py:911`, reset at `src/flask/app.py:667`), commented "tracks internally if the application already handled at least one request" — but that is a first-*request* trigger on a non-blueprint class, and `docs/lifecycle.rst:42-48` documents it as the separate application-side variant. It is not the flag this question names.
+
+## What this rests on, and what is open
+
+**Basis.** Source quoted verbatim in this worktree: `src/flask/sansio/blueprints.py:119, 172, 213-220, 223, 232, 241, 255, 273, 316-317, 319-320, 334-335, 349, 412`; `src/flask/sansio/scaffold.py:42-48, 220`; `src/flask/sansio/app.py:411, 414`; `src/flask/app.py:667, 911`; `CHANGES.rst:135, 160-161, 297-299`; `docs/lifecycle.rst:42-48`. Exhaustive greps returning only the three cited hits for the flag, plus a direct in-process run against `PYTHONPATH=src` (`flask.__file__` resolving to this tree's `src/flask/__init__.py`, not an installed copy) reproducing the `AssertionError` for `route`, `register_blueprint` and `record_once`, the per-app `record_once` behavior, the no-reset behavior, and the child-flag setting via recursion.
+
+**Open.** (a) No test in `tests/` exercises the blueprint-side assertion; a grep of `tests/` for `got_registered_once`, `_got_first_request` and `setup_finished` returns nothing, and the only setup-after-trigger test — `tests/test_basic.py::test_no_setup_after_first_request` (`~:1678`, passing in 0.06 s) — is the application side, asserting on the message `"setup method 'add_url_rule'"`. The blueprint behavior is therefore established from source, changelog and direct runtime reproduction, not from a shipped test. (b) The warning-era behavior that preceded the assertion is recorded only in `CHANGES.rst:297-299`, not exercised anywhere in the worktree. (c) The app-side trigger ordering in `Flask.full_dispatch_request` beyond the `_got_first_request = True` line was confirmed by reading only that line. `flask_mut2_i417ar2x/mutated_test.py` (13 lines, subdomain matching plus `url_for`) is unrelated and was correctly left unrun.

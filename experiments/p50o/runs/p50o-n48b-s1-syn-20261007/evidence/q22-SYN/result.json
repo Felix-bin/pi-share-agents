@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 141315,
+	"arm": "SYN",
+	"answerChars": 4825,
+	"cacheRead": 89856,
+	"childIn": 30007,
+	"childOut": 11496,
+	"index": 21,
+	"parentIn": 9369,
+	"parentOut": 587,
+	"problem": null,
+	"question": "How does the error handling strategy in the application context globals namespace class's attribute access, deletion, and removal methods balance between raising AttributeError for missing attributes and providing default values?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 39376,
+	"totalOut": 12083,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 166948
+}

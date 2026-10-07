@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 2519083,
+	"arm": "SYN",
+	"answerChars": 9810,
+	"cacheRead": 2221056,
+	"childIn": 203288,
+	"childOut": 84845,
+	"index": 11,
+	"parentIn": 9362,
+	"parentOut": 532,
+	"problem": null,
+	"question": "What hidden coupling exists between the decorator's state management and response lifecycle that causes issues with nested or conditional registration?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 212650,
+	"totalOut": 85377,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 1139413
+}

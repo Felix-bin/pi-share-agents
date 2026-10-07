@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 26496,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 744400,
+	"arm": "TXT",
+	"answerChars": 21368,
+	"cacheRead": 550912,
+	"childIn": 121805,
+	"childOut": 30805,
+	"index": 9,
+	"parentIn": 13222,
+	"parentOut": 1160,
+	"problem": null,
+	"question": "Where is the test class that validates URL generation with anchors, schemes, and HTTP methods defined?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 135027,
+	"totalOut": 31965,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 349423
+}

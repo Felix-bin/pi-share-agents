@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 430917,
+	"arm": "SYN",
+	"answerChars": 5481,
+	"cacheRead": 329728,
+	"childIn": 66781,
+	"childOut": 24277,
+	"index": 21,
+	"parentIn": 9370,
+	"parentOut": 761,
+	"problem": null,
+	"question": "Where in the request processing flow does the orchestration between the method that loads session data at request start and the method that persists session data at request end occur to handle concurrent requests with potential race conditions?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 76151,
+	"totalOut": 25038,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 311681
+}

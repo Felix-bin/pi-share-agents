@@ -1,0 +1,4 @@
+The answer above is complete. Summary of the two conclusions recorded to shared memory for later tasks:
+
+- **Canonical:** `TagMarkup` (`src/flask/json/tag.py:173-188`) conversion methods delegate only to external functions (`str`, markupsafe `Markup`/`__html__`); the in-worktree pipeline helpers are `dumps`/`loads` at `src/flask/json/__init__.py:13`/`:77`, one level above the conversion method.
+- **Refinement:** `provider._default` (`provider.py:108`) is **not** on the tag conversion path (0 traced frames) — it is a parallel handler for non-`str` `__html__` objects on the plain `flask.json.dumps` path.

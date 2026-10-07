@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 232102,
+	"arm": "SYN",
+	"answerChars": 4416,
+	"cacheRead": 170496,
+	"childIn": 38394,
+	"childOut": 13202,
+	"index": 14,
+	"parentIn": 9359,
+	"parentOut": 651,
+	"problem": null,
+	"question": "Where does the list serialization tag's item conversion method interact with the serializer's type dispatcher to recursively process nested list structures containing mixed types?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 47753,
+	"totalOut": 13853,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 178090
+}

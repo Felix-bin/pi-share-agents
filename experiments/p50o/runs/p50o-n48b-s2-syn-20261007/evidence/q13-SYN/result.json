@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 277860,
+	"arm": "SYN",
+	"answerChars": 5260,
+	"cacheRead": 201344,
+	"childIn": 47283,
+	"childOut": 19310,
+	"index": 12,
+	"parentIn": 9372,
+	"parentOut": 551,
+	"problem": null,
+	"question": "Where does the control flow in the CLI group class's command retrieval method determine whether to return a directly registered command, an entry point loaded command, or an application CLI group command?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 56655,
+	"totalOut": 19861,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 265033
+}

@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 208986,
+	"arm": "SYN",
+	"answerChars": 5390,
+	"cacheRead": 141568,
+	"childIn": 43803,
+	"childOut": 13650,
+	"index": 18,
+	"parentIn": 9368,
+	"parentOut": 597,
+	"problem": null,
+	"question": "How does the method that registers URL rules on blueprint objects defer registration by storing an anonymous function in the deferred setup functions list instead of immediately calling the setup state's registration method?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 53171,
+	"totalOut": 14247,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 222604
+}

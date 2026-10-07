@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 2402070,
+	"arm": "TXT",
+	"answerChars": 25436,
+	"cacheRead": 2098304,
+	"childIn": 221550,
+	"childOut": 73556,
+	"index": 8,
+	"parentIn": 8114,
+	"parentOut": 546,
+	"problem": null,
+	"question": "What is the dependency chain between the application loading helper, the Flask application instance, and the base Click testing runner that ensures proper CLI command execution in isolation?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 229664,
+	"totalOut": 74102,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 712985
+}

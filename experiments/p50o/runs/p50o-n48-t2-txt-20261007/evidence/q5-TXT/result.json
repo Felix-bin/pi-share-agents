@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 4932197,
+	"arm": "TXT",
+	"answerChars": 49907,
+	"cacheRead": 4400768,
+	"childIn": 413074,
+	"childOut": 109871,
+	"index": 4,
+	"parentIn": 8107,
+	"parentOut": 377,
+	"problem": null,
+	"question": "How does the namespace object that stores application-level data during an application context maintain thread-safety and context isolation when accessed concurrently through the contextvars mechanism?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 421181,
+	"totalOut": 110248,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 1205741
+}

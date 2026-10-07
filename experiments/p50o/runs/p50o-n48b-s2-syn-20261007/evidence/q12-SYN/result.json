@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 113379,
+	"arm": "SYN",
+	"answerChars": 208,
+	"cacheRead": 67072,
+	"childIn": 28079,
+	"childOut": 8290,
+	"index": 11,
+	"parentIn": 9361,
+	"parentOut": 577,
+	"problem": null,
+	"question": "Where does the application root path get transformed during initialization when instance-relative configuration mode is enabled before reaching the configuration storage object?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 37440,
+	"totalOut": 8867,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 130700
+}

@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 172022,
+	"arm": "SYN",
+	"answerChars": 5333,
+	"cacheRead": 112128,
+	"childIn": 37151,
+	"childOut": 12816,
+	"index": 14,
+	"parentIn": 9367,
+	"parentOut": 560,
+	"problem": null,
+	"question": "How does the certificate parameter conversion method for the CLI certificate option implement a fallback chain to handle file paths, adhoc certificate strings, and SSLContext object imports?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 46518,
+	"totalOut": 13376,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 172947
+}

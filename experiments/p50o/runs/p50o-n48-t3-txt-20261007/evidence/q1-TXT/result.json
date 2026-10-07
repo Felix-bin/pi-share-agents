@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 3687989,
+	"arm": "TXT",
+	"answerChars": 42259,
+	"cacheRead": 3298816,
+	"childIn": 284082,
+	"childOut": 96475,
+	"index": 0,
+	"parentIn": 8102,
+	"parentOut": 514,
+	"problem": null,
+	"question": "Why does repeated invocation of the method that instantiates cryptographic serializers within the session persistence handler create a performance bottleneck under high-concurrency conditions?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 292184,
+	"totalOut": 96989,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 1067096
+}

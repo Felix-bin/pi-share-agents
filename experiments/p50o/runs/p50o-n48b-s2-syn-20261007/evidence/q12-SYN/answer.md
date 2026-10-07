@@ -1,0 +1,1 @@
+The answer is above; the transformation site is `Flask.make_config()` at `src/flask/sansio/app.py:491–493`, called from the constructor at line 319, with the switched value delivered to `Config` via line 496.

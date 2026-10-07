@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 1114416,
+	"arm": "TXT",
+	"answerChars": 23984,
+	"cacheRead": 934784,
+	"childIn": 127406,
+	"childOut": 43737,
+	"index": 2,
+	"parentIn": 8108,
+	"parentOut": 381,
+	"problem": "missing-completed-roles:planner,retriever,executor,summarizer",
+	"question": "What is the interaction between the parametrization of import and app name arguments in the exception-raising test and the exception handling semantics that ensures the application location function fails consistently?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 135514,
+	"totalOut": 44118,
+	"unit": "p50o",
+	"valid": false,
+	"wallMs": 396388
+}

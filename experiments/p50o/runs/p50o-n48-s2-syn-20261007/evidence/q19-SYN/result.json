@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 243461,
+	"arm": "SYN",
+	"answerChars": 4141,
+	"cacheRead": 168704,
+	"childIn": 48216,
+	"childOut": 16539,
+	"index": 18,
+	"parentIn": 9362,
+	"parentOut": 640,
+	"problem": null,
+	"question": "Where does the encoding parameter flow from the test function that verifies resource opening with encoding into the Flask application's method that opens files relative to the root path?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 57578,
+	"totalOut": 17179,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 350816
+}

@@ -1,0 +1,26 @@
+# Test class: `TestStreaming` — a fixture-driven, self-contained plain pytest class
+
+The class is **`TestStreaming`** in `tests/test_helpers.py`, lines **236–307** (class statement at `:236` reads `class TestStreaming:`, bare — no parentheses). Its architectural pattern:
+
+**A plain pytest class, not a unittest-style suite.** Confirmed by parsing the file: empty base list, no class decorators, no `__init__`/`setup_method`/`setup_class`/`teardown_method`, and no class-level attributes. All state is per-test local.
+
+**Setup by function-scoped fixture injection, not by hooks.** Every method has the signature `(self, app, client)`, resolved from `tests/conftest.py` — the `app` fixture at `conftest.py:52` (a `Flask("flask_test")` with `TESTING=True`, `SECRET_KEY="test key"`) and the `client` fixture at `:72` (`app.test_client()`). The class declares no fixture of its own, so each test gets a fresh app and client.
+
+**Per-test self-containment: each method builds its own route, closure and request.** Every method defines a nested `@app.route("/")` view, defines its own nested generator closure inside that view, and drives the request through `client.get(...)`, asserting on the response data. Nothing is shared between methods — no base class helper, mixin, or module-level generator. The four methods are:
+
+| Method | `def` line | What the nested closure does | Assertion |
+|---|---|---|---|
+| `test_streaming_with_context` | 237 | nested `generate()` yields `"Hello "`, `flask.request.args["name"]`, `"!"`; view returns `flask.Response(flask.stream_with_context(generate()))` | `rv.data == b"Hello World!"` |
+| `test_streaming_with_context_as_decorator` | 250 | same concern via the `@flask.stream_with_context` decorator on the nested `generate(hello)` | `rv.data == b"Hello World!"` |
+| `test_streaming_with_context_and_custom_close` | 264 | nested `class Wrapper` with `__iter__`/`__next__`/`next`/`close` (close appends `42` to `called`); view wraps `Wrapper(generate())` in `stream_with_context` | `rv.data == b"Hello World!"` **and** `called == [42]` |
+| `test_stream_keeps_session` | 295 | session written in the view, read inside `@flask.stream_with_context def gen()` | `rv.data == b"flask"` |
+
+**So the separation between the two concerns is structural and per-method, not class-hierarchical:** the *streaming response generation* logic (the generator, and in one case the `Wrapper` iterator) is written as a nested closure/class inside each test, while the *request-context lifecycle* concern is expressed by the `stream_with_context` wrapping and by the assertion in the test body itself. The custom-close method is the clearest case: iterator/close mechanics are isolated in `Wrapper`, and the close-side-effect check (`called == [42]`) is kept separate from the data assertion. Source-side framing of the split is in `src/flask/helpers.py:65–70` (contexts disappear when the response starts, so streamed generators lose request-bound info) and `src/flask/ctx.py:380–384` (re-pushing would make `stream_with_context` lose the session — exactly what `test_stream_keeps_session` pins).
+
+**Execution status (verified).** The class collects as exactly four node IDs and all four pass, with the environment quirk that bare `python -m pytest` cannot run here (`ModuleNotFoundError: No module named 'flask'`, because `.venv/Lib/site-packages/flask.pth` points `flask` at a sibling worktree's `src`). Working recipe: `PYTHONPATH=src .venv/Scripts/python.exe -m pytest -q tests/test_helpers.py::TestStreaming` → 4 collected, `4 passed in 0.10s`.
+
+## What this rests on, and what is open
+
+- **Rests on:** `tests/test_helpers.py:236–307` read directly (class + all four methods); `tests/conftest.py:52` (`app`) and `:72` (`client`); executor's parse of the class (bases/decorators/hooks empty) and its `--collect-only` / run output; `src/flask/helpers.py:65–128` and `src/flask/ctx.py:380–384` for the source-side split the tests exercise.
+- **Line-number correction:** the per-method `def` lines are 237, 250, 264, 295; the retriever's 251/257/297 are the inner `@app.route`/nested-`def` lines (class still spans 236–307).
+- **Open / not established:** (1) The question's wording "isolates request context lifecycle management from streaming response generation logic" is a task-level paraphrase — no docstring, comment or identifier in the worktree matches it (case-insensitive grep for `lifecycle|isolat` returns only docs and non-test sources). Whether the question means `TestStreaming` as the class, or the *isolation of the lifecycle assertions from the generation/iterator mechanics within its methods*, is not pinned by any in-repo text; I report the observed structure rather than asserting one reading. (2) The class does not split the two concerns into separate classes or helper modules — within each method both are exercised together, so "isolates" should be read as per-test nesting, not as class-level separation. (3) No diff against the upstream/unmutated tree was run, so a mutation of these test bodies relative to the corpus snapshot cannot be formally ruled out; matching chunk line-offsets argue against it. (4) `TestGreenletContextCopying` (`tests/test_reqctx.py:149`) is the only other context-lifecycle *class*, but it contains no streaming response generation, so it fails the streaming property.

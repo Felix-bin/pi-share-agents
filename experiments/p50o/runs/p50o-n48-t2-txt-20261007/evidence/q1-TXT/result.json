@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 870743,
+	"arm": "TXT",
+	"answerChars": 28476,
+	"cacheRead": 693504,
+	"childIn": 122326,
+	"childOut": 46400,
+	"index": 0,
+	"parentIn": 8101,
+	"parentOut": 412,
+	"problem": null,
+	"question": "How does the tagged JSON serializer class that handles bytes maintain data consistency and reversibility when encoding binary data through base64?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 130427,
+	"totalOut": 46812,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 466961
+}

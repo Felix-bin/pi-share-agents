@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 1054900,
+	"arm": "TXT",
+	"answerChars": 23467,
+	"cacheRead": 849152,
+	"childIn": 150024,
+	"childOut": 47268,
+	"index": 7,
+	"parentIn": 8104,
+	"parentOut": 352,
+	"problem": null,
+	"question": "How does the subclass initialization hook in the HTTP method-dispatching view class resolve conflicting methods attributes when inheriting from multiple parent classes?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 158128,
+	"totalOut": 47620,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 518861
+}

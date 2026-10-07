@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 2258071,
+	"arm": "TXT",
+	"answerChars": 33698,
+	"cacheRead": 1920000,
+	"childIn": 237361,
+	"childOut": 92148,
+	"index": 9,
+	"parentIn": 8117,
+	"parentOut": 445,
+	"problem": null,
+	"question": "What is the dependency chain from recursive type tagging method calls within the tuple-to-JSON conversion method that could lead to infinite recursion when serializing nested tuples with circular references?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 245478,
+	"totalOut": 92593,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 1002309
+}

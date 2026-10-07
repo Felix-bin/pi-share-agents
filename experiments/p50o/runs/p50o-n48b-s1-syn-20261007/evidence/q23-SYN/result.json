@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 1077698,
+	"arm": "SYN",
+	"answerChars": 8036,
+	"cacheRead": 919680,
+	"childIn": 105664,
+	"childOut": 42434,
+	"index": 22,
+	"parentIn": 9363,
+	"parentOut": 557,
+	"problem": null,
+	"question": "How does the type-safe dictionary structure used as a view function return type annotation decouple JSON response serialization from HTTP status representation to maintain type safety?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 115027,
+	"totalOut": 42991,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 701879
+}

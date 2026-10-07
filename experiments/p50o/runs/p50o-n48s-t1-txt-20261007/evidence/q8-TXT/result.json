@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 674899,
+	"arm": "TXT",
+	"answerChars": 11177,
+	"cacheRead": 546688,
+	"childIn": 79076,
+	"childOut": 40589,
+	"index": 7,
+	"parentIn": 8130,
+	"parentOut": 416,
+	"problem": null,
+	"question": "What is the interaction between the parametrization of import and app name arguments in the exception-raising test and the exception handling semantics that ensures the application location function fails consistently?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "role-pipeline",
+	"totalIn": 87206,
+	"totalOut": 41005,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 498816
+}

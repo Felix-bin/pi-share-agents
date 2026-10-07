@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 193746,
+	"arm": "SYN",
+	"answerChars": 7279,
+	"cacheRead": 133632,
+	"childIn": 35683,
+	"childOut": 14501,
+	"index": 17,
+	"parentIn": 9363,
+	"parentOut": 567,
+	"problem": null,
+	"question": "How does the method that processes unhandled exceptions determine whether to re-raise them or convert them into HTTP 500 responses based on configuration state?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 45046,
+	"totalOut": 15068,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 296630
+}

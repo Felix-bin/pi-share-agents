@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 233155,
+	"arm": "SYN",
+	"answerChars": 6895,
+	"cacheRead": 159872,
+	"childIn": 46383,
+	"childOut": 16946,
+	"index": 15,
+	"parentIn": 9357,
+	"parentOut": 597,
+	"problem": null,
+	"question": "Where is the control flow determining whether a routing rule receives OPTIONS, including branches evaluating the automatic options flag and the application configuration setting?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 55740,
+	"totalOut": 17543,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 215287
+}

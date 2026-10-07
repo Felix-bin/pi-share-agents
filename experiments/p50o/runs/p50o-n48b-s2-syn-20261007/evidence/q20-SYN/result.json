@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 198677,
+	"arm": "SYN",
+	"answerChars": 4374,
+	"cacheRead": 140800,
+	"childIn": 34975,
+	"childOut": 12913,
+	"index": 19,
+	"parentIn": 9361,
+	"parentOut": 628,
+	"problem": null,
+	"question": "Where does the base64-decoding method for byte sequence tags get invoked during the recursive untagging process after JSON parsing?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 44336,
+	"totalOut": 13541,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 323580
+}

@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 102119,
+	"arm": "SYN",
+	"answerChars": 2551,
+	"cacheRead": 62464,
+	"childIn": 23498,
+	"childOut": 6265,
+	"index": 17,
+	"parentIn": 9349,
+	"parentOut": 543,
+	"problem": null,
+	"question": "Where is the test class that validates URL generation with anchors, schemes, and HTTP methods defined?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 32847,
+	"totalOut": 6808,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 231850
+}

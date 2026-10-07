@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 286100,
+	"arm": "SYN",
+	"answerChars": 7733,
+	"cacheRead": 193536,
+	"childIn": 61628,
+	"childOut": 21010,
+	"index": 20,
+	"parentIn": 9363,
+	"parentOut": 563,
+	"problem": null,
+	"question": "How does the namespace object that stores application-level data during an application context maintain thread-safety and context isolation when accessed concurrently through the contextvars mechanism?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 70991,
+	"totalOut": 21573,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 383899
+}

@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 822669,
+	"arm": "TXT",
+	"answerChars": 10825,
+	"cacheRead": 644480,
+	"childIn": 126999,
+	"childOut": 42677,
+	"index": 1,
+	"parentIn": 8100,
+	"parentOut": 413,
+	"problem": "missing-completed-roles:planner,retriever,executor,summarizer",
+	"question": "What does the method that enables the test helper class representing pathlib.Path objects return when invoked by the standard library path conversion function?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 135099,
+	"totalOut": 43090,
+	"unit": "p50o",
+	"valid": false,
+	"wallMs": 406900
+}

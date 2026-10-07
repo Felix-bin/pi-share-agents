@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 928582,
+	"arm": "TXT",
+	"answerChars": 9552,
+	"cacheRead": 795648,
+	"childIn": 87284,
+	"childOut": 37224,
+	"index": 4,
+	"parentIn": 8120,
+	"parentOut": 306,
+	"problem": null,
+	"question": "Why does the CLI helper class that manages Flask application discovery implement lazy loading through a cached instance attribute rather than during initialization?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "role-pipeline",
+	"totalIn": 95404,
+	"totalOut": 37530,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 684339
+}

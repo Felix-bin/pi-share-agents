@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 740887,
+	"arm": "TXT",
+	"answerChars": 25292,
+	"cacheRead": 561152,
+	"childIn": 125243,
+	"childOut": 45982,
+	"index": 12,
+	"parentIn": 8111,
+	"parentOut": 399,
+	"problem": null,
+	"question": "How does the wrapper function that defers hash algorithm access until execution delay cryptographic availability validation until runtime to prevent import-time failures in restricted environments?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 133354,
+	"totalOut": 46381,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 471705
+}

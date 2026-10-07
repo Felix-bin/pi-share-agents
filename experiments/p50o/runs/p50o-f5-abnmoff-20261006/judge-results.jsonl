@@ -1,0 +1,10 @@
+{"correctness":5,"completeness":4,"relevance":5,"clarity":10,"reasoning":8,"key":"q5-ABNM","parseFailures":0,"total":32,"votes":5}
+{"correctness":5,"completeness":7,"relevance":14,"clarity":16,"reasoning":15,"key":"q4-ABNM","parseFailures":0,"total":57,"votes":5}
+{"correctness":15,"completeness":20,"relevance":17,"clarity":18,"reasoning":17,"key":"q1-ABNM","parseFailures":1,"total":87,"votes":5}
+{"correctness":19,"completeness":20,"relevance":17,"clarity":18,"reasoning":19,"key":"q6-ABNM","parseFailures":2,"total":93,"votes":5}
+{"correctness":19,"completeness":20,"relevance":15,"clarity":18,"reasoning":19,"key":"q2-ABNM","parseFailures":2,"total":91,"votes":5}
+{"correctness":5,"completeness":5,"relevance":10,"clarity":16,"reasoning":8,"key":"q10-ABNM","parseFailures":0,"total":44,"votes":5}
+{"correctness":19,"completeness":20,"relevance":18,"clarity":19,"reasoning":19,"key":"q7-ABNM","parseFailures":2,"total":95,"votes":5}
+{"correctness":8,"completeness":9,"relevance":13,"clarity":15,"reasoning":15,"key":"q9-ABNM","parseFailures":0,"total":60,"votes":5}
+{"correctness":18.5,"completeness":19.5,"relevance":14.5,"clarity":15.5,"reasoning":17.5,"key":"q3-ABNM","parseFailures":10,"total":85.5,"votes":4}
+{"correctness":18.5,"completeness":19,"relevance":16,"clarity":17,"reasoning":18,"key":"q8-ABNM","parseFailures":10,"total":88.5,"votes":4}

@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 360176,
+	"arm": "SYN",
+	"answerChars": 6526,
+	"cacheRead": 254720,
+	"childIn": 76803,
+	"childOut": 18708,
+	"index": 13,
+	"parentIn": 9363,
+	"parentOut": 582,
+	"problem": null,
+	"question": "How does the decorator that copies request contexts handle isolation of lightweight concurrent execution contexts while preserving session data across execution boundaries?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 86166,
+	"totalOut": 19290,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 209144
+}

@@ -1,0 +1,43 @@
+# Why the CLI app-loading helper takes both a factory callable and an import path
+
+## Answer
+
+The class in question is `ScriptInfo` — the "helper object to deal with Flask applications" declared at `src/flask/cli.py:293`. Its constructor takes exactly the two alternatives in question, both optional and both defaulting to `None` (`cli.py:305-309`):
+
+```python
+def __init__(self, app_import_path: str | None = None,
+             create_app: t.Callable[..., Flask] | None = None,
+             set_debug_flag: bool = True, load_dotenv_defaults: bool = True) -> None:
+```
+
+They exist as two parameters because `ScriptInfo` is the single junction where two callers with different capabilities meet, and neither can supply what the other does:
+
+**1. `app_import_path` exists because the `flask` command can only carry a string across the CLI boundary.** The installed entry point is `flask = "flask.cli:main"` (`pyproject.toml:82-83`), a `FlaskGroup` whose callback `_set_app` takes the raw value of `-A/--app` (and of `FLASK_APP`, via `auto_envvar_prefix="FLASK"` at `cli.py:585`) and assigns it verbatim: `info.app_import_path = value` (`cli.py:440-445`). A live callable cannot survive `argv` or an environment variable, so the CLI hands over a *name to be resolved later* — which is also why `load_app` resolves it lazily rather than at construction: at the moment `--app` is parsed there is no app yet.
+
+That one string is deliberately a small mini-language, not just a path. `_app_option`'s help (`cli.py:453-465`) documents the `module:name` form, that "Module can be a dotted import or file path", and that the name "can be 'name(args)' to pass arguments"; `docs/cli.rst:35-52` spells out the three parts (an optional path that sets the cwd, a dotted/file import path, an optional variable name) and `docs/cli.rst:63-65` notes that factory arguments "are parsed as Python literals… strings must still be in quotes". That limitation is real in code: `find_app_by_string` (`cli.py:120-190`) accepts only `ast.Name` or a simple `ast.Call` and evaluates arguments with `ast.literal_eval`. The branch that consumes the parameter splits on `re.split(r":(?![\\/])", …)`, runs `prepare_import`, then `locate_app` (`cli.py:344-348`).
+
+**2. `create_app` exists because code that already holds a factory cannot express it as an import string.** `FlaskGroup.__init__` accepts `create_app` and stores it (`cli.py:589`), then injects it into the `ScriptInfo` it builds as the Click object in `make_context` (`cli.py:669-673`). The documented consumer is the "Custom Scripts" pattern (`docs/cli.rst:471-492`), which states the intent explicitly:
+
+> "Instead of using ``--app`` and letting Flask load your application, you can create your own Click object and export it as a `console script`_ entry point. Create an instance of :class:`~cli.FlaskGroup` and **pass it the factory**" (`docs/cli.rst:476-481`)
+
+The sample there defines a plain zero-argument `create_app()` and decorates the group with `@click.group(cls=FlaskGroup, create_app=create_app)` (`docs/cli.rst:487-492`), exported as `wiki = "wiki:cli"` and run as `wiki run` (`docs/cli.rst:498-507`). Passing the callable means the loader never touches the import machinery, no dotted path has to be correct at runtime (no typo/fragility surface, no stale-string failure mode), and the factory can receive *any* Python arguments the module author chooses rather than only literal ones parsed from the `name(args)` syntax. In-tree, the same callable path serves `AppGroup`/`with_appcontext` users and tests: `pass_script_info = click.make_pass_decorator(ScriptInfo, ensure=True)` (`cli.py:375`), consumed by `run_command` (`app: WSGIApplication = info.load_app()`), `FlaskGroup.get_command` and `list_commands` (`cli.py:620-623`, `642-645`).
+
+**3. The precedence rule makes them alternatives rather than a combination, with lazy once-only loading.** `load_app` (`cli.py:333-372`) short-circuits on the memo field first (`if self._loaded_app is not None: return self._loaded_app`, `cli.py:337-338`, matching the docstring at `cli.py:335-336`), then takes the branches strictly in this order:
+
+1. `if self.create_app is not None: app = self.create_app()` — `cli.py:341-342`, called with **zero** arguments;
+2. `elif self.app_import_path:` → `prepare_import` / `locate_app` — `cli.py:344-348`;
+3. `else:` probe `wsgi.py` then `app.py` with `raise_if_not_found=False` — `cli.py:350-357`.
+
+So **`create_app` beats `app_import_path` beats autodetection**; if nothing produced an app, `NoAppException` is raised with the message naming all three routes (`cli.py:359-364`); the debug flag is applied (`cli.py:366-368`); and the result is memoized in `self._loaded_app` before being returned (`cli.py:370-372`, field declared `cli.py:331`), so repeat calls return the identical object.
+
+**Runtime confirmation (executor, read-only).** The two mechanisms were shown to work independently: `ScriptInfo(create_app=…)` loaded its factory app, `ScriptInfo(app_import_path="cliapp.app:testapp")` loaded the named instance, and with both set the callable won over a bogus import path (`ScriptInfo(app_import_path="does.not.exist", create_app=lambda: Flask("x")).load_app().name == "x"` → `True`). Repeated `load_app()` returned the identical object and the factory's call counter stayed at 1. The autodetect ordering was confirmed too (with both files present, `wsgi.py` wins). The full focused file passes: `pytest tests/test_cli.py -q` → **58 passed**. The real entry point was exercised end to end: `--app "cliapp.app:testapp" routes` and `--app "cliapp.factory:create_app2('foo','bar')" routes` both printed route tables with exit 0, and a bad string failed with `Error: Could not import 'does.not.exist'.` (exit 2). No source or test file was modified (`git status --porcelain src tests` empty at commit `85c5d93c`).
+
+## Contradiction and gaps in the record
+
+- **The docstrings are stale in this checkout.** `cli.py:314-315` says `create_app` is "a function that is passed the script info", and the `FlaskGroup` docstring (`cli.py:541-542`) repeats "an optional callback that is passed the script info" — but the call site passes nothing (`self.create_app()`, `cli.py:342`), the example factory in `docs/cli.rst:487-492` takes no arguments, and the tests pass zero-arg lambdas (`tests/test_cli.py:302, 313, 352, 387, 432`). Runtime makes this concrete: a one-argument factory raises `TypeError: needs_si() missing 1 required positional argument: 'script_info'`. `CHANGES.rst:853-855` records the older script_info-passing behavior, so the docstrings describe history, not current code — the two parameters' *signatures* are what the question is about, and those are not in doubt.
+- **No test covers the intersection.** `tests/test_cli.py:247-286` exercises each mechanism in isolation (string at `:248, :256, :260`; callable at `:268, :302, :313, :352, :372, :387, :432`; autodetect + `NoAppException` at `:273, :278-284`), and there is no test with both parameters set. The precedence claim therefore rests on the literal branch order at `cli.py:341-344` plus the executor's scratch script, not on a repository test. One citation from the handed-over evidence was corrected: the `FlaskGroup(create_app=…)` decorator is at `tests/test_cli.py:372`, not `:376`.
+- **Environment issue, unresolved.** The virtualenv's editable-install `flask.pth` resolves outside this working directory, so any run omitting `PYTHONPATH=src` silently imports a different tree; every verified run above set `PYTHONPATH` explicitly and asserted `flask.cli.__file__`. This was not fixed and is flagged rather than papered over.
+- **Out of scope, deliberately:** any judgement about unifying, deprecating, or re-documenting the two parameters, or changing `load_app` precedence or the `create_app` type. No code change is proposed by this answer.
+
+**Rests on:** `src/flask/cli.py` (`ScriptInfo` 293-372, `_set_app` 440-445, `--app` help 453-465, `find_app_by_string` 120-190, `FlaskGroup` 531-673), `docs/cli.rst` (35-65, 471-507), `CHANGES.rst:850-856`, `tests/test_cli.py`, `pyproject.toml:82-83`, and the executor's read-only pytest run (58 passed) plus its precedence/caching/`--app` scripts.
+**Open:** runtime precedence confirmed only by a scratch script (no repo test covers both parameters); no claim about git history outside this checkout; stale docstrings at `cli.py:314-315` and `cli.py:541-542` reported, not corrected; virtualenv `flask.pth` misconfiguration noted, not fixed.

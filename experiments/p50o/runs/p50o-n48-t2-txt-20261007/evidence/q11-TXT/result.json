@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 1865163,
+	"arm": "TXT",
+	"answerChars": 39913,
+	"cacheRead": 1602944,
+	"childIn": 200361,
+	"childOut": 53331,
+	"index": 10,
+	"parentIn": 8107,
+	"parentOut": 420,
+	"problem": null,
+	"question": "Why does the CLI helper class that manages Flask application loading provide both a direct callable factory parameter and an import path parameter as alternative instantiation mechanisms?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 208468,
+	"totalOut": 53751,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 537973
+}

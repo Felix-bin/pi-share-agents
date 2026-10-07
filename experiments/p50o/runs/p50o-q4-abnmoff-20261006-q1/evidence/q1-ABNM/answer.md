@@ -1,0 +1,21 @@
+## Answer
+
+The city is **Nanjing**, and according to the corpus's only statement predicating "Chinese national capital" of it, it became the Chinese national capital **as early as in the Jin dynasty**.
+
+The chain, file by file:
+
+- **The edict addressed to a person:** `002-Sino-Tibetan-relations-during-the-Ming-dynasty.md:3` — *"The Information Office of the State Council of the PRC preserves an edict of the Zhengtong Emperor (r. 1435–1449) addressed to the Karmapa in 1445 … Zhengtong had the following message delivered to the Great Treasure Prince of Dharma, the Karmapa:"* → addressee = **the Karmapa**.
+- **The person Yongle greeted:** `003-Sino-Tibetan-relations-during-the-Ming-dynasty.md:3` — *"The Yongle Emperor came out of the palace in Nanjing to greet the Karmapa and did not require him to kowtow like a tributary vassal."* Same paragraph: *"Deshin Shekpa was induced by further exhortations by the Ming court to visit Nanjing by April 10, 1407."* → greeter **Yongle**, greeted **the Karmapa**, city **Nanjing** (corroborated by `021:3` *"did not return to Nanjing until 1407"* and `016:3` *"During his stay in Nanjing"*).
+- **The intersection is single.** The corpus's other named addressees are Sagya Gyaincain (`007`, Hongwu's edict) and Ecdicius (`020`, Julian's order); neither is greeted by Yongle. The remaining eleven "edict" files (`008, 011, 013, 014, 015, 018, 023, 024, 026, 032`) have no named addressee. `003` is the corpus's only Yongle greeting (grep for `greet|welcom|received` hits only `003`, `023` "well received" about an envoy, `025` the word *Madayaw*, `041` "telephone greeting"; no other Yongle file pairs him with greet/welcome).
+- **The title joining the two files:** `016:3` — *"During his stay in Nanjing, Deshin Shekpa was bestowed the title 'Great Treasure Prince of Dharma' by the Yongle Emperor."* This is the title `002` uses for its addressee.
+- **The date of Nanjing's national-capital status:** `001-Nanjing.md:3` — *"Although as a city located in southern part of China **becoming Chinese national capital as early as in Jin dynasty**, the name Nanjing was designated to the city in Ming dynasty, about a thousand years later."* This is the only file in the corpus containing the string "national capital" (grep `national capital` → `001` only) and the only file containing "Jin dynasty".
+
+**Qualifiers the evidence requires.** (a) The corpus gives **no year** for the Jin dynasty, so the answer can only be given as the dynasty name, not as a date such as 317 or 1127. (b) The identification of `002`'s 1445 Karmapa with the Deshin Shekpa of `003` rests on the shared title "Great Treasure Prince of Dharma" (`002` vs `016`); the corpus never states the equation, so it is an inference. (c) Two other Nanjing capital dates appear in the corpus under **different** wording and are therefore not the question's phrase: `063:3` — *"renamed the city Yingtian, rebuilt it, and made it the dynastic capital in 1368"*; `048:3` — *"the founding of the Republic of China in January 1912 … Nanking was selected as its new capital."* `049:3` implies Nanjing's spell from 1368–1420 but predicates "China's capital" of Beijing. If the question is read as asking for a numbered year rather than the source's "Chinese national capital" phrasing, the corpus supports 1368 (`063`) or 1912 (`048`) instead — a reading decision, not an observed fact, and neither of those is worded as the question's phrase.
+
+ANSWER: Jin dynasty
+
+---
+
+**Rests on:** `001:3` (the "Chinese national capital … Jin dynasty" sentence, uniquely), `002:3` (edict addressed to the Karmapa), `003:3` (Yongle greets the Karmapa in Nanjing, 1407), `016:3` (the title link), `007:3`/`020:3`/`023:3` (exclusion of rival addressees), greps confirming "national capital" and "Jin dynasty" occur only in `001` and that `003` is the sole Yongle greeting.
+
+**Still open:** no Jin-dynasty year exists in the corpus; the `002`↔`003` Karmapa identity is title-based inference only; the corpus is 67 flat files at the working-directory root — there is no `musique/` directory.

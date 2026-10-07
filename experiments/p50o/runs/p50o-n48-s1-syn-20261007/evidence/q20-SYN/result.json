@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 370833,
+	"arm": "SYN",
+	"answerChars": 4409,
+	"cacheRead": 289664,
+	"childIn": 54654,
+	"childOut": 16609,
+	"index": 19,
+	"parentIn": 9373,
+	"parentOut": 533,
+	"problem": null,
+	"question": "How does the callback-based modification tracking in the session class that inherits from CallbackDict ensure consistency between in-memory session state and persisted cookie data across concurrent requests?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 64027,
+	"totalOut": 17142,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 231865
+}

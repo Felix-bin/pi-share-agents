@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 363420,
+	"arm": "TXT",
+	"answerChars": 6549,
+	"cacheRead": 270592,
+	"childIn": 62813,
+	"childOut": 21496,
+	"index": 3,
+	"parentIn": 8118,
+	"parentOut": 401,
+	"problem": null,
+	"question": "Why does the method that opens application package resources relative to the root path restrict file opening to read-only modes?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "role-pipeline",
+	"totalIn": 70931,
+	"totalOut": 21897,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 296685
+}

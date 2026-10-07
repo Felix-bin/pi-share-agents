@@ -1,0 +1,17 @@
+## Answer
+
+The wrapper is `_lazy_sha1` in `src/flask/sessions.py` (definition at line 290). It delays cryptographic availability validation by never naming `hashlib.sha1` at import time: the module imports only the `hashlib` module itself (`src/flask/sessions.py:4`), while the attribute lookup `hashlib.sha1(string)` sits inside the function body at line 295 and therefore executes only when the function is called — i.e. at session-signing time, not while `sessions.py` is being imported. Its docstring states the rationale verbatim (lines 291–293): "Don't access ``hashlib.sha1`` until runtime. FIPS builds may not include SHA-1, in which case the import and use as a default would fail before the developer can configure something else."
+
+The second half of the mechanism is the binding that makes this the default without forcing a lookup. `SecureCookieSessionInterface.digest_method = staticmethod(_lazy_sha1)` (line 307) stores the function object itself as the class attribute, rather than a resolved hash constructor, so importing `sessions.py` and defining the class do not touch `hashlib.sha1`. That class attribute is then passed through to the signer as ordinary configuration: `"digest_method": self.digest_method` inside `signer_kwargs` for `URLSafeTimedSerializer` in `get_signing_serializer` (line 333). The consequence is that in a FIPS build lacking SHA-1, failure is deferred to the first attempt to sign or verify a session cookie, after the developer has had the chance to assign a different available algorithm to `digest_method`. There is exactly one such wrapper in the worktree — greps for `hashlib.sha1`, `hashlib.md5`, `usedforsecurity`, "don't access"/"do not access", and `_lazy_sha1|lazy_sha` match only `src/flask/sessions.py:290` (definition) and `:307` (use) — so no competing deferred-hash helper qualifies.
+
+## What this rests on
+
+- Observed source reads: `src/flask/sessions.py:4` (`import hashlib` at module scope), `:290` (definition), `:291-293` (verbatim FIPS/runtime docstring), `:295` (`return hashlib.sha1(string)`), `:307` (`digest_method = staticmethod(_lazy_sha1)`), `:333` (consumption in `signer_kwargs`), plus the line numbers reconfirmed by grep.
+- Retriever's repo-wide greps (handle `f77c75ed92c4`) found no second wrapper and no `sha`/`hashlib`/`digest` references in `flask_mut2_i417ar2x/mutated_test.py`.
+
+## Still open / caveats
+
+- No FIPS build or runtime execution was exercised, so "import succeeds and only signing fails" is established by the docstring and code structure, not by an observed test run.
+- The precise causal claim that the `staticmethod(...)` binding (rather than the wrapper alone) is what prevents the import-time lookup is an inference from the code, not stated in the source; the docstring asserts only the runtime-vs-import-time outcome.
+- Whether `_lazy_sha1` should be renamed, made public, parameterized by algorithm, or given a non-SHA-1 fallback is a product decision not answered by this evidence.
+- Portions of the task plan's risk hedges (dead code, vendored copies outside `src/`, a future direct `hashlib.sha1` default) are addressed only to the extent of the greps above; a vendored copy outside the searched paths was not ruled out beyond that search.

@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 1082189,
+	"arm": "TXT",
+	"answerChars": 8130,
+	"cacheRead": 889088,
+	"childIn": 148322,
+	"childOut": 36325,
+	"index": 5,
+	"parentIn": 8103,
+	"parentOut": 351,
+	"problem": null,
+	"question": "Where in the serialization pipeline for the JSON tag class that handles Markup API objects are the lower-level helper functions that the conversion method delegates to?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 156425,
+	"totalOut": 36676,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 384203
+}

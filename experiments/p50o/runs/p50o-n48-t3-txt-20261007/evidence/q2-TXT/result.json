@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 1452172,
+	"arm": "TXT",
+	"answerChars": 24670,
+	"cacheRead": 1256704,
+	"childIn": 142709,
+	"childOut": 44300,
+	"index": 1,
+	"parentIn": 8097,
+	"parentOut": 362,
+	"problem": null,
+	"question": "Why does the pass-through dictionary tag class's JSON conversion method apply recursive tagging only to dictionary values while avoiding tagging keys?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 150806,
+	"totalOut": 44662,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 516623
+}

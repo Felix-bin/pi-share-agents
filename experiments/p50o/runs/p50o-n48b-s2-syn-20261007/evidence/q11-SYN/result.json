@@ -1,0 +1,28 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 103105,
+	"arm": "SYN",
+	"answerChars": 4767,
+	"cacheRead": 59008,
+	"childIn": 25892,
+	"childOut": 8200,
+	"index": 10,
+	"parentIn": 9373,
+	"parentOut": 632,
+	"problem": null,
+	"question": "Why does the test that checks handler behavior when a stream handler exists on the root logger verify that the application logger's handlers list is empty after adding a stream handler to the root logger?",
+	"roles": 3,
+	"stages": [
+		"planner",
+		"retriever",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 35265,
+	"totalOut": 8832,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 109691
+}

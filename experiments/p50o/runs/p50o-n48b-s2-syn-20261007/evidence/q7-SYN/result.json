@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 1048271,
+	"arm": "SYN",
+	"answerChars": 8459,
+	"cacheRead": 857600,
+	"childIn": 130263,
+	"childOut": 50431,
+	"index": 6,
+	"parentIn": 9364,
+	"parentOut": 613,
+	"problem": null,
+	"question": "Why would performance degradation occur if the custom template filter registration mechanism used in blueprint test cases were repeated across multiple distinct blueprint objects during application startup?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 139627,
+	"totalOut": 51044,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 827492
+}

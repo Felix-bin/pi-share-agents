@@ -1,0 +1,5 @@
+The answer above is complete. Summary of the conclusion:
+
+**`TagUUID` is bidirectional because that is what the tag system requires, not a UUID-specific need.** `JSONTag` (`src/flask/json/tag.py:60-90`) mandates `to_json` (Python → valid JSON type) and `to_python` (JSON back → correct type) for every registered tag; `TagUUID` (`tag.py:191-202`) realizes the pair as `value.hex` / `UUID(value)` under the marker key `" u"`, and `TaggedJSONSerializer.tag()`/`untag()` (`tag.py:295-311`, registered at `tag.py:240-247`) run those two directions, using the `" u"` key to recognize the intermediate form on the way back. The point of the design is stated in the module docstring (`tag.py:1-6`): a compact, **lossless** representation for non-JSON types, used by `SecureCookieSessionInterface` (`sessions.py:14,287`) — so a `UUID` stored in a session must come back as a `UUID`, which `tests/test_json_tag.py:11-29` asserts.
+
+The one thing the evidence does not establish is an explicit written rationale for choosing `.hex` over `str()`; that is an inference from the "compact representation" wording, and is flagged as such.

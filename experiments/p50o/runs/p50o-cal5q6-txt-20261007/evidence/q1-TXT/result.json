@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 4924296,
+	"arm": "TXT",
+	"answerChars": 31026,
+	"cacheRead": 4536448,
+	"childIn": 299744,
+	"childOut": 79607,
+	"index": 0,
+	"parentIn": 8098,
+	"parentOut": 399,
+	"problem": "missing-completed-roles:planner,retriever,executor,summarizer",
+	"question": "What mechanisms ensure that template processing functions registered during modular component registration are accessible when templates are rendered using the shared template environment?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 307842,
+	"totalOut": 80006,
+	"unit": "p50o",
+	"valid": false,
+	"wallMs": 854967
+}

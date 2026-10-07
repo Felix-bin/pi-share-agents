@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 566727,
+	"arm": "SYN",
+	"answerChars": 6906,
+	"cacheRead": 439040,
+	"childIn": 90204,
+	"childOut": 27577,
+	"index": 0,
+	"parentIn": 9360,
+	"parentOut": 546,
+	"problem": null,
+	"question": "What mechanisms ensure that template processing functions registered during modular component registration are accessible when templates are rendered using the shared template environment?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 99564,
+	"totalOut": 28123,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 373745
+}

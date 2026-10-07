@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 408332,
+	"arm": "SYN",
+	"answerChars": 7121,
+	"cacheRead": 309632,
+	"childIn": 62942,
+	"childOut": 25796,
+	"index": 23,
+	"parentIn": 9370,
+	"parentOut": 592,
+	"problem": null,
+	"question": "Why does the linear traversal of the exception class hierarchy in _find_error_handler create performance overhead when handling errors in applications with deep exception inheritance chains and multiple registered error handlers?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 72312,
+	"totalOut": 26388,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 328284
+}

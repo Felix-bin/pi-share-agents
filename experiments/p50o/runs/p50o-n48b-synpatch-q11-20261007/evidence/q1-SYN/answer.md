@@ -1,0 +1,34 @@
+## Answer
+
+The class is **`TestStreaming`, defined at `tests/test_helpers.py:236`** — the only test class in the worktree that is simultaneously (a) a pytest-collected test class, (b) exercised through request-context lifetime handling, and (c) built around streamed generator responses. Its architectural pattern is: **a fixture-based xUnit-style test class in which each test constructs the streaming generation side locally (a nested generator defined inside the view) and delegates the entire request-context lifetime to the `stream_with_context` wrapper/decorator applied from outside that generator** — i.e. a *context-preserving generator wrapper* (deferred request-context re-push) rather than a context-aware generator. The separation is not stated as a pattern anywhere in the repository; the label is a structural reading of the four test bodies.
+
+**The three mechanisms that carry the separation** (verified by direct read of `tests/test_helpers.py:236–307`):
+
+1. **Wrapper form** — `test_streaming_with_context` (237–248): the generator is a plain local `def generate()` yielding `"Hello "` / `flask.request.args["name"]` / `"!"` with no context code at all; lifetime is owned by the argument position, `flask.Response(flask.stream_with_context(generate()))` (245).
+2. **Decorator form** — `test_streaming_with_context_as_decorator` (250–262) and `test_stream_keeps_session` (295–307): the same split with the roles inverted, `@flask.stream_with_context` on `def generate(hello)` (253) and on `def gen()` yielding `flask.session["test"]` (300–302). The generator body stays context-free; the decorator carries the lifetime.
+3. **Iterator-protocol wrapper for teardown** — `test_streaming_with_context_and_custom_close` (264–291) adds a second, independent separation layer: a locally defined `class Wrapper` (266–281) with `__init__`/`__iter__`/`close`/`__next__` (`next = __next__`) delegating to `self._gen` and recording `called.append(42)` on `close()`. The assertion `assert called == [42]` (291) observes iterator-*close* lifecycle separately from generation, so the test can distinguish "generation produced the right bytes" (`rv.data == b"Hello World!"`) from "the iterator was closed".
+
+**What the pattern leans on in the framework.** The delegation target is `stream_with_context` (`src/flask/helpers.py:62`, type overloads at 51 and 57). Its implementation reads `ctx = _cv_request.get(None)` (109) and raises `RuntimeError("'stream_with_context' can only be used when a request context is active, such as in a view function.")` (110–114) if no context is active — the failure mode the wrapper form would hit if the split were removed. It then re-enters the captured context with `with ctx:` (115), yields a dummy `None` sentinel justified by the in-code comment "Has to be inside the context block or we're not actually keeping the context around." (116–118), and `yield from gen` inside a `try/finally` that calls `gen.close()` when present (125–128) — which is exactly the close-lifecycle that `Wrapper` in test 3 intercepts. The non-iterator branch (`except TypeError`, 100–106) returns `update_wrapper(decorator, generator_or_function)` (106): the decorator-vs-wrapper duality mirrored one-for-one by tests 1–2. The class's fixture base is shared, not declared locally: `app` (`tests/conftest.py:45`, `Flask("flask_test")`, `TESTING=True`, `SECRET_KEY`) and `client` (`tests/conftest.py:67`, `return app.test_client()`); `TestStreaming` declares no fixtures or docstring of its own.
+
+**Boundaries of the claim.**
+
+- *Answered*: which class the question picks and what its architectural pattern is, with the separating mechanisms and the framework lines they depend on.
+- *Not established*: **no in-repository artefact names this pattern** — no docstring, README or doc file labels `TestStreaming`; "context-preserving generator wrapper / deferred request-context re-push" is the executor's and retriever's structural coinage, not a cited statement. Treat the class identity and mechanisms as evidence-backed, the *label* as inference.
+- *Not established*: nothing was executed, so the collected evidence says nothing about whether these tests pass or fail.
+- **Nearest class-level alternative, ruled out**: `tests/test_reqctx.py:149 class TestGreenletContextCopying` is a test class that does isolate context handling (`request_ctx.copy()` then `with reqctx:`; `@flask.copy_current_request_context`), but its views return plain `"Hello World!"` strings with no generator, and it is guarded by `@pytest.mark.skipif(greenlet is None, ...)` so it may not run. `src/flask/testing.py:109 class FlaskClient` manages context lifetime thoroughly but is production source with no `def test_` method and no `stream_with_context`/`yield` anywhere in the file.
+- **Function-level analogue, not a class**: `tests/test_testing.py:383 def test_client_pop_all_preserved(app, req_ctx, client)` performs the same isolation without a class — its route returns a bare `flask.stream_with_context("hello")` (386) with no generator, with the three-context lifecycle described in comments (385, 393) and asserted as `_cv_request.get(None) is req_ctx` (396).
+- **Not a candidate at all**: `flask_mut2_i417ar2x/mutated_test.py` defines no class — reading the whole file shows only `def view(company_id)` at line 8 plus top-level `url_for`/`client.get` statements and a `subdomain_matching`/`url_for` reproduction; there is no `class`, no `yield`, and no `stream_with_context` in it. A class-based answer cannot be sourced there.
+
+### What this rests on
+
+- `tests/test_helpers.py:236–307` (read in full): class `TestStreaming`, four test methods at 237, 250, 264, 295; `stream_with_context` at 245, 253, 289, 300; `Wrapper` at 266–281; assertion at 291.
+- `tests/conftest.py:45, 67` (read): `app` and `client` fixtures.
+- `src/flask/helpers.py:51, 57, 62, 94–136` (read): overloads, implementation, `_cv_request.get(None)` at 109, `RuntimeError` at 110–114, `with ctx:` at 115, sentinel comment 116–118, `yield from gen` / `gen.close()` 125–128, priming `next(wrapped_g)` 134–135.
+- `tests/test_testing.py:381–398` (read) and `flask_mut2_i417ar2x/mutated_test.py` (read in full).
+- Tree-wide greps for `^class ` and for `stream_with_context|yield` over `tests/**/*.py`: `TestStreaming` is the only class where both concerns co-occur; all other `stream_with_context`/`yield` hits are in the module-level function above, in `conftest.py` fixtures, or in `type_check/typing_route.py`.
+
+### Still open
+
+- No in-repo naming of the pattern; the label is inference.
+- No test execution, so pass/fail is unasserted.
+- The retriever and executor both landed on `TestStreaming`; no contradiction between the handed-over sources to report.

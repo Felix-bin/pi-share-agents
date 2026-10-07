@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 491298,
+	"arm": "SYN",
+	"answerChars": 7217,
+	"cacheRead": 379392,
+	"childIn": 74319,
+	"childOut": 27696,
+	"index": 1,
+	"parentIn": 9354,
+	"parentOut": 537,
+	"problem": null,
+	"question": "Why does the asynchronous HTTP method view class inherit from the synchronous HTTP method dispatch base class rather than implementing async dispatch independently?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 83673,
+	"totalOut": 28233,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 343313
+}

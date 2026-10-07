@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 447113,
+	"arm": "SYN",
+	"answerChars": 8989,
+	"cacheRead": 334592,
+	"childIn": 77530,
+	"childOut": 25082,
+	"index": 0,
+	"parentIn": 9367,
+	"parentOut": 542,
+	"problem": null,
+	"question": "Where does the route handler function that returns a list of dictionaries integrate with the framework's route decorator and static type checker configuration to validate return type annotations in the type checking test files?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 86897,
+	"totalOut": 25624,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 444331
+}

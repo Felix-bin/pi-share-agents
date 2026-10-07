@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 498552,
+	"arm": "SYN",
+	"answerChars": 6965,
+	"cacheRead": 381440,
+	"childIn": 78928,
+	"childOut": 28211,
+	"index": 15,
+	"parentIn": 9378,
+	"parentOut": 595,
+	"problem": null,
+	"question": "How does the deferred registration mechanism ensure that custom template filters registered through the blueprint's application-level filter registration method are accessible in the template rendering environment when the blueprint is mounted with a URL path prefix?",
+	"roles": 4,
+	"stages": [
+		"planner",
+		"retriever",
+		"executor",
+		"summarizer"
+	],
+	"sealed": true,
+	"template": "opt-pipeline",
+	"totalIn": 88306,
+	"totalOut": 28806,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 340745
+}

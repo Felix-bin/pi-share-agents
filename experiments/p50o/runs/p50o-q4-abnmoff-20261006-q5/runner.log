@@ -1,0 +1,3 @@
+[p50o] 08:37:13 q5-ABNM: sealed sandbox ready (C:\Users\oobbee\AppData\Local\Temp\pi-p50o\4c40091e\q5-ABNM\seal)
+[p50o] 08:40:08 q5-ABNM: finished (roles=4 stages=[planner,retriever,executor,summarizer] token=46499/10079 cacheRead=96000 wall=175s)
+[p50o] 08:40:08 done; partial: D:\操作系统开源大赛\_shm_dev\p50o-abnm-off-rerun-20261006\p50o-q4-abnmoff-20261006-q5\p50o-partial.jsonl

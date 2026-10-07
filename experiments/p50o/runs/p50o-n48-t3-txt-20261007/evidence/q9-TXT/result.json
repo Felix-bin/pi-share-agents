@@ -1,0 +1,29 @@
+{
+	"parentCacheRead": 0,
+	"parentCacheWrite": 0,
+	"totalTokensLogical": 2298125,
+	"arm": "TXT",
+	"answerChars": 23348,
+	"cacheRead": 2010368,
+	"childIn": 212491,
+	"childOut": 66773,
+	"index": 8,
+	"parentIn": 8099,
+	"parentOut": 394,
+	"problem": null,
+	"question": "Where in the error handler resolution method does the lookup sequence traverse blueprint scopes then HTTP status codes then exception class method resolution order?",
+	"roles": 4,
+	"stages": [
+		"naive-planner",
+		"naive-retriever",
+		"naive-executor",
+		"naive-summarizer"
+	],
+	"sealed": true,
+	"template": "naive-pipeline",
+	"totalIn": 220590,
+	"totalOut": 67167,
+	"unit": "p50o",
+	"valid": true,
+	"wallMs": 724833
+}

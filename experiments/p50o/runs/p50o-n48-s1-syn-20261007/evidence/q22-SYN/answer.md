@@ -1,0 +1,1 @@
+Answer delivered above. Recorded the conclusion in shared memory (`273050744a9a`) with `src/flask/ctx.py` as its source, so later tasks start from the strict/lenient/dual-mode split rather than re-deriving it.
