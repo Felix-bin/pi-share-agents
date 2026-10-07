@@ -98,6 +98,9 @@ export function recallsMemory(agent: string): boolean {
 }
 
 export function redeemsStageResults(agent: string): boolean {
+	// Opt-in evidence-first policy: keep the visible evidence block and redeem
+	// details explicitly instead of injecting every upstream body at startup.
+	if (process.env.SYNAPSE_STAGE_REDEMPTION === "lazy") return false;
 	return STAGE_RESULT_REDEEMING_ROLES.some((role) => role === agent);
 }
 

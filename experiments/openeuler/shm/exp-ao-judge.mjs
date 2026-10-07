@@ -34,7 +34,9 @@ const source = fs.readFileSync(path.join(SWEQA, "Benchmark construction", "score
 const start = source.indexOf('prompt = f"""'), end = source.indexOf('"""', start + 13);
 const template = source.slice(start + 13, end);
 
-const references = FAMILY === "r"
+const references = process.env.P50O_JUDGE_REFERENCES
+	? fs.readFileSync(process.env.P50O_JUDGE_REFERENCES, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+	: FAMILY === "r"
 	? fs.readFileSync(FLASK, "utf-8").trim().split("\n").map((l) => JSON.parse(l))
 	: (JSON.parse(fs.readFileSync(MUSIQUE_FAMILY, "utf-8")).tasks ?? JSON.parse(fs.readFileSync(MUSIQUE_FAMILY, "utf-8")));
 
@@ -49,15 +51,15 @@ function parseScores(text) {
 }
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2; };
 
-let key = process.env.COMMANDCODE_API_KEY ?? process.env.DASHSCOPE_API_KEY;
+const onDashscope = BAILIAN_BASE.includes("dashscope"); // 走百炼端点时只认 DASHSCOPE key，避免 commandcode key 发错端点
+let key = onDashscope ? process.env.DASHSCOPE_API_KEY : process.env.COMMANDCODE_API_KEY ?? process.env.DASHSCOPE_API_KEY;
 if (!key) {
 	// 回退链：本机 synapse/.env（Windows 装置路径）→ 服务器路径。
 	for (const envPath of ["D:/操作系统开源大赛/synapse/.env", "/root/.pi/agent/synapse/.env"]) {
 		if (key || !fs.existsSync(envPath)) continue;
-		for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
+		for (const line of fs.readFileSync(envPath, "utf-8").split("\n")) {
 			const t = line.trim();
-			if (t.startsWith("COMMANDCODE_API_KEY=")) key = t.slice("COMMANDCODE_API_KEY=".length);
-			else if (t.startsWith("DASHSCOPE_API_KEY=")) key = t.slice("DASHSCOPE_API_KEY=".length);
+			if (onDashscope ? t.startsWith("DASHSCOPE_API_KEY=") : t.startsWith("COMMANDCODE_API_KEY=")) { key = t.slice(t.indexOf("=") + 1); break; }
 		}
 	}
 }
@@ -67,26 +69,46 @@ async function askOnce(prompt) {
 	const resp = await fetch(`${BAILIAN_BASE}/chat/completions`, {
 		method: "POST",
 		headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-		body: JSON.stringify({ model: JUDGE_MODEL, messages: [{ role: "user", content: prompt }], max_tokens: 8192 }),
+		body: JSON.stringify({ model: JUDGE_MODEL, messages: [{ role: "user", content: prompt }], max_tokens: Number(process.env.P50O_JUDGE_MAX_TOKENS ?? 16384) }),
+		signal: AbortSignal.timeout(120000),
 	});
 	if (!resp.ok) throw new Error(`judge HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
 	const data = await resp.json();
-	return { text: data.choices?.[0]?.message?.content ?? "", usage: data.usage };
+	return { text: data.choices?.[0]?.message?.content ?? "", usage: data.usage, responseId: data.id, servedModel: data.model };
 }
 
 const outPath = path.join(expDir, "judge-results.jsonl");
-const judged = new Set(fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).key) : []);
+const judged = new Set(fs.existsSync(outPath) ? fs.readFileSync(outPath, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.votes >= VOTES && Number.isFinite(r.total)).map((r) => r.key) : []);
+const priorVotes = new Map();
+const seenResponseIds = new Set();
+const voteFile = path.join(expDir, "judge-votes.jsonl");
+if (fs.existsSync(voteFile)) {
+    for (const line of fs.readFileSync(voteFile, "utf8").split("\n").filter(Boolean)) {
+        const record = JSON.parse(line);
+        if (record.responseId && seenResponseIds.has(record.responseId)) continue;
+        if (record.responseId) seenResponseIds.add(record.responseId);
+        const parsed = parseScores(record.text ?? "");
+        if (parsed) priorVotes.set(record.key, [...(priorVotes.get(record.key) ?? []), parsed]);
+    }
+}
 let totalJudgeTokens = 0;
 
 const CONCURRENCY = Number(args.concurrency ?? 6);
 const jobs = [];
 for (const row of rows) {
-	if (!row.valid) continue;
+	// 2026-10-07 放行修复：naive-pipeline 的阶段名带 naive- 前缀，旧有效性门按字面量匹配误标
+	// missing-completed-roles——该 problem 只在 workflow 完整跑完且答案已产出时才产生，非真失败。
+	const naiveRelabel = row.arm === "TXT" && typeof row.problem === "string" && row.problem.startsWith("missing-completed-roles:") && (row.stages ?? []).some((s) => String(s).startsWith("naive-")) && (row.answerChars ?? 0) > 0;
+	if (!row.valid && !naiveRelabel) continue;
 	const key = `q${row.index + 1}-${row[armField]}`;
 	if (judged.has(key)) { console.log(`[judge] ${key}: already judged, skip`); continue; }
 	const answerPath = path.join(expDir, "evidence", key, "answer.md");
 	if (!fs.existsSync(answerPath)) continue;
-	const ref = references[REVISIT_MOD > 0 ? row.index % REVISIT_MOD : row.index];
+	// 2026-10-07 修复：按题干文本定位金标——--start 换题后 row.index 是轮内相对序号，
+	// 按位置取 references 会整体错位判分；文本匹配不到再回退位置映射。
+	const rowQuestion = (row.question ?? "").trim();
+	const refHit = references.findIndex((r) => (r.question ?? r.task ?? "").trim() === rowQuestion);
+	const ref = references[refHit >= 0 ? refHit : (REVISIT_MOD > 0 ? row.index % REVISIT_MOD : row.index)];
 	const reference = FAMILY === "r" ? ref.answer : (ref.answer ?? ref.answer);
 	const question = FAMILY === "r" ? ref.question : (ref.task ?? ref.question);
 	const candidate = fs.readFileSync(answerPath, "utf-8");
@@ -95,11 +117,12 @@ for (const row of rows) {
 }
 
 async function judgeOne(job) {
-	const got = [];
+	const got = (priorVotes.get(job.key) ?? []).slice(0, VOTES);
 	let failures = 0;
 	while (got.length < VOTES && failures < VOTES * 2) {
 		try {
-			const { text, usage } = await askOnce(job.prompt);
+			const { text, usage, responseId, servedModel } = await askOnce(job.prompt);
+			fs.appendFileSync(path.join(expDir, "judge-votes.jsonl"), JSON.stringify({ key: job.key, attempt: got.length + failures + 1, text, usage, responseId, servedModel, maxTokens: Number(process.env.P50O_JUDGE_MAX_TOKENS ?? 16384) }) + "\n");
 			totalJudgeTokens += usage?.total_tokens ?? 0;
 			const parsed = parseScores(text);
 			if (parsed) got.push(parsed); else failures += 1;

@@ -18,6 +18,7 @@ Your job is to find everything in this worktree that could bear on the task and 
 
 Working rules:
 - Be exhaustive in separate reads: for every file the plan points at and every file whose name, imports or docstring relates to the task, grep the file for each relevant keyword in turn, then read a window of about 200 lines around EVERY hit, one read per hit. Cover every file that could possibly bear on the question — more reads are better than fewer.
+- When a file is central to the question, read it completely through consecutive windows from top to bottom, window after window, rather than jumping between hits — nothing in a central file should be left unread.
 - When a grep returns hits, read the surrounding context generously — an extra read is cheaper than a missed fact.
 - Your evidence must be complete enough that the next roles never need to reopen a file: for each finding include the path, the line range and the full passage you read around it.
 

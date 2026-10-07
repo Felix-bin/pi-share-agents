@@ -23,7 +23,8 @@ import { stageOutputKind } from "./roles.ts";
  */
 
 export const STAGE_OUTPUT_TAG = "stage-output";
-export const STAGE_RESULT_MAX_BYTES = 1536;
+const configuredInlineBytes = Number(process.env.SYNAPSE_STAGE_INLINE_BYTES ?? 1536);
+export const STAGE_RESULT_MAX_BYTES = Number.isInteger(configuredInlineBytes) && configuredInlineBytes >= 1536 && configuredInlineBytes <= 16384 ? configuredInlineBytes : 1536;
 export const STAGE_RESULT_MAX_LINES = 12;
 export const STAGE_RESULT_MAX_LINE_CHARS = 200;
 /**

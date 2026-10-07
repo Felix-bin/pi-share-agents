@@ -32,6 +32,7 @@ import { AUTO_DISTILL_CHILD_NOTE } from "../../synapse/auto-distill.ts";
 import { redeemMemoryRefs, type RedemptionResult } from "../../synapse/redemption.ts";
 import { recallsMemory, redeemsStageResults } from "../../synapse/roles.ts";
 import { redeemStageResults, type StageRedemption } from "../../synapse/stage-result.ts";
+import { registerContextLedger } from "../../synapse/context-ledger.ts";
 import type { StateRetrievalHit } from "../../synapse/state-retrieval.ts";
 import type { UdsServerTransport } from "../../synapse/envelope-uds.ts";
 import { registerWaitTool } from "../background/wait-tool.ts";
@@ -828,6 +829,7 @@ export default function registerSubagentPromptRuntime(
 	// the configured inline factory. It must be inert rather than crashing the
 	// child before startup; the inline factory remains the real registration path.
 	if (!config) return;
+	if (config.synapse?.contract.mode === "synapse" && process.env.SYNAPSE_EVIDENCE_EXTENSION !== "1" && ["1", "2", "3"].includes(process.env.SYNAPSE_CONTEXT_LEDGER ?? "")) registerContextLedger(pi, config.synapse.contract.storageRoot);
 	registerRuntimeExtensionAcknowledgements(pi, config.runtimeAcknowledgements);
 	registerPermissionGate(pi, config.permissions, config.childWatchdog);
 	registerToolBudget(pi, config.toolBudget);
